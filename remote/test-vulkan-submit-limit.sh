@@ -7,7 +7,9 @@ if [ "$#" -gt 1 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-source_directory=${1:-"${HOME:?}/src/llama.cpp"}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+source_directory=${1:-"$qwen_home_llama_upstream"}
 header=$source_directory/ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h
 temporary_directory=$(mktemp -d)
 trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM

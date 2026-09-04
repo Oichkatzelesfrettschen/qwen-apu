@@ -172,6 +172,7 @@ chmod 0755 "$fixture_sh"
 # reader identity the key now carries resolves the same way in the test as in
 # the gate.
 cp "$script_directory/gate-cell-key.sh" "$fixture_root/remote/gate-cell-key.sh"
+cp "$script_directory/qwen-home.sh" "$fixture_root/remote/qwen-home.sh"
 cat >"$fixture_root/remote/gate.sh" <<'FIXTURE'
 #!/bin/sh
 set -eu

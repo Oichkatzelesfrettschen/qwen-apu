@@ -11,8 +11,10 @@ taskset -pc 0 $$ >/dev/null
 ionice -c 3 -p $$
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
-source_directory=${1:-"${HOME:?}/src/llama.cpp"}
+source_directory=${1:-"$qwen_home_llama_upstream"}
 patch_directory=${2:-"$repository_directory/patches"}
 expected_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
 temporary_directory=$(mktemp -d)

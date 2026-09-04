@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-
+# Installs YaCy natively under opt/yacy of the runtime root from a pinned upstream tag and
 # Installs YaCy natively under $HOME/opt/yacy from a pinned upstream tag and
 # writes the loopback, on-demand overrides remote/yacy-control.sh and
 # remote/searxng-settings.yml's yacy engine both depend on.
@@ -18,8 +18,10 @@ set -eu
 # lists it under what this script could not confirm rather than inventing one.
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
-install_directory=${1:-"${HOME:?}/opt/yacy"}
+install_directory=${1:-"$qwen_home_yacy"}
 
 # Read with `git ls-remote --tags --sort=-v:refname
 # https://github.com/yacy/yacy_search_server.git` on 2026-08-28: the highest

@@ -35,7 +35,11 @@ report() {
 # what those links are handed.
 harness=$work/harness
 mkdir -p "$harness"
-for harness_member in qwen-launch.sh web-lan-exposure.sh \
+# The launcher proves the SearXNG components ahead of the health gate; a
+# stand-in launch command satisfies that proof on a host holding no instance.
+QWEN_SEARXNG_LAUNCH_COMMAND=true
+export QWEN_SEARXNG_LAUNCH_COMMAND
+for harness_member in qwen-launch.sh qwen-home.sh searxng-launch.sh web-lan-exposure.sh \
     resolve-active-deployment.sh deployment-bundle-name.sh \
     open-verified-lock-descriptor.py \
     select-projector.sh model-registry.sh models.tsv \
@@ -114,7 +118,7 @@ chmod +x "$harness/qwen-webui-control.sh"
 
 # The launcher waits for /health on the listener it reports, so the harness
 # answers that route from a standard-library server for the duration of a run.
-health_port=18086
+health_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 python3 - "$health_port" "$work/health.pid" <<'PY' &
 import http.server
 import socketserver

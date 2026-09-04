@@ -27,6 +27,8 @@ if [ "$#" -ne 3 ] && [ "$#" -ne 4 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 fetch_script=$script_directory/$1
 source_name=$2
 artifact_name=$3
@@ -34,7 +36,7 @@ destination_directory=${4:?destination directory is required}
 source_path=$destination_directory/$source_name
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part
-quantize=${QWEN_LLAMA_QUANTIZE:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-quantize"}
+quantize=${QWEN_LLAMA_QUANTIZE:-"$qwen_home_llama_quantize"}
 quantize_threads=${QWEN_QUANTIZE_THREADS:-2}
 census=${QWEN_GGUF_CENSUS:-$script_directory/gguf-tensor-census.py}
 
@@ -52,7 +54,7 @@ fi
 # census excludes the multi-token-prediction block an ordinary load skips, which
 # is the figure a conversion must leave unchanged.
 census_facts() {
-    GGUF_PY_PATH=${GGUF_PY_PATH:-"${HOME:?}/src/llama.cpp-qwen-apu/gguf-py"} \
+    GGUF_PY_PATH=${GGUF_PY_PATH:-"$qwen_home_gguf_py"} \
         "$census" --json "$1" | python3 -c '
 import json
 import sys

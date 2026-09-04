@@ -22,6 +22,8 @@ case $router_enabled in
 esac
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 cors_origins=${QWEN_CORS_ORIGINS:-localhost}
 
@@ -776,7 +778,7 @@ EOF
     registry_selector_kind=id
     registry_selector=$approved_model_id
 else
-    ordinary_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
+    ordinary_model_root=${QWEN_MODEL_ROOT:-"$qwen_home_models"}
     if ! python3 - "$model_path" "$ordinary_model_root" <<'PY'
 import os
 import re
@@ -1120,7 +1122,7 @@ fi
 # 2029 MiB of a 2048 MiB VRAM carve-out with 2700 MiB more in GTT, so a second
 # resident model competes for a pool already saturated by one. Switching models
 # unloads the previous one, which costs a reload and buys a device that fits.
-router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets.ini"}
+router_presets=${QWEN_ROUTER_PRESETS:-"$qwen_home_state/router-presets.ini"}
 router_registry=${QWEN_MODEL_REGISTRY:-"$script_directory/models.tsv"}
 router_quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv}
 router_draft_pair_registry=${QWEN_DRAFT_PAIRS:-$script_directory/draft-pairs.tsv}
@@ -1128,7 +1130,7 @@ router_draft_pair_registry=${QWEN_DRAFT_PAIRS:-$script_directory/draft-pairs.tsv
 # the same default, so the path this launch hashes is the path whose rows the
 # tuple validator compared each section against.
 router_ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
-router_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
+router_model_root=${QWEN_MODEL_ROOT:-"$qwen_home_models"}
 router_web_profiles_environment=${QWEN_WEB_PROFILES:-}
 router_web_profiles=$script_directory/web-profiles.tsv
 router_web_profiles_guard_path=-
@@ -2114,7 +2116,7 @@ fi
 # at server_models_routes construction and spawns every child with that copy, so
 # the child executing the graphs opens the lock; the router parent leaves
 # server_context uninitialised and opens nothing.
-workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 mkdir -p -- "$workload_lease_state_directory"
 chmod 700 -- "$workload_lease_state_directory"
 workload_lease_path=$workload_lease_state_directory/vulkan-workload.lock

@@ -299,6 +299,8 @@ fi
 model_id=$1
 output_directory=$2
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 registry_reader=$script_directory/model-registry.sh
 runner=$script_directory/measure-served-decode.sh
 summarizer=$script_directory/summarize-kernel-census.py
@@ -505,7 +507,7 @@ fi
 production_server=${QWEN_CENSUS_PRODUCTION_SERVER:-}
 production_receipt=${QWEN_CENSUS_PRODUCTION_RECEIPT:-}
 instrumented_server=${QWEN_CENSUS_INSTRUMENTED_SERVER:-}
-models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
+models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
 sidecar_bound=${QWEN_CENSUS_SIDECAR_BOUND:-0.0065}
 compile_bound=${QWEN_CENSUS_COMPILE_BOUND:-0.0065}
 collect_bound=${QWEN_CENSUS_COLLECT_BOUND:-0.02}
@@ -819,7 +821,7 @@ fi
 # worktree is refused at launch, so the arms launch and tear down through
 # that tree while this runner and its readers come from wherever the
 # operator checked out.
-runtime_remote=${QWEN_CENSUS_RUNTIME_REMOTE:-"${HOME:?}/qwen-laptop-setup/remote"}
+runtime_remote=${QWEN_CENSUS_RUNTIME_REMOTE:-"$script_directory"}
 # measure-served-decode.sh pins the model through a descriptor, and the
 # launch admits a descriptor-backed path only with the approved identity the
 # served runner derives from the artifact ledger, so the ledger travels with
@@ -1801,7 +1803,7 @@ fi
 # arm list carries this campaign's own as QWEN_STATE_DIRECTORY, and a caller
 # naming a QWEN_VULKAN_WORKLOAD_LOCK outside it is refused here rather than
 # handing the arms a proof they cannot verify.
-workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 expected_workload_lease=$workload_lease_state_directory/vulkan-workload.lock
 workload_lease=${QWEN_VULKAN_WORKLOAD_LOCK:-$expected_workload_lease}
 if [ "$workload_lease" != "$expected_workload_lease" ]; then

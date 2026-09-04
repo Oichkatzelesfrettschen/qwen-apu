@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # The Fable5 V2 fine-tune of stock MiniCPM5-1B this tree admits alongside its
 # stock counterpart. The publisher's model card names openbmb/MiniCPM5-1B as
@@ -18,7 +21,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/candidate-staging/minicpm5-1b-fable5-v2"}
+destination_directory=${1:-"$qwen_home_models/candidate-staging/minicpm5-1b-fable5-v2"}
 artifact_name=MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking-Q8_0.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

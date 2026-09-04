@@ -51,7 +51,7 @@ if [ "$#" -ne 3 ]; then
     printf '  QWEN_PRODUCTION_BUILD_DIR names the promoted build (required)\n' >&2
     printf '  QWEN_VULKAN_WORKLOAD_LOCK names the absolute shared lease (required)\n' >&2
     printf '  QWEN_MTP_ARM_N_MAX lists the draft lengths, default "1 2 3"\n' >&2
-    printf '  QWEN_MODELS_DIRECTORY names the model root, default $HOME/models\n' >&2
+    printf '  QWEN_MODELS_DIRECTORY names the model root, default models/ under the runtime root (QWEN_HOME)\n' >&2
     exit 2
 fi
 
@@ -59,6 +59,8 @@ mechanism=$1
 subject=$2
 output_directory=$3
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 registry_source=$script_directory/model-registry.sh
 model_registry_source=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
 draft_pair_registry_source=${QWEN_DRAFT_PAIRS:-$script_directory/draft-pairs.tsv}
@@ -68,7 +70,7 @@ vulkan_profile_wrapper=${QWEN_MTP_ARM_VULKAN_WRAPPER:-"$script_directory/radv-lo
 vulkan_profile=${QWEN_MTP_ARM_VULKAN_PROFILE:-low-async}
 measurement_runner_source=$script_directory/measure-mtp-arm.sh
 summarizer_source=$script_directory/summarize-speculation-breakeven.py
-models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
+models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
 production_build_directory=${QWEN_PRODUCTION_BUILD_DIR:-}
 server_relative_path=${QWEN_MTP_ARM_SERVER_RELATIVE:-bin/llama-server}
 server_port=${QWEN_MTP_ARM_PORT:-8099}

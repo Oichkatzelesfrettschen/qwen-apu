@@ -17,8 +17,10 @@ label=$1
 model_path=$2
 profile=${3:-low-async}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
-result_directory=${QWEN_RESULT_DIRECTORY:-"${HOME:?}/qwen-model-comparison"}/$label
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
+result_directory=${QWEN_RESULT_DIRECTORY:-"$qwen_home_results/model-comparison"}/$label
 port=${QWEN_SERVER_PORT:-8080}
 endpoint=http://127.0.0.1:$port
 

@@ -29,11 +29,13 @@ if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 bundle_name=$1
 server_path=$2
 manifest_path=$3
 ctx_ledger_path=$4
-deployment_root=${5:-"${HOME:?}/qwen-deployments"}
+deployment_root=${5:-"$qwen_home_deployments"}
 
 name_helper=$script_directory/deployment-bundle-name.sh
 if [ ! -r "$name_helper" ]; then

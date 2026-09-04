@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 renice -n 19 -p $$ >/dev/null
 taskset -pc 0 $$ >/dev/null
@@ -10,7 +13,7 @@ ionice -c 3 -p $$
 # the language model was never trained against, and the failure is silent: the
 # server loads, images are accepted, and the descriptions are wrong. This
 # revision is the one download-qwen35-4b-q4km.sh pins.
-destination_directory=${1:-"${HOME:?}/models/Qwen3.5-4B-GGUF"}
+destination_directory=${1:-"$qwen_home_models/Qwen3.5-4B-GGUF"}
 artifact_name=mmproj-F16.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

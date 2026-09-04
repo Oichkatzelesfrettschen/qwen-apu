@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # A multistage supervised fine-tune of Qwen3.5-2B on Opus-distilled reasoning
 # traces. Its header declares the Qwen3.5 2B trunk at 24 blocks and the chat
@@ -16,7 +19,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/Qwen3.5-2B-Opus-Distilled-Heretic-GGUF"}
+destination_directory=${1:-"$qwen_home_models/Qwen3.5-2B-Opus-Distilled-Heretic-GGUF"}
 artifact_name=Qwen3.5-2B-Opus-Distilled-Heretic-Thinking-Multistage-SFT-v1.0.Q4_K_M.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

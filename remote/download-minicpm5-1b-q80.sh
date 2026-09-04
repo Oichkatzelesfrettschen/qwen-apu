@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # The stock counterpart of the Fable5 V2 fine-tune this tree is admitting.
 # openbmb publishes MiniCPM5-1B at Q8_0 in its own GGUF repository, so this
@@ -17,7 +20,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/candidate-staging/minicpm5-1b-stock"}
+destination_directory=${1:-"$qwen_home_models/candidate-staging/minicpm5-1b-stock"}
 artifact_name=MiniCPM5-1B-Q8_0.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

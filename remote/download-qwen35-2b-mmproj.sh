@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # The vision encoder for the 2B. The pinned build declares no qwen35vl
 # architecture and no matching projector type, and Qwen3.5 vision resolves
@@ -16,7 +19,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/Qwen3.5-2B-GGUF"}
+destination_directory=${1:-"$qwen_home_models/Qwen3.5-2B-GGUF"}
 artifact_name=mmproj-Qwen3.5-2B-f16.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

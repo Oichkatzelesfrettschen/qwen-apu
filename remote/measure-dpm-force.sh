@@ -25,9 +25,11 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 model_path=$1
-output_directory=${2:-"${HOME:?}/qwen-dpm-force"}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-bench=${QWEN_LLAMA_BENCH:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench"}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+output_directory=${2:-"$qwen_home_results/dpm-force"}
+bench=${QWEN_LLAMA_BENCH:-"$qwen_home_llama_bench"}
 clock_sampler=${QWEN_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
 drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
 level_node=$drm_device/power_dpm_force_performance_level

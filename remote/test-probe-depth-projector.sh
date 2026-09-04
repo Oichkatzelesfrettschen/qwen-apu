@@ -678,6 +678,7 @@ fi
 # changes. A byte-distinct copy must fail against the retained arm sidecar.
 changed_probe=$temporary_directory/probe-depth-projector-changed.sh
 cp "$probe" "$changed_probe"
+cp "$script_directory/qwen-home.sh" "$temporary_directory/qwen-home.sh"
 printf '\n# identity mutation fixture\n' >>"$changed_probe"
 chmod +x "$changed_probe"
 set +e

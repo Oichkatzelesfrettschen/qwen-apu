@@ -126,7 +126,7 @@ models_directory=$temporary_directory/models
 mkdir -p "$home_directory"
 # The campaign holds its state directory's own Vulkan lease from before the
 # clock write to its exit, so the fixture home carries that directory.
-workload_lease_directory=$home_directory/qwen-webui-state
+workload_lease_directory=$temporary_directory/.runtime/state
 mkdir -p "$workload_lease_directory"
 workload_lease=$workload_lease_directory/vulkan-workload.lock
 model_file=$("$registry_reader" id "$model_id" model_file)
@@ -1204,7 +1204,7 @@ signal_runner=$signal_directory/run-raven2-vulkan-kernel-census.sh
 cp -- "$runner" "$signal_runner"
 chmod +x "$signal_runner"
 cp -- "$artifact_ledger" "$signal_directory/model-artifacts.tsv"
-for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
+for linked_member in model-registry.sh qwen-home.sh models.tsv ctx-checkpoints.tsv \
     validated-tuples.tsv quarantine.tsv draft-pairs.tsv census-arm-lib.sh \
     summarize-kernel-census.py summarize-census-controls.py \
     sample-clock-sidecar.py validate-clock-sidecar.py \
@@ -1421,6 +1421,7 @@ if [ "$signal_poll" -ge "$signal_arm_poll_bound" ]; then
     wait "$signal_runner_pid" 2>/dev/null || true
     printf 'the signal case reached no sampling arm inside %s seconds\n' \
         "$((signal_arm_poll_bound / 5))" >&2
+    sed -n '1,20p' "$signal_stderr" >&2
     if [ -r "$signal_arm_directory/clock-sidecar.stderr" ]; then
         sed -n '1,20p' "$signal_arm_directory/clock-sidecar.stderr" >&2
     fi
@@ -1489,7 +1490,7 @@ cp -- "$runner" "$brick_directory/run-raven2-vulkan-kernel-census.sh"
 chmod +x "$brick_directory/run-raven2-vulkan-kernel-census.sh"
 brick_runner=$brick_directory/run-raven2-vulkan-kernel-census.sh
 cp -- "$artifact_ledger" "$brick_directory/model-artifacts.tsv"
-for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
+for linked_member in model-registry.sh qwen-home.sh models.tsv ctx-checkpoints.tsv \
     validated-tuples.tsv quarantine.tsv draft-pairs.tsv census-arm-lib.sh \
     summarize-kernel-census.py summarize-census-controls.py \
     sample-clock-sidecar.py \

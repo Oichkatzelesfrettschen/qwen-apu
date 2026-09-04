@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # A creative fine-tune carrying the Qwen3.5 2B trunk with its
 # multi-token-prediction block intact: 25 declared blocks over 24 transformer
@@ -17,7 +20,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/Qwenseer-2B-GGUF"}
+destination_directory=${1:-"$qwen_home_models/Qwenseer-2B-GGUF"}
 artifact_name=Qwenseer-2B.Q4_K_M.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

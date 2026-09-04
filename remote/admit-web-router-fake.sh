@@ -48,6 +48,8 @@ fi
 
 output_directory=$1
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 model_id=${QWEN_ADMISSION_MODEL_ID:-qwen38-4b-distill}
 profile_id=${QWEN_ADMISSION_PROFILE:-web-balanced-admission}
 context=${QWEN_ADMISSION_CONTEXT:-8192}
@@ -55,8 +57,8 @@ server_port=${QWEN_SERVER_PORT:-8080}
 broker_port=${QWEN_WEB_BROKER_PORT:-8571}
 restore=${QWEN_ADMISSION_RESTORE:-1}
 registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
-model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
-state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$HOME/qwen-webui-state"}
+model_root=${QWEN_MODEL_ROOT:-"$qwen_home_models"}
+state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 
 # One admission owns the appliance at a time: the run tears the ordinary
 # router down, launches the web router, and restores the roster, and a second
@@ -227,9 +229,9 @@ if pgrep -x llama-server >/dev/null 2>&1; then
     jq -r '.data[].id' "$call_out" 2>/dev/null | sort >"$output_directory/ordinary-model-ids.txt" || true
     ordinary_server=$(readlink -f "/proc/$(pgrep -x llama-server | head -1)/exe")
 else
-    ordinary_server=${QWEN_LLAMA_SERVER:-"$HOME/src/llama.cpp-qwen-apu/build-appliance-current/bin/llama-server"}
+    ordinary_server=${QWEN_LLAMA_SERVER:-"$qwen_home_llama_server"}
     [ -x "$ordinary_server" ] || \
-        ordinary_server=$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server
+        ordinary_server=$qwen_home_llama_source/build-qwen-vulkan/bin/llama-server
 fi
 sha256sum "$ordinary_server" >"$output_directory/ordinary-llama-server.sha256"
 if [ -x "$script_directory/hash-load-closure.sh" ]; then

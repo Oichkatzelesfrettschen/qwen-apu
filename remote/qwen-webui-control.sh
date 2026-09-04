@@ -16,13 +16,15 @@ action=$1
 # raising probe p90 8.6-fold.
 profile=${2:-low-async}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 campaign_lock_descriptor_helper=$script_directory/open-verified-lock-descriptor.py
 tmux_socket=qwen-runtime
 tmux_session=qwen-webui
 # qwen-runtime was created from a fresh SSH login after render/video group
 # repair. Reusing its separate tmux server preserves offscreen Vulkan access
 # without inheriting the older qwen-admin server's supplementary group set.
-state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 # The served depth is the operational ceiling, admitted by the measured 24K
 # allocation of 2,974 MiB against this gate. QWEN_BIND_HOST and
 # QWEN_LATENCY_MODE reach the session script, so `start` reproduces the
@@ -41,12 +43,12 @@ server_port=${QWEN_SERVER_PORT:-8080}
 # reasons in 43.3% of the base model's tokens and reaches an answer 2.71 times
 # faster across the five-prompt suite. It ships text-only, so the vision profile
 # names the base checkpoint, whose projector travels beside it.
-model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"}
+model_path=${QWEN_MODEL_PATH:-"$qwen_home_models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"}
 # remote/promote-llama-build.sh gates a preset and points build-appliance-current
 # at it in one rename, so switching build arms or rolling one back leaves this
 # script untouched. The named directory is what the appliance was built with
 # before presets existed, and it serves until a promotion happens.
-llama_source_directory=${QWEN_LLAMA_SOURCE_DIRECTORY:-"${HOME:?}/src/llama.cpp-qwen-apu"}
+llama_source_directory=${QWEN_LLAMA_SOURCE_DIRECTORY:-"$qwen_home_llama_source"}
 llama_server=${QWEN_LLAMA_SERVER:-}
 # The server the start selects is resolved inside the start action alone, so
 # a stop or status reads no bundle and a tampered bundle cannot hold a
@@ -66,7 +68,7 @@ select_llama_server() {
     # refuses the start rather than silently serving whatever the build symlinks
     # name instead.
     if [ -z "$llama_server" ]; then
-        deployment_root=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}
+        deployment_root=${QWEN_DEPLOYMENT_ROOT:-"$qwen_home_deployments"}
         deployment_resolution=$("$script_directory/resolve-active-deployment.sh" \
             "$deployment_root" 2>&1) && deployment_resolution_status=0 || \
             deployment_resolution_status=$?
@@ -447,7 +449,7 @@ case $action in
                               QWEN_SEARXNG_START_TIMEOUT \
                               QWEN_SEARXNG_STOP_TIMEOUT \
                               QWEN_SEARXNG_ROOT QWEN_SEARXNG_SOURCE \
-                              QWEN_SEARXNG_PYTHON \
+                              QWEN_SEARXNG_PYTHON QWEN_HOME \
                               QWEN_IMAGE_SERVICE QWEN_IMAGE_SERVICE_PROGRAM \
                               QWEN_IMAGE_PROFILES_JSON QWEN_IMAGE_PAGE_ORIGIN \
                               QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE \

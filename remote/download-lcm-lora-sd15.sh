@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # The LCM-LoRA the ~4-step lane in the model funnel loads by naming it inside
 # the prompt: docs/lcm.md in the pinned stable-diffusion.cpp tree shows
@@ -19,7 +22,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/image/lcm-lora-sd15"}
+destination_directory=${1:-"$qwen_home_models/image/lcm-lora-sd15"}
 artifact_name=lcm-lora-sdv1-5.safetensors
 publisher_file_name=pytorch_lora_weights.safetensors
 artifact_path=$destination_directory/$artifact_name

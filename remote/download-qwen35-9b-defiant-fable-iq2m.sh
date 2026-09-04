@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # The two-bit rung of a 9B uncensored fine-tune, in the variant without the
 # multi-token-prediction block. The repository publishes an identically sized
@@ -19,7 +22,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/Qwen3.5-9B-Defiant-Fable-GGUF"}
+destination_directory=${1:-"$qwen_home_models/Qwen3.5-9B-Defiant-Fable-GGUF"}
 artifact_name=Qwen3.5-9B-The-Defiant-Fable-Uncnr-Heretic-NEO-MAX-IQ2_M.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

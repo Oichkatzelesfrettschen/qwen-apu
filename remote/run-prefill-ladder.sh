@@ -101,6 +101,8 @@ candidate_server=$2
 model_id=$3
 output_directory=$4
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 # The lease, the clock transition, and the sealed arm environment are the census
 # campaigns' own, so a rule tightened for either reaches this ladder.
 # shellcheck source=census-arm-lib.sh
@@ -109,7 +111,7 @@ registry_script=${QWEN_MODEL_REGISTRY_SCRIPT:-"$script_directory/model-registry.
 summarizer=${QWEN_PREFILL_LADDER_SUMMARIZER:-"$script_directory/summarize-prefill-ladder.py"}
 sidecar=$script_directory/sample-clock-sidecar.py
 sidecar_validator=$script_directory/validate-clock-sidecar.py
-models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
+models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
 radv_icd=${QWEN_RADV_ICD:-/usr/share/vulkan/icd.d/radeon_icd.x86_64.json}
 # The production submission profile `radv-low-priority-env.sh` names
 # `low-async`: it exports `GGML_VK_MAX_NODES_PER_SUBMIT=16` alone, leaving
@@ -408,7 +410,7 @@ fi
 # child reads the lock and no external-lease proof is published. This is also
 # the first of the still-refusable preflights, and the output directory is not
 # created until the last of them succeeds -- see the comment at that mkdir.
-workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 workload_lease=$workload_lease_state_directory/vulkan-workload.lock
 census_workload_lease_take "$workload_lease"
 printf 'prefill_ladder_lease=held path=%s\n' "$workload_lease"

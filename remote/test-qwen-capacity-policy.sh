@@ -433,6 +433,7 @@ identity_registry_race_marker=$temporary_directory/identity-registry-replaced
 identity_registry_race_output=$temporary_directory/identity-registry-race.out
 mkdir -p "$identity_registry_race_tools"
 cp "$policy" "$identity_registry_race_tools/qwen-capacity-policy.sh"
+cp "$script_directory/qwen-home.sh" "$identity_registry_race_tools/qwen-home.sh"
 cp "$script_directory/qwen-build-exec-guard.sh" \
     "$identity_registry_race_tools/qwen-build-exec-guard.sh"
 cp "$fabricated_registry" "$identity_registry_race_source"
@@ -1407,6 +1408,7 @@ authority_race_quarantine=$temporary_directory/authority-race-quarantine.tsv
 authority_race_output=$temporary_directory/authority-race.out
 mkdir -p "$authority_race_tools"
 cp "$policy" "$authority_race_tools/qwen-capacity-policy.sh"
+cp "$script_directory/qwen-home.sh" "$authority_race_tools/qwen-home.sh"
 cp "$script_directory/qwen-router-exec-guard.sh" \
     "$authority_race_tools/qwen-router-exec-guard.sh"
 # The build guard precedes the router guard on the exec chain, so the copied
@@ -1588,6 +1590,7 @@ carrier_output=$temporary_directory/identity-carrier.out
 mkdir -p "$carrier_tools"
 : >"$carrier_quarantine"
 cp "$policy" "$carrier_tools/qwen-capacity-policy.sh"
+cp "$script_directory/qwen-home.sh" "$carrier_tools/qwen-home.sh"
 cp "$script_directory/qwen-build-exec-guard.sh" \
     "$carrier_tools/qwen-build-exec-guard.sh"
 cat >"$carrier_tools/model-registry.sh" <<'REGISTRY'

@@ -48,7 +48,7 @@ usage() {
         "$0" >&2
     printf 'runtime mode also from QWEN_PROBE_RUNTIME_MODE, default standalone\n' >&2
     printf 'depths from QWEN_WEDGE_DEPTHS, default "8192 16384 32768"\n' >&2
-    printf 'model root from QWEN_MODEL_ROOT, default $HOME/models\n' >&2
+    printf 'model root from QWEN_MODEL_ROOT, default models/ under the runtime root (QWEN_HOME)\n' >&2
     printf 'QWEN_MMPROJ overrides the projector select-projector.sh resolves\n' >&2
     printf 'QWEN_PROJECTOR_ARM_TIMEOUT_S overrides the per-arm request limit,\n' >&2
     printf 'default 300 + depth/2 seconds; QWEN_PROJECTOR_KILL_AFTER_S\n' >&2
@@ -101,6 +101,8 @@ ledger_version=3
 model_id=$1
 output_directory=$2
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 registry_reader=${QWEN_MODEL_REGISTRY_READER:-$script_directory/model-registry.sh}
 projector_selector=${QWEN_PROJECTOR_SELECTOR:-$script_directory/select-projector.sh}
 clock_sampler=${QWEN_CLOCK_SAMPLER:-$script_directory/sample-gpu-clocks.sh}
@@ -118,7 +120,7 @@ else
         exit 1
     fi
 fi
-model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
+model_root=${QWEN_MODEL_ROOT:-"$qwen_home_models"}
 image_directory=${QWEN_QUALITY_IMAGE_DIRECTORY:-$script_directory/quality-images}
 depths=${QWEN_WEDGE_DEPTHS:-"8192 16384 32768"}
 decode_tokens=${QWEN_PROJECTOR_DECODE_TOKENS:-32}

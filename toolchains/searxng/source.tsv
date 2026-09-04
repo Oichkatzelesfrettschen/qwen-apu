@@ -1,0 +1,5 @@
+key	value
+upstream_url	https://github.com/searxng/searxng.git
+pinned_commit	a30b2d47492ab46ae82ce25ee62a31626565cf67
+requirements_sha256	03e1249410869abe216f68ca57262b1ab12a0aac5580341b5e138ffe0828a79b
+python_minimum	3.12

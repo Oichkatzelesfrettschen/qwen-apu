@@ -149,6 +149,8 @@ candidate_server=$2
 model_id=$3
 output_directory=$4
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 registry_reader=$script_directory/model-registry.sh
 runner=$script_directory/measure-served-decode.sh
 controls_summarizer=$script_directory/summarize-census-controls.py
@@ -342,7 +344,7 @@ case $regime_max_arms in
         exit 2
         ;;
 esac
-models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
+models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
 sidecar_period_ms=${QWEN_CENSUS_SIDECAR_PERIOD_MS:-20}
 sidecar_tolerance=${QWEN_CENSUS_SIDECAR_TOLERANCE:-0.25}
 sidecar_cost_ns=${QWEN_CENSUS_SIDECAR_COST_NS:-1000000}
@@ -542,7 +544,7 @@ fi
 # The launch chain runs from the synced runtime tree alone, so the arms launch
 # and tear down through that tree while this runner and its readers come from
 # wherever the operator checked out.
-runtime_remote=${QWEN_CENSUS_RUNTIME_REMOTE:-"${HOME:?}/qwen-laptop-setup/remote"}
+runtime_remote=${QWEN_CENSUS_RUNTIME_REMOTE:-"$script_directory"}
 artifact_ledger=${QWEN_MODEL_ARTIFACTS:-"$script_directory/model-artifacts.tsv"}
 if [ ! -r "$artifact_ledger" ] || [ -L "$artifact_ledger" ]; then
     printf 'model artifact ledger is unreadable or linked: %s\n' "$artifact_ledger" >&2
@@ -1055,7 +1057,7 @@ fi
 # arm list carries this campaign's own as QWEN_STATE_DIRECTORY, and a caller
 # naming a QWEN_VULKAN_WORKLOAD_LOCK outside it is refused here rather than
 # handing the arms a proof they cannot verify.
-workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 expected_workload_lease=$workload_lease_state_directory/vulkan-workload.lock
 workload_lease=${QWEN_VULKAN_WORKLOAD_LOCK:-$expected_workload_lease}
 if [ "$workload_lease" != "$expected_workload_lease" ]; then

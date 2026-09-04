@@ -1,11 +1,14 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 renice -n 19 -p $$ >/dev/null
 taskset -pc 0 $$ >/dev/null
 ionice -c 3 -p $$
 
-destination_directory=${1:-"${HOME:?}/models/Qwen3.5-4B-GGUF"}
+destination_directory=${1:-"$qwen_home_models/Qwen3.5-4B-GGUF"}
 artifact_name=Qwen3.5-4B-Q4_K_M.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

@@ -13,8 +13,10 @@ fi
 
 profile=${1:-low-async}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 control=$script_directory/qwen-webui-control.sh
-state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 server_port=${QWEN_SERVER_PORT:-8080}
 case $server_port in
@@ -64,7 +66,7 @@ fi
 # nothing the launch consumes. Exit 3 states that the root holds no
 # deployment at all, which keeps the promote-chain defaults; any other
 # refusal is a corrupt or tampered bundle and stops the launch here.
-deployment_root=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}
+deployment_root=${QWEN_DEPLOYMENT_ROOT:-"$qwen_home_deployments"}
 # An explicit QWEN_LLAMA_SERVER outranks the deployment, the rule
 # qwen-webui-control.sh applies, so a launch naming its server reads no
 # bundle at all.
@@ -105,7 +107,7 @@ case $deployment_resolution_status in
         ;;
 esac
 
-model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
+model_path=${QWEN_MODEL_PATH:-"$qwen_home_models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
 router_snapshot_owned=''
 control_start_entered=0
 cleanup_router_snapshot() {
@@ -452,6 +454,9 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
                 printf 'stop it with remote/searxng-launch.sh stop, or remote/qwen-teardown.sh\n' >&2
                 exit 2
             fi
+            # The instance is a runtime component, and its absence refuses here
+            # with the expected paths and the repair, ahead of the health gate.
+            "$script_directory/searxng-launch.sh" check >/dev/null || exit 2
             QWEN_WEB_SEARXNG=1
             QWEN_SEARXNG_PORT=$searxng_port
             export QWEN_WEB_SEARXNG QWEN_SEARXNG_PORT

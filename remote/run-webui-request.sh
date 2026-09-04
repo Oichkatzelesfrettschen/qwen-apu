@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
     printf 'usage: %s REQUEST_JSON [STATE_DIRECTORY [TIMEOUT_SECONDS]]\n' "$0" >&2
@@ -7,7 +10,7 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
 fi
 
 request_path=$1
-state_directory=${2:-"${HOME:?}/qwen-webui-state"}
+state_directory=${2:-"$qwen_home_state"}
 timeout_seconds=${3:-600}
 api_key_file=$state_directory/api.key
 response_path=$state_directory/real-response.json

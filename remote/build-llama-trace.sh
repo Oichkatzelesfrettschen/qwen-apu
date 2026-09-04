@@ -29,9 +29,11 @@ case ${1:-} in
 esac
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
-base_source=${1:-"${HOME:?}/src/llama.cpp"}
-trace_source=${2:-"${HOME:?}/src/llama.cpp-qwen-apu-trace"}
+base_source=${1:-"$qwen_home_llama_upstream"}
+trace_source=${2:-"$qwen_home_llama_trace"}
 # Repository source admission remains independent of the build environment.
 status_checker=$script_directory/check-trace-source-status.sh
 series_ledger=$script_directory/llama-patch-series.tsv

@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # SDXS-512, first in the model funnel: 512x512, batch 1, minimal steps.
 # The publisher ships a diffusers export rather than a merged checkpoint, and
@@ -25,7 +28,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/image/sdxs-512"}
+destination_directory=${1:-"$qwen_home_models/image/sdxs-512"}
 source_repository=IDKiro/sdxs-512-0.9
 source_revision=c332f05f60eb4b453de513be52c2a18c48d8cfe6
 

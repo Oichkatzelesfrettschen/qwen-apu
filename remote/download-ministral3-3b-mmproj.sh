@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # The vision encoder for the 3B, which the pinned build reaches through
 # PROJECTOR_TYPE_PIXTRAL. It carries the 0.4B that separates the published 3B
@@ -14,7 +17,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/Ministral-3-3B-Instruct-GGUF"}
+destination_directory=${1:-"$qwen_home_models/Ministral-3-3B-Instruct-GGUF"}
 artifact_name=mmproj-Ministral-3-3B-Instruct-f16.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

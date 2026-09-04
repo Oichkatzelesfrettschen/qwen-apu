@@ -20,7 +20,9 @@ if [ "$#" -gt 1 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-state_directory=${1:-${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+state_directory=${1:-${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}}
 image_directory=$state_directory/images
 artifact_directory=$image_directory/artifacts
 pid_file=$image_directory/image-service.pid

@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # The fine-tuned VAE the SD 1.5 quality-control lane loads through --vae, kept
 # as a pin separate from remote/download-sd15-base.sh because sd-cli's
@@ -15,7 +18,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/image/sd15-vae"}
+destination_directory=${1:-"$qwen_home_models/image/sd15-vae"}
 artifact_name=vae-ft-mse-840000-ema-pruned.safetensors
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

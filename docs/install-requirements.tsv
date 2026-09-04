@@ -1,10 +1,11 @@
 module	host	kind	name	version_pin	check_command	source_ref
+runtime-root	both	path	runtime root marker	-	test -f "$(remote/qwen-home.sh print qwen_home_marker)"	remote/qwen-home.sh,remote/runtime-root.sh,Makefile
+runtime-root	both	command	make	-	command -v make >/dev/null	Makefile
 launch-chain	laptop	command	tmux	-	command -v tmux >/dev/null	remote/qwen-webui-control.sh:174
 launch-chain	laptop	command	curl	-	command -v curl >/dev/null	remote/qwen-launch.sh:364,remote/qwen-webui-session.sh:255
 launch-chain	laptop	command	cc	-	command -v cc >/dev/null	remote/model-memory-preflight.sh:35
 launch-chain	laptop	path	/usr/include/vulkan/vulkan.h	-	test -r /usr/include/vulkan/vulkan.h	remote/model-memory-preflight.sh:36,remote/build-vulkan-graphics-service-probe.sh:18
 launch-chain	laptop	path	radeon_icd.x86_64.json	-	test -r "${QWEN_RADV_ICD:-/usr/share/vulkan/icd.d/radeon_icd.x86_64.json}"	remote/model-memory-preflight.sh:38
-launch-chain	laptop	optional-command	openssl	-	command -v openssl >/dev/null	remote/qwen-webui-session.sh:150,remote/qwen-webui-session.sh:152
 launch-chain	laptop	command	pgrep	-	command -v pgrep >/dev/null	remote/qwen-launch.sh:22,remote/qwen-teardown.sh:78
 launch-chain	laptop	command	ps	-	command -v ps >/dev/null	remote/monitor-qwen-runtime.sh:67,remote/watch-qwen-kernel-hazards.sh:25
 launch-chain	laptop	optional-command	ss	-	command -v ss >/dev/null	remote/qwen-teardown.sh:241
@@ -19,7 +20,7 @@ launch-chain	laptop	manual	pidfd process-group signal	-	python3 remote/signal-pr
 launch-chain	laptop	env	HOME	-	[ -n "${HOME:-}" ]	remote/qwen-launch.sh:17,remote/qwen-webui-control.sh:25
 launch-chain	laptop	sysfs	gpu_busy_percent	-	test -r "${QWEN_GPU_DEVICE_DIRECTORY:-/sys/class/drm/card1/device}/gpu_busy_percent"	remote/monitor-qwen-runtime.sh:97,remote/monitor-qwen-runtime.sh:164
 launch-chain	laptop	sysfs	mem_info_vram_used	-	test -r "${QWEN_GPU_DEVICE_DIRECTORY:-/sys/class/drm/card1/device}/mem_info_vram_used"	remote/monitor-qwen-runtime.sh:166,remote/monitor-qwen-runtime.sh:172
-launch-chain	laptop	path	vulkan-graphics-service-probe	-	test -x "${QWEN_VULKAN_LATENCY_PROBE:-$HOME/qwen-laptop-setup/build/vulkan-graphics-service-probe}"	remote/qwen-webui-session.sh:526,remote/qwen-webui-session.sh:545
+launch-chain	laptop	path	vulkan-graphics-service-probe	-	test -x "${QWEN_VULKAN_LATENCY_PROBE:-$(remote/qwen-home.sh print qwen_tree_root)/build/vulkan-graphics-service-probe}"	remote/qwen-webui-session.sh:526,remote/qwen-webui-session.sh:545
 launch-chain	laptop	command	dmesg	-	dmesg --color=never >/dev/null 2>&1	remote/watch-qwen-kernel-hazards.sh:83
 launch-chain	laptop	command	flock	-	command -v flock >/dev/null	remote/activate-deployment-bundle.sh:69
 launch-chain	laptop	command	python3	-	command -v python3 >/dev/null	remote/qwen-webui-session.sh:318,remote/open-verified-lock-descriptor.py:78
@@ -30,7 +31,7 @@ launch-chain	laptop	command	taskset	-	command -v taskset >/dev/null	remote/qwen-
 launch-chain	laptop	command	ionice	-	command -v ionice >/dev/null	remote/qwen-webui-session.sh:556
 launch-chain	laptop	sysfs	mem_info_gtt_used	-	test -r "${QWEN_GPU_DEVICE_DIRECTORY:-/sys/class/drm/card1/device}/mem_info_gtt_used"	remote/monitor-qwen-runtime.sh:94,remote/monitor-qwen-runtime.sh:165
 launch-chain	laptop	path	/dev/dri/renderD128	-	test -w /dev/dri/renderD128	remote/permissions-doctor.sh:9
-launch-chain	laptop	path	deployment-current	-	test -x "${QWEN_LLAMA_SERVER:-${QWEN_DEPLOYMENT_ROOT:-$HOME/qwen-deployments}/deployment-current/llama-server}"	remote/resolve-active-deployment.sh:32,remote/resolve-active-deployment.sh:33
+launch-chain	laptop	path	deployment-current	-	test -x "${QWEN_LLAMA_SERVER:-${QWEN_DEPLOYMENT_ROOT:-$(remote/qwen-home.sh print qwen_home_deployments)}/deployment-current/llama-server}"	remote/resolve-active-deployment.sh:32,remote/resolve-active-deployment.sh:33
 launch-chain	both	command	rsync	-	command -v rsync >/dev/null	remote/sync-runtime-tree.sh:85
 launch-chain	workstation	command	ssh	-	command -v ssh >/dev/null	remote/sync-runtime-tree.sh:105
 launch-chain	workstation	command	git	-	command -v git >/dev/null	remote/sync-runtime-tree.sh:43
@@ -41,7 +42,7 @@ llama-build	laptop	command	cc	-	command -v cc >/dev/null	remote/build-llama-vulk
 llama-build	laptop	command	c++	-	command -v c++ >/dev/null	remote/build-llama-vulkan.sh:32,remote/test-vulkan-submit-limit.sh:31
 llama-build	laptop	path	spirv.hpp	-	test -r /usr/include/spirv/unified1/spirv.hpp || test -r /usr/include/spirv-headers/spirv.hpp || test -r /usr/include/spirv.hpp	remote/build-llama-vulkan.sh:46
 llama-build	laptop	command	git	-	command -v git >/dev/null	remote/build-llama-vulkan.sh:25,remote/verify-llama-patch-series.sh:17
-llama-build	laptop	path	llama.cpp checkout	f280b26983ad0fdb705a0d9ebf0503e76f2899b0	test -d "${QWEN_LLAMA_SOURCE:-$HOME/src/llama.cpp-qwen-apu}/.git"	remote/build-llama-vulkan.sh:17,remote/build-llama-vulkan.sh:20
+llama-build	laptop	path	llama.cpp checkout	f280b26983ad0fdb705a0d9ebf0503e76f2899b0	test -d "${QWEN_LLAMA_SOURCE:-$(remote/qwen-home.sh print qwen_home_llama_source)}/.git"	remote/build-llama-vulkan.sh:17,remote/build-llama-vulkan.sh:20
 llama-build	laptop	command	renice	-	command -v renice >/dev/null	remote/verify-llama-patch-series.sh:9
 llama-build	laptop	command	ionice	-	command -v ionice >/dev/null	remote/verify-llama-patch-series.sh:11
 llama-build	laptop	command	taskset	-	command -v taskset >/dev/null	remote/verify-llama-patch-series.sh:10
@@ -57,8 +58,8 @@ ui-build	workstation	command	node	-	command -v node >/dev/null	remote/build-llam
 ui-build	workstation	command	npm	-	command -v npm >/dev/null	remote/build-llama-ui.sh:27,remote/build-llama-ui.sh:39
 ui-build	workstation	command	rsync	-	command -v rsync >/dev/null	remote/build-llama-ui.sh:27
 ui-build	workstation	command	ssh	-	command -v ssh >/dev/null	remote/build-llama-ui.sh:34
-measurement	laptop	path	llama-bench	-	test -x "${QWEN_LLAMA_BENCH:-$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench}"	remote/run-placement-sweep.sh:12,remote/run-placement-sweep.sh:23
-measurement	laptop	path	llama-cli	-	test -x "${QWEN_LLAMA_CLI:-$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-cli}"	remote/run-representation-arm.sh:33
+measurement	laptop	path	llama-bench	-	test -x "${QWEN_LLAMA_BENCH:-$(remote/qwen-home.sh print qwen_home_llama_bench)}"	remote/run-placement-sweep.sh:12,remote/run-placement-sweep.sh:23
+measurement	laptop	path	llama-cli	-	test -x "${QWEN_LLAMA_CLI:-$(remote/qwen-home.sh print qwen_home_llama_cli)}"	remote/run-representation-arm.sh:33
 measurement	laptop	command	cc	-	command -v cc >/dev/null	remote/build-vulkan-graphics-service-probe.sh:14
 measurement	laptop	path	/usr/include/vulkan/vulkan.h	-	test -r /usr/include/vulkan/vulkan.h	remote/build-vulkan-graphics-service-probe.sh:18
 measurement	laptop	sysfs	pp_dpm_sclk	-	test -r "${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}/pp_dpm_sclk"	remote/sample-gpu-clocks.sh:41,remote/sample-gpu-clocks.sh:64
@@ -80,26 +81,25 @@ web-lane	both	command	chromium	-	command -v "${QWEN_CHROMIUM:-chromium}" >/dev/n
 web-lane	laptop	env	QWEN_WEB_TOKEN_KEY_FILE	-	test -f "${QWEN_WEB_TOKEN_KEY_FILE:-/nonexistent}"	remote/qwen-web-launch.sh:253,remote/qwen-web-launch.sh:256
 web-lane	laptop	optional-env	QWEN_WEB_AUTHORIZER_READY	-	[ -n "${QWEN_WEB_AUTHORIZER_READY:-}" ]	remote/qwen-web-launch.sh:166
 web-lane	laptop	optional-env	QWEN_WEB_EXA_KEY_FILE	-	test -f "${QWEN_WEB_EXA_KEY_FILE:-/nonexistent}"	remote/web-mcp/server.py:3253
-web-lane	laptop	path	searx-pyenv python	-	test -x "${QWEN_SEARXNG_PYTHON:-/usr/local/searxng/searx-pyenv/bin/python}"	remote/searxng-control.sh:23
-web-lane	laptop	path	SEARXNG_SETTINGS_PATH target	-	test -e "${QWEN_SEARXNG_SETTINGS_PATH:-/etc/searxng/settings.yml}"	remote/searxng-control.sh:24,remote/searxng-control.sh:35
-web-lane	laptop	manual	searxng service user	-	sudo -n -u "${QWEN_SEARXNG_SERVICE_USER:-searxng}" true	remote/searxng-control.sh:22,remote/install-searxng.sh:68
-web-lane	laptop	command	openssl	-	command -v openssl >/dev/null	remote/install-searxng.sh:162
-web-lane	laptop	command	git	-	command -v git >/dev/null	remote/install-searxng.sh:82
+web-lane	laptop	path	searxng venv python	-	test -x "${QWEN_SEARXNG_PYTHON:-$(remote/qwen-home.sh print qwen_home_searxng_python)}"	remote/searxng-launch.sh,remote/install-searxng.sh
+web-lane	laptop	path	searxng source	-	test -d "${QWEN_SEARXNG_SOURCE:-$(remote/qwen-home.sh print qwen_home_searxng_source)}/.git"	remote/searxng-launch.sh,remote/install-searxng.sh
+web-lane	laptop	path	searxng toolchain pins	-	test -r toolchains/searxng/source.tsv && test -r toolchains/searxng/requirements.lock	remote/install-searxng.sh,toolchains/searxng/source.tsv
+web-lane	laptop	command	git	-	command -v git >/dev/null	remote/install-searxng.sh
 web-lane	both	python-module	yaml	-	python3 -c 'import yaml'	remote/test-searxng-config.sh:23
 web-lane	laptop	command	ss	-	command -v ss >/dev/null	remote/admit-web-router-fake.sh:451
-web-lane	laptop	optional-path	yacy install	-	test -d "${QWEN_YACY_INSTALL_DIRECTORY:-$HOME/yacy}"	remote/yacy-control.sh:1,remote/test-search-control.sh:25
+web-lane	laptop	optional-path	yacy install	-	test -d "${QWEN_YACY_INSTALL_DIRECTORY:-$(remote/qwen-home.sh print qwen_home_yacy)}"	remote/yacy-control.sh,remote/test-search-control.sh
 image-lane	laptop	command	cmake	-	command -v cmake >/dev/null	remote/build-stable-diffusion-vulkan.sh:62
 image-lane	laptop	command	ninja	-	command -v ninja >/dev/null	remote/build-stable-diffusion-vulkan.sh:62
 image-lane	laptop	command	glslc	-	command -v glslc >/dev/null	remote/build-stable-diffusion-vulkan.sh:62
 image-lane	laptop	command	vulkaninfo	-	command -v vulkaninfo >/dev/null	remote/build-stable-diffusion-vulkan.sh:62
-image-lane	laptop	path	stable-diffusion.cpp checkout	de298c225bed97c3f9026b73cd7b71e7879bd41b	test -d "${QWEN_IMAGE_SOURCE:-$HOME/src/stable-diffusion.cpp-qwen-apu}/.git"	remote/build-stable-diffusion-vulkan.sh:22,remote/build-stable-diffusion-vulkan.sh:23
-image-lane	laptop	path	sd-cli	-	test -x "${QWEN_IMAGE_RUNTIME:-$HOME/src/stable-diffusion.cpp-qwen-apu/build-raven2/bin/sd-cli}"	remote/run-image-standalone.sh:57
+image-lane	laptop	path	stable-diffusion.cpp checkout	de298c225bed97c3f9026b73cd7b71e7879bd41b	test -d "${QWEN_IMAGE_SOURCE:-$(remote/qwen-home.sh print qwen_home_image_source)}/.git"	remote/build-stable-diffusion-vulkan.sh:22,remote/build-stable-diffusion-vulkan.sh:23
+image-lane	laptop	path	sd-cli	-	test -x "${QWEN_IMAGE_RUNTIME:-$(remote/qwen-home.sh print qwen_home_image_runtime)}"	remote/run-image-standalone.sh:57
 image-lane	laptop	command	python3	-	command -v python3 >/dev/null	remote/image-service.py:1,remote/image-mcp/server.py:1
 image-lane	laptop	env	QWEN_IMAGE_PROFILES_JSON	-	test -r "${QWEN_IMAGE_PROFILES_JSON:-/nonexistent}"	remote/qwen-image-launch.sh:270,remote/qwen-image-launch.sh:272
-image-lane	laptop	path	vulkan-workload.lock directory	-	test -d "${QWEN_WEBUI_STATE_DIRECTORY:-$HOME/qwen-webui-state}"	remote/image-service.py:101,remote/image-service.py:656
+image-lane	laptop	path	vulkan-workload.lock directory	-	test -d "${QWEN_WEBUI_STATE_DIRECTORY:-$(remote/qwen-home.sh print qwen_home_state)}"	remote/image-service.py:101,remote/image-service.py:656
 model-fetch	both	command	curl	-	command -v curl >/dev/null	remote/download-qwen35-4b-q4km.sh:55,remote/fetch-candidate-artifact.sh:60
 model-fetch	both	command	sha256sum	-	command -v sha256sum >/dev/null	remote/download-qwen35-4b-q4km.sh:27,remote/fetch-candidate-artifact.sh:51
-model-fetch	laptop	path	llama-quantize	-	test -x "${QWEN_LLAMA_QUANTIZE:-$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-quantize}"	remote/derive-f16-artifact.sh:37,remote/derive-f16-artifact.sh:46
+model-fetch	laptop	path	llama-quantize	-	test -x "${QWEN_LLAMA_QUANTIZE:-$(remote/qwen-home.sh print qwen_home_llama_quantize)}"	remote/derive-f16-artifact.sh:37,remote/derive-f16-artifact.sh:46
 model-fetch	workstation	optional-env	GGUF_PY_PATH	-	test -d "${GGUF_PY_PATH:-/nonexistent}"	remote/test-gguf-tensor-census.py:37,remote/derive-f16-artifact.sh:25
 model-fetch	both	python-module	struct	-	python3 -c 'import struct'	remote/gguf-tensor-census.py:21
 model-fetch	both	python-module	hashlib	-	python3 -c 'import hashlib'	remote/admit-candidate-static.py:23,remote/gguf-tensor-census.py:18
@@ -121,6 +121,6 @@ repository-gate	both	command	ps	-	command -v ps >/dev/null	remote/repository-qua
 repository-gate	both	command	sha256sum	-	command -v sha256sum >/dev/null	remote/repository-quality-gates.sh:18
 repository-gate	both	command	chromium	-	command -v "${QWEN_CHROMIUM:-chromium}" >/dev/null	remote/repository-quality-gates.sh:26,remote/repository-quality-gates.sh:99
 repository-gate	both	optional-env	QWEN_CHROMIUM	-	[ -n "${QWEN_CHROMIUM:-}" ]	remote/repository-quality-gates.sh:26
-repository-gate	both	optional-path	$HOME/.qwen-gate-venv	-	test -x "$HOME/.qwen-gate-venv/bin/mypy"	remote/repository-quality-gates.sh:44,remote/repository-quality-gates.sh:63
+repository-gate	both	optional-path	gate venv	-	test -x "$(remote/qwen-home.sh print qwen_home_gate_venv)/bin/mypy"	remote/repository-quality-gates.sh:44,remote/repository-quality-gates.sh:63
 repository-gate	both	command	find	-	command -v find >/dev/null	remote/repository-quality-gates.sh:33
 repository-gate	both	command	awk	-	command -v awk >/dev/null	remote/check-ledger-evidence.sh:41

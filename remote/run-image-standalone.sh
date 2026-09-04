@@ -46,6 +46,8 @@ usage() {
 output_directory=$1
 model_path=$2
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # Every invocation of the pinned runtime, --list-devices included, runs under
 # the RADV ICD pin remote/radv-icd-env.sh derives, so the Vulkan loader
@@ -54,7 +56,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=remote/radv-icd-env.sh
 . "$script_directory/radv-icd-env.sh"
 
-runtime=${QWEN_IMAGE_RUNTIME:-"${HOME:?}/src/stable-diffusion.cpp-qwen-apu/build-raven2/bin/sd-cli"}
+runtime=${QWEN_IMAGE_RUNTIME:-"$qwen_home_image_runtime"}
 prompt=${QWEN_IMAGE_PROMPT:-'a red apple on a white table, product photography'}
 negative_prompt=${QWEN_IMAGE_NEGATIVE_PROMPT:-}
 image_width=${QWEN_IMAGE_WIDTH:-512}

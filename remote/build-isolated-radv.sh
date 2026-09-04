@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # Build one RADV carrying Mesa merge request 2115's target-aware ACO lowering
 # into a prefix of its own, and write the environment fragment that hands it to
@@ -44,7 +47,7 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 source_directory=$1
-prefix_root=${2:-"${HOME:?}/.local"}
+prefix_root=${2:-"$qwen_home_radv_root"}
 
 # The revision E5-S1's isa-post-2115 receipt was measured through, three merges
 # past the lowering, and the merge it must descend from.

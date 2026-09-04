@@ -59,12 +59,14 @@ fi
 model_id=$1
 campaign_directory=$2
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 runtime_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 lease_command=${QWEN_COMPUTE_STATE_LEASE:-$script_directory/compute-state-lease.sh}
 arm_command=${QWEN_POWER_FACTORIAL_ARM:-$script_directory/run-power-factorial-arm.sh}
 registry_reader=$script_directory/model-registry.sh
-state_directory=${QWEN_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
-models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
+state_directory=${QWEN_STATE_DIRECTORY:-"$qwen_home_state"}
+models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
 envelope_snapshot=${QWEN_POWER_ENVELOPE_SNAPSHOT:-$state_directory/power-envelope-snapshot.tsv}
 cpu_cap_snapshot=${QWEN_CPU_FREQUENCY_CAP_SNAPSHOT:-$state_directory/cpu-frequency-cap-snapshot.tsv}
 cooldown_seconds=${QWEN_POWER_FACTORIAL_COOLDOWN_S:-30}

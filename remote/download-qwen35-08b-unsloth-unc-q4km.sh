@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # An uncensored fine-tune of Qwen3.5-0.8B in the 1024/3584 runtime class the
 # served qwen35-08b row occupies. Its 24 blocks against the served row's 25
@@ -17,7 +20,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/Qwen3.5-0.8B-Uncensored-GGUF"}
+destination_directory=${1:-"$qwen_home_models/Qwen3.5-0.8B-Uncensored-GGUF"}
 artifact_name=Qwen3.5-0.8B.Q4_K_M.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

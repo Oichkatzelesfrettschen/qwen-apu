@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # A 1.2B language model with a 0.4B SigLIP2 vision encoder, published as a
 # first-party GGUF by the same publisher that trained it. The pinned build
@@ -16,7 +19,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/LFM2.5-VL-1.6B-GGUF"}
+destination_directory=${1:-"$qwen_home_models/LFM2.5-VL-1.6B-GGUF"}
 artifact_name=LFM2.5-VL-1.6B-Q4_K_M.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

@@ -90,7 +90,7 @@ set -eu
 
 if [ "$#" -gt 1 ]; then
     printf 'usage: %s [OUTPUT_INI]\n' "$0" >&2
-    printf 'model root comes from QWEN_MODEL_ROOT, default $HOME/models\n' >&2
+    printf 'model root comes from QWEN_MODEL_ROOT, default models/ under the runtime root (QWEN_HOME)\n' >&2
     printf 'web profile ledger comes from QWEN_WEB_PROFILES, default remote/web-profiles.tsv\n' >&2
     printf 'QWEN_WEB_AUTHORIZER_READY=1 admits its validator-gated rows as tool-bearing sections\n' >&2
     printf 'an admitted row requires QWEN_WEB_MCP_SERVER and, under provider exa, QWEN_WEB_SEARCH_KEY_FILE\n' >&2
@@ -103,12 +103,14 @@ if [ "$#" -gt 1 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 # shellcheck source=remote/web-preset-lib.sh
 . "$script_directory/web-preset-lib.sh"
 registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
-model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
+model_root=${QWEN_MODEL_ROOT:-"$qwen_home_models"}
 reason_source=${QWEN_QUARANTINE_REASONS:-$script_directory/../evidence/quarantine}
-output_ini=${1:-"${HOME:?}/qwen-webui-state/router-presets.ini"}
+output_ini=${1:-"$qwen_home_state/router-presets.ini"}
 include_quarantine=${QWEN_ROUTER_INCLUDE_QUARANTINE:-0}
 case $include_quarantine in
     0 | 1) ;;
@@ -153,7 +155,7 @@ searxng_allow_remote=${QWEN_WEB_SEARXNG_ALLOW_REMOTE:-}
 # shellcheck disable=SC2034
 token_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
 # shellcheck disable=SC2034
-web_state_directory=${QWEN_WEB_STATE_DIR:-"${HOME:?}/qwen-webui-state/web-mcp"}
+web_state_directory=${QWEN_WEB_STATE_DIR:-"$qwen_home_state/web-mcp"}
 # llama-server reads timeout_ms from the MCP configuration as the per-call
 # deadline for the child. The provider request times out at 20 s inside
 # server.py, this limit at 30 s, and the router's proxy read timeout at the
@@ -188,7 +190,7 @@ image_token_key_file=${QWEN_IMAGE_TOKEN_KEY_FILE:-}
 # QWEN_IMAGE_STATE_DIR or QWEN_IMAGE_SERVICE_SOCKET still overrides the
 # default; the runtime never reads either, so a value that diverges from the
 # launch's own derivation is caught at launch rather than served.
-image_state_directory=${QWEN_IMAGE_STATE_DIR:-"${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}/images"}
+image_state_directory=${QWEN_IMAGE_STATE_DIR:-"${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}/images"}
 # shellcheck disable=SC2034
 image_service_socket=${QWEN_IMAGE_SERVICE_SOCKET:-$image_state_directory/image-service.sock}
 # shellcheck disable=SC2034

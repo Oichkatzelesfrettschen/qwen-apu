@@ -52,6 +52,8 @@ fi
 
 output_directory=$1
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 model_id=${QWEN_ADMISSION_MODEL_ID:-qwen38-2b-distill}
 profile_id=${QWEN_ADMISSION_PROFILE:-web-image-admission}
 image_profile_id=${QWEN_ADMISSION_IMAGE_PROFILE:-image-sdxs-512-a}
@@ -77,8 +79,8 @@ server_port=${QWEN_SERVER_PORT:-8080}
 broker_port=${QWEN_WEB_BROKER_PORT:-8571}
 restore=${QWEN_ADMISSION_RESTORE:-1}
 registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
-model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
-state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$HOME/qwen-webui-state"}
+model_root=${QWEN_MODEL_ROOT:-"$qwen_home_models"}
+state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 source_image_ledger=${QWEN_IMAGE_PROFILES:-$script_directory/image-profiles.tsv}
 
 # One admission owns the appliance at a time, for the reason
@@ -254,9 +256,9 @@ if pgrep -x llama-server >/dev/null 2>&1; then
     ordinary_running=1
     ordinary_server=$(readlink -f "/proc/$(pgrep -x llama-server | head -1)/exe")
 else
-    ordinary_server=${QWEN_LLAMA_SERVER:-"$HOME/src/llama.cpp-qwen-apu/build-appliance-current/bin/llama-server"}
+    ordinary_server=${QWEN_LLAMA_SERVER:-"$qwen_home_llama_server"}
     [ -x "$ordinary_server" ] || \
-        ordinary_server=$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server
+        ordinary_server=$qwen_home_llama_source/build-qwen-vulkan/bin/llama-server
 fi
 record ordinary_router_recorded accepted "running=$ordinary_running server=$ordinary_server"
 
@@ -406,7 +408,7 @@ printf '%s\t%s\tui-mediated\t%s\t%s\t3\t1\t12000\tno\t%s\t%s\tui-mediated\tfake\
 # --height, --prompt, --output, --sampler, and --cfg. A path swapped without
 # its template reaches the runtime as an argument error, which reads as a
 # service defect rather than as the configuration mistake it is.
-image_runtime=${QWEN_IMAGE_RUNTIME:-"$HOME/src/stable-diffusion.cpp-qwen-apu/build-raven2/bin/sd-cli"}
+image_runtime=${QWEN_IMAGE_RUNTIME:-"$qwen_home_image_runtime"}
 case ${QWEN_IMAGE_RUNTIME_TEMPLATE:-} in
     sd-cli | fixture) runtime_template=$QWEN_IMAGE_RUNTIME_TEMPLATE ;;
     '')
@@ -426,7 +428,7 @@ if [ -n "${QWEN_IMAGE_MODEL_PATH:-}" ]; then
     image_model_path=$QWEN_IMAGE_MODEL_PATH
 else
     case $image_model_id in
-        sdxs-512) image_model_path=$HOME/models/image/sdxs-512 ;;
+        sdxs-512) image_model_path=$qwen_home_models/image/sdxs-512 ;;
         *)
             printf 'QWEN_IMAGE_MODEL_PATH is required for image profile %s model %s\n' \
                 "$image_profile_id" "$image_model_id" >&2

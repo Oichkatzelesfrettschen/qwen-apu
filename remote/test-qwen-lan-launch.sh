@@ -15,6 +15,8 @@ fi
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 failures=0
 work=$(mktemp -d)
+QWEN_HOME=$work/runtime
+export QWEN_HOME
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 report() {
@@ -25,6 +27,7 @@ report() {
 harness=$work/harness
 mkdir -p "$harness/web-mcp"
 cp "$script_directory/qwen-lan-launch.sh" "$harness/qwen-lan-launch.sh"
+cp "$script_directory/qwen-home.sh" "$harness/qwen-home.sh"
 cp "$script_directory/read-image-mcp-server.py" "$harness/read-image-mcp-server.py"
 : >"$harness/web-mcp/server.py"
 
@@ -154,7 +157,7 @@ if recorded 'profile=low-async' &&
     ! grep -qx 'QWEN_BIND_HOST=.*' "$launch_record" &&
     recorded 'QWEN_ROUTER=1' &&
     recorded 'QWEN_WEB_AUTHORIZER_READY=1' &&
-    recorded "QWEN_WEB_TOKEN_KEY_FILE=$home/qwen-web-token.key" &&
+    recorded "QWEN_WEB_TOKEN_KEY_FILE=$QWEN_HOME/state/web-token.key" &&
     recorded "QWEN_WEB_MCP_SERVER=$harness/web-mcp/server.py" &&
     recorded 'QWEN_WEB_PROVIDER=searxng' &&
     recorded "QWEN_IMAGE_PROFILES_JSON=$deployment/deployed-parameters.json" &&
@@ -164,14 +167,14 @@ else
     report exposure_environment_forwarded fail
     cat "$launch_record" >&2
 fi
-if [ "$(stat -c %a "$home/qwen-web-token.key")" = 600 ] &&
-    [ "$(wc -c <"$home/qwen-web-token.key")" -eq 65 ] &&
-    grep -qx '[0-9a-f]\{64\}' "$home/qwen-web-token.key"; then
+if [ "$(stat -c %a "$QWEN_HOME/state/web-token.key")" = 600 ] &&
+    [ "$(wc -c <"$QWEN_HOME/state/web-token.key")" -eq 65 ] &&
+    grep -qx '[0-9a-f]\{64\}' "$QWEN_HOME/state/web-token.key"; then
     report signing_key_minted ok
 else
     report signing_key_minted fail
 fi
-first_key=$(cat "$home/qwen-web-token.key")
+first_key=$(cat "$QWEN_HOME/state/web-token.key")
 if grep -q '^prior_session=none$' "$work/first.out" &&
     grep -q ' signing_key=minted ' "$work/first.out" &&
     grep -q ' address_source=default-route ' "$work/first.out" &&
@@ -192,7 +195,7 @@ else
     report second_launch_exit fail
     cat "$work/second.err" >&2
 fi
-if [ "$(cat "$home/qwen-web-token.key")" = "$first_key" ] &&
+if [ "$(cat "$QWEN_HOME/state/web-token.key")" = "$first_key" ] &&
     grep -q ' signing_key=present ' "$work/second.out" &&
     grep -q '^prior_session=torn_down$' "$work/second.out" &&
     [ "$(wc -l <"$teardown_record")" -eq 1 ] &&
@@ -387,7 +390,7 @@ else
     report existing_key_precheck_setup fail
     cat "$work/precheck.err" >&2
 fi
-: >"$home/qwen-web-token.key"
+: >"$QWEN_HOME/state/web-token.key"
 if run_wrapper >"$work/invalid-key.out" 2>"$work/invalid-key.err"; then
     report invalid_existing_key_refused_before_teardown fail
 else

@@ -66,7 +66,7 @@ usage() {
     printf 'QWEN_WEB_LAN_ADDRESS names the IPv4 literal to serve; the default is the source address of the default route\n' >&2
     printf 'QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 binds every interface rather than the one QWEN_WEB_LAN_ADDRESS names; the launch prints it loudly\n' >&2
     printf 'QWEN_WEB_LAN_TRUSTED_CONNECTIONS names a colon-separated list of NetworkManager connection UUIDs; lan-open-approved refuses with none declared\n' >&2
-    printf 'QWEN_WEB_TOKEN_KEY_FILE names the broker signing key, default $HOME/qwen-web-token.key, minted when absent\n' >&2
+    printf 'QWEN_WEB_TOKEN_KEY_FILE names the broker signing key, default state/web-token.key under the runtime root (QWEN_HOME), minted when absent\n' >&2
     printf 'QWEN_IMAGE_PROFILES_JSON names the validated image parameters; the default is the path the active deployment image server carries\n' >&2
     exit 2
 }
@@ -96,9 +96,11 @@ done
 [ "$#" -le 2 ] || usage
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 server_port=${QWEN_SERVER_PORT:-42069}
-signing_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-"$HOME/qwen-web-token.key"}
+signing_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-"$qwen_home_web_token_key"}
 web_mcp_server=${QWEN_WEB_MCP_SERVER:-"$script_directory/web-mcp/server.py"}
 web_provider=${QWEN_WEB_PROVIDER:-searxng}
 
@@ -249,6 +251,7 @@ if [ -L "$signing_key_file" ]; then
     exit 1
 fi
 if [ ! -e "$signing_key_file" ]; then
+    mkdir -p "$(dirname -- "$signing_key_file")"
     (
         umask 077
         od -An -tx1 -N32 /dev/urandom | tr -d ' \n' >"$signing_key_file"

@@ -100,7 +100,7 @@ census_arm_exec() {
     fi
     mv -- "$census_arm_record_new" "$census_arm_record" || return 1
     exec env -i \
-        PATH="${PATH:?}" HOME="${HOME:?}" TMPDIR=/tmp LC_ALL=C \
+        PATH="${PATH:?}" HOME="${HOME:?}" QWEN_HOME="${QWEN_HOME:?}" TMPDIR=/tmp LC_ALL=C \
         PYTHONDONTWRITEBYTECODE=1 \
         "$@"
 }

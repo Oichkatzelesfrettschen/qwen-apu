@@ -159,13 +159,13 @@ write_row "$fixture_claims" qwen38-4b-distill text-chat unsupported - second
 expect_rejection 'duplicate claim' 'duplicate claim at row'
 
 build_fixture_ledgers
-write_row "$fixture_claims" qwen38-4b-distill text-chat production /etc/passwd note
+write_row "$fixture_claims" qwen38-4b-distill text-chat production /etc/passwd note  # appliance-path: named
 expect_rejection 'evidence outside the tree' \
     'not a repository-relative path under evidence/'
 
 build_fixture_ledgers
 write_row "$fixture_claims" qwen38-4b-distill text-chat production \
-    evidence/../../etc/passwd note
+    evidence/../../etc/passwd note  # appliance-path: named
 expect_rejection 'evidence traversing out of the tree' \
     'not a repository-relative path under evidence/'
 

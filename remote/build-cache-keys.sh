@@ -16,7 +16,7 @@
 # The store both key spaces live under. QWEN_BUILD_CACHE_DIR moves it whole,
 # which is what a test uses to keep its packs out of the real cache.
 qwen_build_cache_directory() {
-    printf '%s\n' "${QWEN_BUILD_CACHE_DIR:-${HOME:?}/.cache/qwen-apu-build}"
+    printf '%s\n' "${QWEN_BUILD_CACHE_DIR:-${qwen_home_build_cache:?qwen-home.sh is sourced ahead of build-cache-keys.sh}}"
 }
 
 # A flag string reaches a key through one spelling: interior runs of blanks and

@@ -512,6 +512,7 @@ refuses clamped_depth_collision \
 sampler_run=$root/sampler-run
 mkdir -p "$sampler_run"
 cp -- "$ladder" "$sampler_run/run-prefill-ladder.sh"
+cp -- "$script_directory/qwen-home.sh" "$sampler_run/qwen-home.sh"
 chmod +x "$sampler_run/run-prefill-ladder.sh"
 ln -s -- "$script_directory/census-arm-lib.sh" "$sampler_run/census-arm-lib.sh"
 ln -s -- "$script_directory/summarize-prefill-ladder.py" \

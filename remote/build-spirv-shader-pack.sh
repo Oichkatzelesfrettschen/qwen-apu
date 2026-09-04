@@ -65,6 +65,8 @@ if [ -e "$output_directory" ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 glslc_program=${QWEN_SHADER_PACK_GLSLC:-}
 if [ -z "$glslc_program" ]; then
     toolchain_ledger=${QWEN_SHADERC_LEDGER:-$script_directory/shaderc-toolchain.tsv}
@@ -86,7 +88,7 @@ if [ -z "$glslc_program" ]; then
             "$toolchain_ledger" >&2
         exit 1
     }
-    glslc_program=${QWEN_SHADERC_PREFIX_ROOT:-"${HOME:?}/opt"}/$toolchain_prefix_name/bin/glslc
+    glslc_program=${QWEN_SHADERC_PREFIX_ROOT:-"$qwen_home_shaderc_root"}/$toolchain_prefix_name/bin/glslc
 fi
 if [ ! -x "$glslc_program" ]; then
     printf 'the pinned glslc is missing or not executable: %s\n' "$glslc_program" >&2

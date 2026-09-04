@@ -17,8 +17,10 @@ if [ "$#" -gt 1 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 exec "$script_directory/derive-f16-artifact.sh" \
     download-qwen38-2b-distill-bf16.sh \
     Qwen3.8-2B-BF16.gguf \
     Qwen3.8-2B-F16.gguf \
-    "${1:-"${HOME:?}/models/Qwen3.8-2B-Distill-GGUF"}"
+    "${1:-"$qwen_home_models/Qwen3.8-2B-Distill-GGUF"}"

@@ -48,13 +48,15 @@ candidate_server=$2
 model_id=$3
 output_directory=$4
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 # The arm environment is closed rather than scrubbed, and census_arm_exec owns
 # both halves of that: the record each arm keeps and the `env -i` it execs
 # under.
 # shellcheck source=census-arm-lib.sh
 . "$script_directory/census-arm-lib.sh"
 registry_script=${QWEN_MODEL_REGISTRY_SCRIPT:-"$script_directory/model-registry.sh"}
-models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
+models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
 server_port=${QWEN_WITNESS_PORT:-8099}
 run_count=${QWEN_WITNESS_RUNS:-2}
 predict_tokens=${QWEN_WITNESS_PREDICT:-128}

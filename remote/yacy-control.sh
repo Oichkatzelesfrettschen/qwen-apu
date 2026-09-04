@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # Explicit process control for the on-demand YaCy peer. No unit file,
 # crontab entry, or login hook starts this service: start and stop run only
@@ -22,7 +25,7 @@ if [ "$#" -ne 1 ]; then
 fi
 action=$1
 
-install_directory=${QWEN_YACY_INSTALL_DIRECTORY:-"${HOME:?}/opt/yacy"}
+install_directory=${QWEN_YACY_INSTALL_DIRECTORY:-"$qwen_home_yacy"}
 server_port=${QWEN_YACY_PORT:-8090}
 bind_address=${QWEN_YACY_BIND_ADDRESS:-127.0.0.1}
 start_timeout_seconds=${QWEN_YACY_START_TIMEOUT:-60}

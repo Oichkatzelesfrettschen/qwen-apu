@@ -16,7 +16,10 @@ set -eu
 # correctness defect rather than a quality trade, and the recorded token IDs are
 # what makes that checkable.
 
-output_directory=${1:-"${HOME:?}/qwen-speculation-matrix"}
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+output_directory=${1:-"$qwen_home_results/speculation-matrix"}
 if [ "$#" -gt 0 ]; then
     shift
 fi
@@ -36,9 +39,8 @@ for arm in "$@"; do
     fi
 done
 
-script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
-model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"}
+state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
+model_path=${QWEN_MODEL_PATH:-"$qwen_home_models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"}
 profile=${QWEN_PROFILE:-low-async}
 port=${QWEN_SERVER_PORT:-8080}
 endpoint=http://127.0.0.1:$port

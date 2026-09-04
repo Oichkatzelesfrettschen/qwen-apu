@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # The lowest published quantization of the balanced-text checkpoint, fetched to
 # test whether fewer streamed bytes convert to proportional decode on this APU.
@@ -18,7 +21,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/Qwen3.8-4B-Distill-Q2_K-GGUF"}
+destination_directory=${1:-"$qwen_home_models/Qwen3.8-4B-Distill-Q2_K-GGUF"}
 artifact_name=Qwen3.8-4B-i1-Q2_K.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

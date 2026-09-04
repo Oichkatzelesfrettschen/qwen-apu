@@ -49,9 +49,11 @@ deployment_root=$1
 output_tsv=$2
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 runtime_tree_root=${QWEN_RECEIPT_RUNTIME_TREE_ROOT:-$(CDPATH='' cd -- "$script_directory/.." && pwd)}
 model_registry=${QWEN_RECEIPT_MODEL_REGISTRY:-"$script_directory/models.tsv"}
-state_directory=${QWEN_RECEIPT_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+state_directory=${QWEN_RECEIPT_STATE_DIRECTORY:-"$qwen_home_state"}
 
 for required_tool in sha256sum awk sed; do
     if ! command -v "$required_tool" >/dev/null 2>&1; then
@@ -223,6 +225,34 @@ if [ -r "$session_status" ]; then
     fi
 fi
 
+# The runtime layout the launch ran under is part of the identity the
+# receipt binds: the root, the manifest runtime-root.sh writes over every
+# component the repository claims, the identity of each component that
+# manifest carries, and the doctor's verdict on what still sits outside the
+# root. A receipt over a machine whose history supplied a component the
+# declaration did not therefore reads legacy_paths_present=yes rather than
+# passing on a successful launch alone.
+runtime_root=$("$script_directory/qwen-home.sh" print qwen_home)
+runtime_manifest_output=$("$script_directory/runtime-root.sh" status) || {
+    printf 'runtime-root.sh status failed under %s; run make bootstrap\n' "$runtime_root" >&2
+    exit 1
+}
+runtime_manifest=$runtime_root/manifest.tsv
+runtime_manifest_sha256=$(printf '%s\n' "$runtime_manifest_output" | sed -n 's/.*runtime_manifest_sha256=//p')
+manifest_field() {
+    awk -F'\t' -v component="$1" -v column="$2" '$1 == component { print $column; exit }' "$runtime_manifest"
+}
+searxng_source_commit=$(manifest_field searxng-source 7)
+searxng_venv_identity=$(manifest_field searxng-venv 7)
+ryzenadj_digest=$(manifest_field ryzenadj 7)
+image_runtime_digest=$(manifest_field image-runtime 7)
+shaderc_digest=$(manifest_field shaderc 7)
+models_manifest_digest=$(manifest_field models 6)
+sudo_policy_digest=$(manifest_field sudo-policy 7)
+doctor_summary=$("$script_directory/runtime-root.sh" doctor | tail -n 1)
+legacy_paths_present=$(printf '%s\n' "$doctor_summary" | sed -n 's/^legacy_paths_present=\([a-z]*\).*/\1/p')
+foreign_owned_paths=$(printf '%s\n' "$doctor_summary" | sed -n 's/.*foreign_owned_paths=\([0-9]*\).*/\1/p')
+
 staging_output=$(mktemp)
 trap 'rm -f "$staging_output"' EXIT HUP INT TERM
 {
@@ -242,6 +272,18 @@ trap 'rm -f "$staging_output"' EXIT HUP INT TERM
         "$open_lan_policy_source"
     printf 'served_page_identity\t%s\t%s\n' "$served_page_identity" \
         "$served_page_source"
+    printf 'runtime_schema_version\t%s\t%s\n' 1 "$runtime_root/.qwen-runtime-root"
+    printf 'qwen_home\t%s\t%s\n' "$runtime_root" "$script_directory/qwen-home.sh"
+    printf 'runtime_manifest_sha256\t%s\t%s\n' "$runtime_manifest_sha256" "$runtime_manifest"
+    printf 'searxng_source_commit\t%s\t%s\n' "$searxng_source_commit" "$runtime_manifest"
+    printf 'searxng_venv_identity\t%s\t%s\n' "$searxng_venv_identity" "$runtime_manifest"
+    printf 'ryzenadj_digest\t%s\t%s\n' "$ryzenadj_digest" "$runtime_manifest"
+    printf 'image_runtime_digest\t%s\t%s\n' "$image_runtime_digest" "$runtime_manifest"
+    printf 'shaderc_digest\t%s\t%s\n' "$shaderc_digest" "$runtime_manifest"
+    printf 'models_manifest_digest\t%s\t%s\n' "$models_manifest_digest" "$runtime_manifest"
+    printf 'sudo_policy_digest\t%s\t%s\n' "$sudo_policy_digest" "$runtime_manifest"
+    printf 'legacy_paths_present\t%s\t%s\n' "$legacy_paths_present" "$script_directory/runtime-root.sh"
+    printf 'foreign_owned_paths\t%s\t%s\n' "$foreign_owned_paths" "$script_directory/runtime-root.sh"
 } >"$staging_output"
 receipt_sha256=$(sha256sum "$staging_output" | cut -d ' ' -f 1)
 

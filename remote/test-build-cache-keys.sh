@@ -11,6 +11,8 @@ set -eu
 # exercises.
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 work_directory=$(mktemp -d)
 trap 'rm -rf "$work_directory"' EXIT HUP INT TERM
 
@@ -165,7 +167,7 @@ expect_differs binary_key_on_shader_pack "$binary_baseline" \
 # function rather than spelling the default twice.
 expect_equal cache_directory_override "$work_directory/store" \
     "$(QWEN_BUILD_CACHE_DIR=$work_directory/store qwen_build_cache_directory)"
-expect_equal cache_directory_default "${HOME:?}/.cache/qwen-apu-build" \
+expect_equal cache_directory_default "$qwen_home_build_cache" \
     "$(QWEN_BUILD_CACHE_DIR='' qwen_build_cache_directory)"
 
 # The pack round trip. A pack answers with its own bytes or refuses, so the

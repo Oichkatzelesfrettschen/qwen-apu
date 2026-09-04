@@ -1,0 +1,184 @@
+# The runtime root
+
+A checkout of this repository is the complete declaration of the appliance,
+`make bootstrap` expands that declaration into one ignored runtime tree beside
+it, and production consumes only the checkout and that tree. This file states
+the layout, the manifest that enumerates it, the doctor that reports what sits
+outside it, the migration that moves the appliance onto it, and what the epoch
+receipt binds once it has.
+
+## Why the root is repo-local
+
+An audit of the appliance on 2026-09-04 found two incompatible installation
+doctrines in one tree. `remote/install-searxng.sh` ran every upstream install
+stage under sudo, created the `searxng` system account, wrote
+`/etc/searxng/settings.yml`, and cloned the source under `/usr/local/searxng`;
+`remote/searxng-launch.sh` meanwhile defaulted to a user-owned tree under
+`/opt/searxng-qwen-apu` with `searxng-src` and `searx-pyenv` beneath it, a
+layout no install on the appliance had produced. The first launch of a fresh
+epoch therefore failed at the health gate, and the launch that served that
+day did so through an environment override the restore chain never recorded.
+Around those two, the appliance had grown a home-directory sprawl -- fifteen
+llama.cpp trees under `~/src`, models under `~/models`, deployments and state
+as two further siblings, a RyzenAdj binary under `~/.local/bin`, a YaCy tree
+under `~/opt`, a signing key in `~` itself -- with no single declared root and
+no uninstall.
+
+`remote/qwen-home.sh` closes both. QWEN_HOME names one directory and defaults
+to `.runtime` beside `remote/`, so the tree that runs is the tree whose root
+is read and a second external directory never reopens the question of which
+is authoritative. An operator moves the root to another disk by exporting
+QWEN_HOME, and every derived path follows. Models stay outside Git and inside
+the root, since a self-contained repository means every byte is checked in or
+reproducibly generated or fetched by a checked-in rule, and 74 GB of weights
+belong to the second class.
+
+## Layout
+
+```text
+.runtime/
+├── .qwen-runtime-root   identity marker: runtime_schema_version, tree_root
+├── manifest.tsv         written by `make status`
+├── bin/                 built binaries and wrappers (ryzenadj)
+├── opt/                 reproducible third-party source and tool installs
+│   ├── searxng/{src,venv}
+│   ├── llama.cpp/            the patched serving tree, build-*/ beneath it
+│   ├── llama.cpp-upstream/   the pristine pinned clone the patch series applies to
+│   ├── llama.cpp-trace/, llama.cpp-census/
+│   ├── stable-diffusion.cpp/
+│   ├── ryzenadj/src, shaderc/, radv/, rocm/, yacy/, gate-venv/
+├── models/              immutable fetched checkpoints, pinned by download-*.sh
+├── deployments/         immutable deployment bundles and deployment-current
+├── state/               mutable application state, the session directory
+├── cache/               disposable caches (build, gate, pip, ryzenadj-build)
+├── tmp/                 process-lifetime scratch
+└── results/             measurement outputs a harness names by label
+```
+
+`remote/qwen-home.sh paths` prints every declared name with its value, and
+`remote/qwen_home.py` resolves the same root for a python child.
+
+## The manifest
+
+`make status` runs `remote/runtime-root.sh status`, which writes
+`$QWEN_HOME/manifest.tsv` with one row per component the repository claims
+ownership of, present or absent:
+
+```text
+component  kind  path  source  revision  source_sha256  installed_sha256  mutable  rebuild_command
+```
+
+`installed_sha256` is the digest of the installed object -- a binary's bytes,
+a source tree's git head, a venv's sorted `pip freeze`, a model tree's sorted
+path-and-size listing -- and reads `absent` where nothing is installed, so the
+manifest states what is missing rather than omitting it. `source_sha256` is
+the digest of the checked-in declaration the component is built from: the
+SearXNG pin file, the requirements lock, the patch series ledger, the model
+artifact ledger, the sudoers source. The manifest's own SHA-256 is printed on
+the last line and is the `runtime_manifest_sha256` the receipt carries.
+
+## The doctor
+
+`make doctor` classifies paths without touching any of them:
+
+- `declared`: the root and its layout directories, and the one persistent
+  root-owned object, `/etc/sudoers.d/90-qwen-agent`.
+- `legacy-known`: the enumerated predecessor paths a launch or build once wrote
+  outside the root, on the appliance and on the workstation alike, plus the
+  `searxng` account and its `/tmp/sxng_cache_*.db` engine caches.
+- `foreign`: an entry directly under the root that the layout does not name.
+- `transient-system-state`: the sysfs nodes a campaign writes and restores,
+  with their live values.
+
+The summary line `legacy_paths_present=yes|no legacy_paths=N
+foreign_owned_paths=N` is what the receipt binds. `make purge-legacy` removes
+exactly the enumerated `legacy-known` paths under
+`QWEN_PURGE_LEGACY_CONFIRM=yes`, refuses while no SearXNG instance stands
+under the root, removes the account only after proving nothing runs as it and
+no file outside the enumerated paths belongs to it, and wildcards nothing.
+`make uninstall` keeps `state/` and `models/`; `make purge` removes the root
+whole under `QWEN_RUNTIME_ROOT_CONFIRM` naming that exact path; both refuse a
+directory carrying no marker.
+
+## The ratchet
+
+`remote/check-appliance-paths.py` fails the repository gate where a tracked
+script under `remote/` or the Makefile names `/usr/local`, `/opt`, `/etc`,
+`/var`, `/srv`, `/home`, `$HOME/`, or `~/` outside a comment. The allowlist in
+`runtime/appliance-path-allowlist.tsv` admits system facts by prefix with a
+reason -- the sudo policy path, `/etc/os-release`, the PATH components of the
+closed campaign environment, the libpci header probe -- and a line marked
+`appliance-path: named` admits a path named on purpose: the doctor's legacy
+table, a sanitized ledger string, a fixture proving a foreign path is refused.
+`remote/test-check-appliance-paths.sh` seeds each class into a scratch
+repository and proves the verdicts.
+
+## The one privileged persistent object
+
+`runtime/sudoers/90-qwen-agent` is the checked-in source of
+`/etc/sudoers.d/90-qwen-agent`: a global sudo timestamp with a 60 minute
+timeout, so one `sudo -v` in the operator's session covers the SSH commands
+that administer the appliance. `make install-sudo-policy` copies it at mode
+0440 owned by root after `visudo -c` accepts it, `make verify-sudo-policy`
+requires the installed file to hash to the source at that mode and owner, and
+`make uninstall-sudo-policy` removes it. Every other privileged write -- a DPM
+level, a boost state, a KSM run state, an SMU budget -- stays transactional:
+snapshot, mutate, measure, restore, verify the restoration.
+
+## SearXNG under the root
+
+`toolchains/searxng/source.tsv` pins the upstream URL, the commit, the SHA-256
+of that commit's `requirements.txt`, and the python minimum;
+`toolchains/searxng/requirements.lock` is the full frozen environment that
+commit resolves to, 43 distributions captured from the verified appliance
+install of 2026-08-29. `make install-searxng` clones the pin into
+`opt/searxng/src`, proves the requirements digest, builds `opt/searxng/venv`
+with `pip install --no-deps` over the lock, and requires the sorted freeze to
+equal the lock byte for byte, so the venv identity the manifest records is the
+digest of a listing the install already required to match. `make
+verify-searxng` starts the instance through `remote/searxng-launch.sh` in a
+scratch state directory, requires `/healthz` and one JSON search on the
+loopback, and stops it. The launcher's `check` action reports an absent
+component as a block naming the root, the source, the interpreter, and
+`make install-searxng`, and both launchers run it ahead of the health gate.
+
+## Migration of the appliance
+
+The appliance moves onto the root in this order, each step proven before the
+next:
+
+1. `make bootstrap` in the appliance's own checkout, which lays out the root.
+2. `make install-searxng` and `make verify-searxng`.
+3. Models: `make install-models` verifies the pinned files in place under
+   `models/`; the existing 74 GB tree is moved there once and each download
+   script then proves the bytes by digest rather than fetching them again.
+4. `make install-ryzenadj`, `make install-image-runtime`, `make build-llama`.
+5. Mutable state (`state/`) migrated separately from reproducible products.
+6. A launch through the ordinary chain, `/healthz`, and a real search through
+   the broker and router.
+7. `make status`, whose manifest the epoch receipt binds.
+8. `make purge-legacy`, then `make doctor` reading `legacy_paths_present=no`.
+9. A relaunch and a second search.
+
+Predecessor paths are migration inputs, classified one by one: rebuild from
+source for toolchains and source trees, reuse by verified digest for the
+immutable model files, migrate for mutable state, retire for the rest.
+
+## What the receipt binds
+
+`remote/write-deployment-receipt.sh` adds, beside the fields it carried:
+
+```text
+runtime_schema_version  qwen_home  runtime_manifest_sha256
+searxng_source_commit   searxng_venv_identity
+ryzenadj_digest  image_runtime_digest  shaderc_digest
+models_manifest_digest  sudo_policy_digest
+legacy_paths_present  foreign_owned_paths
+```
+
+The reproducibility statement a receipt then makes: clone this exact git
+tree, run its declared expansion, verify the runtime manifest, and the
+resulting environment has the same logical components and identities with no
+reliance on undocumented machine history. A receipt reading
+`legacy_paths_present=yes` is a continuity check, and the next production
+epoch is certified only over one reading `no`.

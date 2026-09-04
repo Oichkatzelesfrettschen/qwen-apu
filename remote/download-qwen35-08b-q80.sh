@@ -16,8 +16,10 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/Qwen3.5-0.8B-GGUF"}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+destination_directory=${1:-"$qwen_home_models/Qwen3.5-0.8B-GGUF"}
 identity_row=$("$script_directory/model-artifact-identity.sh" qwen35-08b)
 tab=$(printf '\t')
 IFS="$tab" read -r _model_id model_file expected_bytes expected_sha256 \

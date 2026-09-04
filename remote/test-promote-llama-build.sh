@@ -113,6 +113,7 @@ esac
 failing_closure_tools=$work_directory/failing-closure-tools
 mkdir -p "$failing_closure_tools"
 cp "$promoter" "$failing_closure_tools/promote-llama-build.sh"
+cp "$script_directory/qwen-home.sh" "$failing_closure_tools/qwen-home.sh"
 # The promoter resolves the checkpoint policy beside itself through the
 # canonical validator, so a copied tools directory carries the ledger, the
 # validator, and the model registry, and this arm measures the closure failure

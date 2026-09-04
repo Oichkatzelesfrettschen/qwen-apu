@@ -17,7 +17,9 @@ ionice -c 3 -p $$ >/dev/null 2>&1 || true
 build_jobs=${QWEN_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN)}
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-source_directory=${1:-"${HOME:?}/src/stable-diffusion.cpp-qwen-apu"}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+source_directory=${1:-"$qwen_home_image_source"}
 build_directory=${2:-$source_directory/build-raven2}
 expected_commit=de298c225bed97c3f9026b73cd7b71e7879bd41b
 expected_ggml_commit=8e800cef2948046cc47f9db6090491c6128ca42c

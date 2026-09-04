@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # One reversible power-envelope term for the compute-state transaction.
 #
@@ -66,8 +69,8 @@ if [ "$#" -lt 1 ]; then
     usage
 fi
 
-ryzenadj_command=${QWEN_RYZENADJ:-"${HOME:?}/.local/bin/ryzenadj"}
-state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+ryzenadj_command=${QWEN_RYZENADJ:-"$qwen_home_ryzenadj"}
+state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 snapshot_file=${QWEN_POWER_ENVELOPE_SNAPSHOT:-$state_directory/power-envelope-snapshot.tsv}
 tctl_ceiling_c=${QWEN_POWER_ENVELOPE_TCTL_CEILING_C:-95}
 # The power-metrics table holds floats, so a read-back is compared inside an

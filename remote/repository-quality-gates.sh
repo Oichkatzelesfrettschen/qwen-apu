@@ -96,6 +96,9 @@ trap gate_cell_cleanup EXIT
 # static reader can name.
 gate_cell evidence-manifest universal remote/refresh-evidence-manifest.sh \
     'remote/refresh-evidence-manifest.sh --check'
+gate_cell appliance-paths universal \
+    'remote/check-appliance-paths.py runtime/appliance-path-allowlist.tsv' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/check-appliance-paths.py'
 gate_cell text-policy universal remote/check-text-policy.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/check-text-policy.py'
 
@@ -110,6 +113,21 @@ gate_cell python-syntax files "$python_files" gate_python_syntax_walk
 gate_cell test-repository-gate-cells derive \
     'remote/test-repository-gate-cells.sh remote/gate-cell-key.sh' \
     remote/test-repository-gate-cells.sh
+gate_cell test-qwen-home derive \
+    'remote/test-qwen-home.sh remote/qwen-home.sh remote/qwen_home.py' \
+    remote/test-qwen-home.sh
+gate_cell test-runtime-root derive \
+    'remote/test-runtime-root.sh remote/runtime-root.sh remote/qwen-home.sh' \
+    remote/test-runtime-root.sh
+gate_cell test-check-appliance-paths derive \
+    'remote/test-check-appliance-paths.sh remote/check-appliance-paths.py runtime/appliance-path-allowlist.tsv' \
+    remote/test-check-appliance-paths.sh
+gate_cell test-sudo-policy derive \
+    'remote/test-sudo-policy.sh remote/sudo-policy.sh runtime/sudoers/90-qwen-agent' \
+    remote/test-sudo-policy.sh
+gate_cell test-install-searxng derive \
+    'remote/test-install-searxng.sh remote/install-searxng.sh remote/searxng-launch.sh' \
+    remote/test-install-searxng.sh
 gate_cell test-open-verified-lock-descriptor derive \
     remote/test-open-verified-lock-descriptor.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-open-verified-lock-descriptor.py'

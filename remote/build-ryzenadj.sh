@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # RyzenAdj built from one pinned revision into the appliance's own bin directory.
 #
@@ -41,12 +44,12 @@ fi
 
 ryzenadj_repository=${QWEN_RYZENADJ_REPOSITORY:-https://github.com/FlyGoat/RyzenAdj.git}
 ryzenadj_revision=${QWEN_RYZENADJ_REVISION:-5775fc3e6dbb25c7030ee2d100a1bdd6e8bf2d0a}
-ryzenadj_source=${1:-${QWEN_RYZENADJ_SOURCE:-"${HOME:?}/src/RyzenAdj"}}
+ryzenadj_source=${1:-${QWEN_RYZENADJ_SOURCE:-"$qwen_home_ryzenadj_source"}}
 # The build directory sits outside the checkout, because the cleanliness check
 # below refuses an untracked file and a build tree inside the source would make
 # every second run refuse its own first run's output.
-ryzenadj_build=${QWEN_RYZENADJ_BUILD:-"${XDG_CACHE_HOME:-${HOME:?}/.cache}/qwen-ryzenadj-build"}
-ryzenadj_install=${QWEN_RYZENADJ_INSTALL:-"${HOME:?}/.local/bin/ryzenadj"}
+ryzenadj_build=${QWEN_RYZENADJ_BUILD:-"$qwen_home_cache/ryzenadj-build"}
+ryzenadj_install=${QWEN_RYZENADJ_INSTALL:-"$qwen_home_ryzenadj"}
 
 case $ryzenadj_revision in
     ????????????????????????????????????????)
