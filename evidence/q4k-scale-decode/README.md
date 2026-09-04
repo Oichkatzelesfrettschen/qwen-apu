@@ -433,10 +433,24 @@ about that compiler.
 ## The device answered, and the answer is smaller than this page predicts
 
 `evidence/raven2-vulkan-kernel-census/q4k-scale-decode/` carries the served run of both
-patches together on `qwen38-2b-distill`: **+1.83%**, nominal 95% interval **+1.63% to
-+2.04%**, four comparable pairs, zero arm failures, one selected graphics clock on every arm.
-The whole interval sits below the +5% promotion bound, so the served verdict is `refuted` and
-the candidates stay in this lane rather than reaching the serving preset.
+patches together on all three runtime classes, each refuted on its own interval:
+
+| class | recipe | mean paired delta | nominal 95% interval |
+| --- | --- | ---: | --- |
+| `qwen38-2b-distill` | Q4_K_M, 48.91% Q4_K by byte | +1.83% | +1.63% to +2.04% |
+| `qwen35-08b` | Q8_0, no Q4_K bytes | +0.26% | -0.28% to +0.80% |
+| `qwen38-4b-distill` | Q4_K_M | -0.02% | -0.10% to +0.06% |
+
+Four comparable pairs and zero arm failures on each, one selected graphics clock on every
+arm. Every interval sits below the +5% promotion bound, so the served verdict is `refuted`
+and the candidates stay in this lane rather than reaching the serving preset.
+
+The two Q4_K_M rows are the result this page did not predict. Both dispatch the shader these
+patches rewrite, both ran against one control from one binary, and they separate by 1.85
+points with intervals nowhere near touching. What the shorter mat-vec is worth is a property
+of the checkpoint rather than of the shader, and the ordering candidate is memory-boundness:
+the 2B achieves 10.41 GB/s where the 4B achieves 8.11, and the further a checkpoint sits from
+issue-bound the less an issue-side saving returns.
 
 Correctness held exactly. `run-kernel-delta-witness.sh` under the `margin` contract returned
 the control's token-id array bit-for-bit on all six prompts, with margin retention 1 and a

@@ -1,0 +1,30 @@
+served_ab=refuted
+model_id=qwen38-4b-distill
+replicates=4
+bound=0.05
+mean_delta=-0.0002
+ci_low=-0.0010
+ci_high=+0.0006
+comparable_pairs=4
+arm_failures=0
+unclassified=0
+cooldown_timeouts=0
+control_server_sha256=5dd86b90154f6143a5303efd2590b9268a0a5e3e908c4d6791f1fde03a4782c2
+candidate_server_sha256=2955d6dd653f3a5cfee6573c1361cf8b694c066905cae1622e4de0d6cb47e98b
+ab_mode	served
+bracket_subject	mul_mat_vec_q4_k_f32_f32
+bracket_verdict	-
+bracket_mean_delta	-
+bracket_ci_low	-
+bracket_ci_high	-
+bracket_pairs	-
+bracket_union_verdict	-
+bracket_bound	0.02
+null_pipeline	mul_mat_vec_q6_k_f32_f32
+null_verdict	-
+null_union_verdict	-
+null_mean_delta	-
+null_pairs	-
+module_identity	-
+response_identity	held
+response_pairs	4

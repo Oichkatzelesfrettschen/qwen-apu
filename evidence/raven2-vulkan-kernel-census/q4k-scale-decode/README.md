@@ -1,15 +1,14 @@
-# The Q4_K scale-decode candidates on the device: refuted at +1.83%
+# The Q4_K scale-decode candidates on the device: refuted on all three classes
 
 ```text
 measurement_status=served
 served_ab_verdict=refuted
-model_id=qwen38-2b-distill
-mean_delta=+0.0183
-ci=[+0.0163,+0.0204]
 bound=0.05
-comparable_pairs=4
-arm_failures=0
-witness=held contract=margin
+qwen38-2b-distill    mean_delta=+0.0183 ci=[+0.0163,+0.0204] pairs=4
+qwen35-08b           mean_delta=+0.0026 ci=[-0.0028,+0.0080] pairs=4
+qwen38-4b-distill    mean_delta=-0.0002 ci=[-0.0010,+0.0006] pairs=4
+arm_failures=0 on each verdict-bearing run
+witness=held contract=margin on all three classes
 control_server_sha256=5dd86b90154f6143a5303efd2590b9268a0a5e3e908c4d6791f1fde03a4782c2
 candidate_server_sha256=2955d6dd653f3a5cfee6573c1361cf8b694c066905cae1622e4de0d6cb47e98b
 candidate_series=llama-vulkan-q4k-scale-word-select.patch,llama-vulkan-q4k-superblock-loop-licm.patch
@@ -21,11 +20,19 @@ shim and read the compiler: the served shape's superblock loop body falls from
 395 instructions to 349, its VGPR allocation from 64 to 48, and the driver's
 own occupancy statistic from 4 subgroups per SIMD to 5, which that page calls
 the largest effect on it. Nothing there executed a submission. This directory
-is the submission, and it answers the question the compiler cannot: the served
-64-token decode moves +1.83%, with a nominal 95% interval of +1.63% to +2.04%
-that lies entirely below the repository's +5% promotion bound. The verdict is
-**refuted**, and the candidates return to the shader lane rather than to the
-serving preset.
+is the submission, and it answers the question the compiler cannot.
+
+The served 64-token decode of the primary class moves +1.83%, over a nominal
+95% interval of +1.63% to +2.04% that lies entirely below the repository's +5%
+promotion bound, so the verdict is **refuted** and the candidates return to the
+shader lane rather than to the serving preset. Two further classes ran and each
+is refuted on its own interval, and together the three carry a result larger
+than the verdict: the 0.8B holds no Q4_K bytes and measures the null, while the
+4B is Q4_K_M like the 2B, dispatches the same patched shader, and measures
+-0.02% over an interval of +/-0.08%. One quantization recipe, one binary, one
+control, and two checkpoints that separate by 1.85 points with intervals nowhere
+near touching. What a shorter Q4_K mat-vec is worth is therefore a property of
+the checkpoint rather than of the shader, and the sections below take that apart.
 
 ## Correctness first: the candidate returns the control's own tokens
 
@@ -194,6 +201,68 @@ machine at about +/-0.5% of a paired mean. The 2B's +1.83% with an interval of
 Q4_K arm's gain is an effect rather than a scheduling artifact. Reading the two
 arms together is what licenses that statement; neither reads it alone.
 
+## The 4B carries the same shader and none of the gain
+
+The third class is the one that changes the reading. `qwen38-4b-distill` is
+Q4_K_M like the 2B, so it dispatches the same patched `mul_mat_vec_q4_k`, and
+the served comparison returns **`refuted mean_delta=-0.0002
+ci=[-0.0010,+0.0006]`** over four comparable pairs with zero arm failures. The
+four paired deltas are `-0.0003 +0.0003 +0.0000 -0.0007`, an interval half-width
+of 0.08%, and the token identity witness held on this class as it did on the
+other two.
+
+| slot | arm | tok/s |
+| ---: | --- | ---: |
+| 1 | C | 3.381 |
+| 2 | K | 3.380 |
+| 3 | K | 3.379 |
+| 4 | C | 3.378 |
+| 5 | C | 3.379 |
+| 6 | K | 3.379 |
+| 7 | K | 3.378 |
+| 8 | C | 3.381 |
+
+Two checkpoints of one quantization recipe, running one binary against one
+control, separate by +1.83% and -0.02% with intervals that do not come close to
+touching. That refutes the reading a single class invites -- that a shorter
+Q4_K mat-vec is worth a fixed fraction of any Q4_K token -- and it does so
+inside one session, on one machine, at one clock.
+
+The candidate account is memory-boundness, and the three points order by it.
+This tree measures the 2B achieving 10.41 GB/s against the 4B's 8.11 on
+four-block means, and here the 2B decodes at 9.85 tok/s where the 4B decodes at
+3.38, a 296 ms token against a 101 ms one over 2.58 GiB of weights against 1.21.
+The further a checkpoint sits from the issue-bound end, the less an issue-side
+saving returns: the instruction-count model reads about 6%, the 2B delivers
+1.83%, and the 4B delivers nothing measurable. The 0.8B null sits outside that
+ordering, since it dispatches the shader never.
+
+That account is an observation rather than an established mechanism, and its
+falsifier is available: architecture width, layer count, and tensor shape change
+with size across these two rows alongside the streaming rate, so a third Q4_K_M
+checkpoint whose achieved GB/s sits between them should land between +1.83% and
+0% if streaming rate orders the effect, and anywhere else if it does not. A
+kernel-delta bracket run on both classes would settle it more directly by
+reading the Q4_K pipeline's own exclusive time rather than the whole token.
+
+### The first attempt is retained, and thermal state is why it failed
+
+`served-ab-4b-20260903T2020Z` is the first attempt and it reads
+`served_ab=failed arm_failures=1 comparable_pairs=0`. Slot 6 was refused on
+`clock_sidecar`: its sampler record carries one 129.4 ms gap inside the request
+window against the 100 ms bound `auto` imposes, and that arm ran at a mean 82.1
+C reaching 90.0 C with a modal clock share of 0.2470, against slot 7's 73.7 C
+mean, 75.0 C maximum, and 0.9676 share. The arm decoded 2.926 tok/s where every
+other arm of that run held 3.377 to 3.381, and slot 8's control fell to 3.282
+for the same reason, which is what put a spurious +2.89% into the surviving
+deltas the summarizer declined to judge.
+
+The 4B is the largest checkpoint this campaign serves and it runs the machine
+hottest, so it is the class most likely to cross out of a stable clock regime
+mid-run. Both records are kept: a refused arm is what steers the next run's
+scheduling, and the re-run above started from a cooler machine at 71.6 C and
+completed every arm.
+
 ## The eight-row shape is not a served arm
 
 `evidence/q4k-scale-decode/README.md` Table 2 compiles the same two candidates
@@ -216,6 +285,11 @@ served-ab-20260903T1953Z/              16 warmups and 8 arms, policy auto,
 kernel-delta-witness-08b-20260903T2004Z/  the same six prompts, qwen35-08b
 served-ab-08b-20260903T2004Z/          16 warmups and 8 arms, policy auto,
                                        qwen35-08b, the Q8_0 null
+kernel-delta-witness-4b-20260903T2020Z/   the same six prompts, qwen38-4b-distill
+served-ab-4b-20260903T2020Z/           the first 4B attempt, one arm refused on
+                                       clock_sidecar at 90 C, no verdict
+served-ab-4b-r2-20260903T2115Z/        the 4B re-run from a cooler machine,
+                                       8 arms, four comparable pairs
 ```
 
 Paths in every retained record carry `$HOME` for the serving user's home and
