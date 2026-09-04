@@ -739,6 +739,16 @@ router_snapshot_owned=''
 control_start_entered=0
 
 sed -n '1p' "$state_directory/session.status"
+# The boundary this launch settled on is the one fact every other line here
+# elaborates, so it prints first and by itself: lan-authenticated is the
+# fallback every launch reaches without naming anything, and lan-open-approved
+# is the explicit household opt-in that removes the bearer from every peer on
+# the network.
+if [ "${QWEN_WEB_LAN:-0}" = 1 ] && [ "${QWEN_WEB_LAN_OPEN:-0}" = 1 ]; then
+    printf 'LAN BOUNDARY: lan-open-approved -- every reachable peer chats, consumes model time, and fetches artifacts with no bearer\n'
+elif [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+    printf 'LAN BOUNDARY: lan-authenticated -- the Web UI bearer is required on every route\n'
+fi
 # The exposure names the page by the host an operator keeps rather than by the
 # whole set of addresses this machine answers on. The mDNS name outlives a DHCP
 # lease, so it leads and the leased literal follows it; a launch that resolved
