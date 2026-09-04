@@ -213,6 +213,48 @@ else
     report 1 'llama-bench is reached only after every lower rung passed'
 fi
 
+# --- device-libraries: a gfx900 compatibility shim for a gfx902 request must
+# fail rather than pass on an unrelated nonempty bitcode list -----------------
+shim_prefix=$temporary_directory/shim-prefix
+make_prefix "$shim_prefix" with-rocminfo with-hipblas
+shim_output=$temporary_directory/shim-output
+QWEN_ROCM10_FAKE_BITCODE_SUFFIX=900 "$ladder" "$shim_prefix" "$shim_output" >/dev/null 2>&1
+shim_rungs=$(cut -f1 "$shim_output/ladder.tsv" | tail -n +2 | tr '\n' ' ')
+if [ "$shim_rungs" = 'compile enumerate vector-add wave64-lds device-libraries ' ] &&
+    grep -q '^device-libraries	.*	fail	' "$shim_output/ladder.tsv"
+then
+    report 0 'device-libraries fails a gfx900 bitcode set resolved for a gfx902 request'
+else
+    report 1 "device-libraries fails a gfx900 bitcode set resolved for a gfx902 request (got: $shim_rungs)"
+fi
+
+# --- LD_LIBRARY_PATH carries no ambient entry -------------------------------
+ambient_lib_prefix=$temporary_directory/ambient-lib-prefix
+make_prefix "$ambient_lib_prefix" with-rocminfo with-hipblas
+ambient_lib_output=$temporary_directory/ambient-lib-output
+ambient_lib_log=$temporary_directory/ambient-lib.log
+LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64 \
+QWEN_ROCM10_FAKE_LOG=$ambient_lib_log \
+    "$ladder" "$ambient_lib_prefix" "$ambient_lib_output" >/dev/null 2>&1
+if grep -q 'LD_LIBRARY_PATH=/opt/rocm' "$ambient_lib_log"; then
+    report 1 'an ambient LD_LIBRARY_PATH entry does not survive into a rung invocation'
+else
+    report 0 'an ambient LD_LIBRARY_PATH entry does not survive into a rung invocation'
+fi
+
+# --- a rerun into an existing OUTPUT_DIR does not read a prior compile's
+# stale .s file -------------------------------------------------------------
+rerun_prefix=$temporary_directory/rerun-prefix
+make_prefix "$rerun_prefix" with-rocminfo with-hipblas
+rerun_output=$temporary_directory/rerun-output
+QWEN_ROCM10_FAKE_MAD_MIX_PRESENT=1 "$ladder" "$rerun_prefix" "$rerun_output" >/dev/null 2>&1
+"$ladder" "$rerun_prefix" "$rerun_output" >/dev/null 2>&1
+if grep -q '^compile	.*v_mad_mix_f32_selected=no' "$rerun_output/ladder.tsv"; then
+    report 0 'a rerun into the same OUTPUT_DIR reports the current compile, not a stale one'
+else
+    report 1 'a rerun into the same OUTPUT_DIR reports the current compile, not a stale one'
+fi
+
 # --- llama-bench: an absent binary fails and is the terminal rung ----------
 absent_bench_prefix=$temporary_directory/absent-bench-prefix
 make_prefix "$absent_bench_prefix" with-rocminfo with-hipblas

@@ -24,6 +24,11 @@ set -eu
 # .s file carries v_mad_mix_f32 (1) or omits it (0, the default, matching
 # hp14-raven2-gpu/docs/raven2-capability-decomposition.md's finding that
 # stock LLVM does not select it for this kernel shape on gfx902).
+#
+# QWEN_ROCM10_FAKE_BITCODE_SUFFIX overrides the numeric suffix on the
+# fabricated oclc_isa_version_<N>.bc dry-run line (default 902), so a test can
+# simulate a compatibility-shim toolchain that resolves gfx900 bitcode for a
+# gfx902 request.
 
 if [ -n "${QWEN_ROCM10_FAKE_LOG:-}" ]; then
     {
@@ -32,8 +37,8 @@ if [ -n "${QWEN_ROCM10_FAKE_LOG:-}" ]; then
             printf ' %s' "$argument"
         done
         printf '\n'
-        printf 'HSA_ENABLE_SDMA=%s ROCM_PATH=%s\n' \
-            "${HSA_ENABLE_SDMA:-unset}" "${ROCM_PATH:-unset}"
+        printf 'HSA_ENABLE_SDMA=%s ROCM_PATH=%s LD_LIBRARY_PATH=%s\n' \
+            "${HSA_ENABLE_SDMA:-unset}" "${ROCM_PATH:-unset}" "${LD_LIBRARY_PATH:-unset}"
     } >> "$QWEN_ROCM10_FAKE_LOG"
 fi
 
@@ -68,7 +73,9 @@ if [ "$dry_run" = 1 ]; then
     fi
     printf 'clang: "-mlink-builtin-bitcode" "%s/amdgcn/bitcode/ocml.bc"\n' "${ROCM_PATH:-/prefix}"
     printf 'clang: "-mlink-builtin-bitcode" "%s/amdgcn/bitcode/ockl.bc"\n' "${ROCM_PATH:-/prefix}"
-    printf 'clang: "-mlink-builtin-bitcode" "%s/amdgcn/bitcode/oclc_isa_version_902.bc"\n' "${ROCM_PATH:-/prefix}"
+    bitcode_suffix=${QWEN_ROCM10_FAKE_BITCODE_SUFFIX:-902}
+    printf 'clang: "-mlink-builtin-bitcode" "%s/amdgcn/bitcode/oclc_isa_version_%s.bc"\n' \
+        "${ROCM_PATH:-/prefix}" "$bitcode_suffix"
     exit 0
 fi
 

@@ -87,11 +87,14 @@ ladder_path=$output_directory/ladder.tsv
 printf 'rung\tcommand\texit_status\tresult\tartifact\tlog\n' >> "$ladder_path"
 
 # The prefix is the sole ROCm identity for this process; nothing ambient
-# substitutes for it.
-unset ROCM_PATH 2>/dev/null || true
+# substitutes for it. LD_LIBRARY_PATH in particular carries no inherited
+# entry: an ambient /opt/rocm or a second ROCm install there would let a
+# runtime rung resolve a library the prefix itself never shipped, passing a
+# rung against a mixed stack rather than against the isolated prefix alone.
+unset ROCM_PATH LD_LIBRARY_PATH 2>/dev/null || true
 ROCM_PATH=$prefix
 PATH=$prefix/bin:$PATH
-LD_LIBRARY_PATH=$prefix/lib:$prefix/lib64:${LD_LIBRARY_PATH:-}
+LD_LIBRARY_PATH=$prefix/lib:$prefix/lib64
 HSA_ENABLE_SDMA=0
 export ROCM_PATH PATH LD_LIBRARY_PATH HSA_ENABLE_SDMA
 
@@ -136,6 +139,11 @@ extern "C" __global__ void fp16_dot2_acc_fp32(float *out, const __half2 *a, cons
 }
 EOF
     compile_directory=$work_directory/compile-temps
+    # A rerun into an existing OUTPUT_DIR must not let a prior run's .s file
+    # survive: the v_mad_mix_f32 scan below globs every .s here, and a stale
+    # file from an earlier compile would let this compile's own selection
+    # question read a prior answer instead of its own ISA.
+    rm -rf "$compile_directory"
     mkdir -p "$compile_directory"
     log_path=$output_directory/logs/$rung.log
     command_display="hipcc --offload-arch=$target --save-temps -c kernel.hip -o kernel.o"
@@ -426,17 +434,27 @@ if [ "$stopped" = 0 ]; then
     fi
 
     bitcode_paths=""
+    target_isa_suffix=$(printf '%s' "$target" | sed 's/^gfx//')
+    target_isa_bitcode=""
     if [ "$exit_status" = 0 ]; then
         bitcode_paths=$(grep -o '"[^"]*\.bc"' "$log_path" 2>/dev/null |
             tr -d '"' | sort -u | tr '\n' ',' || true)
+        # A nonempty bitcode list alone does not prove native gfx902 support:
+        # a toolchain serving a gfx900 compatibility shim for a gfx902
+        # request would also list bitcode, just for the wrong ISA version.
+        # oclc_isa_version_<N>.bc is the file that names the resolved target,
+        # so the rung requires the one matching this ladder's own target
+        # rather than any bitcode path at all.
+        target_isa_bitcode=$(printf '%s' "$bitcode_paths" | tr ',' '\n' |
+            grep -E "(^|/)oclc_isa_version_${target_isa_suffix}\.bc\$" || true)
     fi
 
-    if [ "$exit_status" = 0 ] && [ -n "$bitcode_paths" ]; then
+    if [ "$exit_status" = 0 ] && [ -n "$bitcode_paths" ] && [ -n "$target_isa_bitcode" ]; then
         result=pass
-        artifact="bitcode=$bitcode_paths"
+        artifact="bitcode=$bitcode_paths isa_version_library=$target_isa_bitcode"
     else
         result=fail
-        artifact="no device-library bitcode resolved for $target: $(tail_lines "$log_path")"
+        artifact="no oclc_isa_version_${target_isa_suffix}.bc resolved for $target (a resolved gfx900 or generic bitcode set here would be a compatibility shim, not native $target support): bitcode=$bitcode_paths $(tail_lines "$log_path")"
         stopped=1
         failed_rung=$rung
     fi
