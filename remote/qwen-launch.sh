@@ -17,6 +17,16 @@ control=$script_directory/qwen-webui-control.sh
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 server_port=${QWEN_SERVER_PORT:-8080}
+case $server_port in
+    '' | *[!0-9]* | 0*)
+        printf 'QWEN_SERVER_PORT is a positive decimal port: %s\n' "$server_port" >&2
+        exit 2
+        ;;
+esac
+if [ "$server_port" -lt 1 ] || [ "$server_port" -gt 65535 ]; then
+    printf 'QWEN_SERVER_PORT must name a TCP port: %s\n' "$server_port" >&2
+    exit 2
+fi
 ready_attempts=${QWEN_READY_ATTEMPTS:-3000}
 # The readiness probe reaches the listener the server actually bound. A server
 # bound to one literal answers on that address alone, so a loopback probe
@@ -210,6 +220,50 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
         else
             QWEN_REQUIRE_API_KEY=1
         fi
+        # admit_web_lan_exposure below requires this file whole before it
+        # admits an authenticated LAN exposure, and qwen-webui-session.sh's
+        # own minting runs deep inside the tmux session this launch has not
+        # started yet, so a fresh state directory refused there before the
+        # session that mints the key ever ran. The same rule
+        # qwen-webui-session.sh applies -- 32 random bytes as 64 hex
+        # characters at mode 0600 -- mints it here instead, idempotently, so
+        # the session's own `[ ! -s "$api_key_file" ]` check finds the file
+        # already present and does nothing.
+        if [ "$QWEN_REQUIRE_API_KEY" = 1 ]; then
+            api_key_file=$state_directory/api.key
+            # A symlink here would have openssl and chmod follow it: `-s`
+            # reports on the link's target, so an empty or missing target
+            # gets overwritten and the target's own mode gets changed before
+            # admit_web_lan_exposure's own `[ -L ... ]` check ever runs. This
+            # refuses the symlink outright, the way the broker signing key's
+            # own admission already does, rather than writing through it.
+            if [ -L "$api_key_file" ]; then
+                printf 'the Web UI API key path names a symlink, and the key is a regular file: %s\n' \
+                    "$api_key_file" >&2
+                exit 1
+            fi
+            # A FIFO would block openssl's write waiting for a reader; a
+            # device or a directory would have chmod change permissions
+            # neither this key nor anything meant to serve it should carry.
+            # An existing path that names neither nothing nor a regular file
+            # is refused before either operation touches it.
+            if [ -e "$api_key_file" ] && [ ! -f "$api_key_file" ]; then
+                printf 'the Web UI API key path names neither nothing nor a regular file: %s\n' \
+                    "$api_key_file" >&2
+                exit 1
+            fi
+            if [ ! -s "$api_key_file" ]; then
+                if ! command -v openssl >/dev/null 2>&1; then
+                    printf 'openssl is required to create the Web UI API key\n' >&2
+                    exit 1
+                fi
+                (
+                    umask 077
+                    openssl rand -hex 32 >"$api_key_file"
+                )
+            fi
+            chmod 600 "$api_key_file"
+        fi
         QWEN_WEB_BROKER=1
         # An exposed launch places the broker one port above the router, and
         # the session places the artifact listener one above that, so a LAN
@@ -217,6 +271,17 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
         # router port chosen clear of other services carries its companions
         # with it. A loopback launch keeps the 8571 the meta tags name.
         if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+            # A derived pair overflows the valid port range above 65533, the
+            # same ceiling remote/qwen-lan-launch.sh caps QWEN_SERVER_PORT at
+            # for its own wrapper path; an explicit QWEN_WEB_BROKER_PORT
+            # names its own value and is not derived, so it carries no such
+            # bound here.
+            if [ -z "${QWEN_WEB_BROKER_PORT:-}" ] &&
+                [ "$server_port" -gt 65533 ]; then
+                printf 'QWEN_SERVER_PORT leaves room for the broker and artifact ports above it: %s\n' \
+                    "$server_port" >&2
+                exit 2
+            fi
             QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-$((server_port + 1))}
         else
             QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
@@ -591,20 +656,84 @@ EOF
     # shellcheck source=remote/image-launch-lib.sh
     . "$script_directory/image-launch-lib.sh"
     read_image_preset_markers "$router_presets"
+    # Two preset shapes carry a web section an image grant can bind to. The
+    # merged roster preset build-router-presets.sh writes names its emitting
+    # sections on the `# qwen_web_sections=` line this script already read
+    # into web_sections, and a direct launch over that shape has already run
+    # the broker-arming and loopback-enforcement block above, which is gated
+    # on that same line. The standalone preset build-web-presets.sh writes
+    # carries no such line; its head marker `# qwen_web_presets=1` states
+    # instead that the whole file is one generated web preset, whose one
+    # language section is the shape qwen-web-launch.sh always resolves and
+    # arms -- through the QWEN_WEB_BROKER, loopback, and authorizer-ready
+    # rules in its own body -- before it sets QWEN_IMAGE_SERVICE=1 and execs
+    # this script. image_web_presets_section therefore reads the standalone
+    # shape's one section from the file itself, the way
+    # qwen-capacity-policy.sh's own web_presets_from_preset rejoin does, but
+    # only the QWEN_IMAGE_SERVICE=1 branch below trusts it: that flag is the
+    # wrapper's own claim to have applied its safety net, and the elif branch
+    # below serves a preset this process resolves for itself, so it stays on
+    # web_sections alone rather than accepting a standalone-shaped file no
+    # wrapper has vetted.
+    image_web_presets_marker=$(sed -n \
+        's/^# qwen_web_presets=\([01]\)$/\1/p' "$router_presets")
+    case $image_web_presets_marker in
+        '') image_web_presets_marker=0 ;;
+    esac
+    image_web_presets_section=
+    if [ "$image_web_presets_marker" = 1 ]; then
+        image_web_presets_section=$(sed -n \
+            's/^\[\([^]]*\)\]$/\1/p' "$router_presets" | sed -n '1p')
+    fi
     if [ "${QWEN_IMAGE_SERVICE:-0}" = 1 ]; then
         # qwen-web-launch.sh execs this script, so a launch that came through
         # qwen-image-launch.sh arrives with the lane already resolved: that
         # wrapper read the same markers, ran the same library, and charged the
-        # web preset's own two-checkpoint arithmetic. One owner per launch, so
-        # this one reports what it inherited rather than resolving a second
-        # time against a file whose section list it never wrote.
+        # web preset's own two-checkpoint arithmetic. One owner charges the
+        # budget, so this branch does not repeat that arithmetic, but the claim
+        # is validated rather than trusted: any shell can set
+        # QWEN_IMAGE_SERVICE=1 ahead of a direct launch, or carry it over from
+        # an earlier session, so this rejoins it to a fresh read of this
+        # launch's own preset before reusing the wrapper's budget.
+        if [ "$image_lane_armed" != 1 ]; then
+            printf 'QWEN_IMAGE_SERVICE=1 is set and this preset names no image profile: %s\n' \
+                "$router_presets" >&2
+            printf 'the image lane is resolved from the preset a launch reads; an inherited flag over a preset naming none is refused\n' >&2
+            exit 2
+        fi
+        if [ "${QWEN_IMAGE_PROFILE:-}" != "$preset_image_profile" ]; then
+            printf 'QWEN_IMAGE_SERVICE=1 names profile %s where this preset resolves %s\n' \
+                "${QWEN_IMAGE_PROFILE:-<unset>}" "$preset_image_profile" >&2
+            exit 2
+        fi
+        # This branch trusts QWEN_IMAGE_SERVICE=1 as the wrapper's own claim
+        # to have armed the lane, so it accepts either shape: the merged
+        # roster preset's web_sections, or the standalone web preset's
+        # image_web_presets_section. Neither resolving leaves the marker
+        # with nothing that could arm it.
+        image_web_section=${web_sections:-$image_web_presets_section}
+        if [ -z "$image_web_section" ]; then
+            printf 'the preset names image profile %s and carries no web section\n' \
+                "$preset_image_profile" >&2
+            printf 'regenerate the preset tree with remote/build-router-presets.sh, or the standalone web preset with remote/build-web-presets.sh\n' >&2
+            exit 2
+        fi
+        require_image_ledger_row || exit 2
+        require_image_signing_key || exit 2
+        require_image_parameters || exit 2
+        verify_image_deadline_stack "$router_presets" "$image_web_section" || exit 2
         printf 'image_launch owner=qwen-image-launch.sh profile=%s required_mib=%s\n' \
             "${QWEN_IMAGE_PROFILE:--}" "${QWEN_REQUIRED_VULKAN_MIB:--}"
     elif [ "$image_lane_armed" = 1 ]; then
         # An image server reaches the device from the section the web ledger
         # emitted, and the grant binds that language profile to the image
         # profile, so a lane armed over a preset naming no web section would
-        # sign for a profile this launch never resolved.
+        # sign for a profile this launch never resolved. This branch resolves
+        # the lane for itself rather than trusting a wrapper's claim, so it
+        # stays on web_sections alone: the merged roster preset's own
+        # broker-arming and loopback-enforcement block above is gated on that
+        # same line, and a standalone-shaped file reaching this branch has
+        # bypassed qwen-web-launch.sh's safety net rather than run it.
         if [ -z "$web_sections" ]; then
             printf 'the preset names image profile %s and carries no web section\n' \
                 "$preset_image_profile" >&2

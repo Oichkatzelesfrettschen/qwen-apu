@@ -331,7 +331,17 @@ image_profiles=${QWEN_IMAGE_PROFILES:-$script_directory/image-profiles.tsv}
 image_quarantine=${QWEN_IMAGE_QUARANTINE:-$script_directory/image-quarantine.tsv}
 image_mcp_server=${QWEN_IMAGE_MCP_SERVER:-}
 image_token_key_file=${QWEN_IMAGE_TOKEN_KEY_FILE:-}
-image_state_directory=${QWEN_IMAGE_STATE_DIR:-"${HOME:?}/qwen-webui-state/images"}
+# image-service.py always derives its images directory and its
+# image-service.sock name from --state-dir, and qwen-webui-session.sh always
+# passes the session's own state directory there regardless of what this
+# generator was told, so the default here follows QWEN_WEBUI_STATE_DIRECTORY
+# rather than assuming $HOME: a deployment with a nondefault session state
+# directory then generates a preset the launch verifier's rejoin admits by
+# default, without needing QWEN_IMAGE_STATE_DIR named explicitly. An explicit
+# QWEN_IMAGE_STATE_DIR or QWEN_IMAGE_SERVICE_SOCKET still overrides the
+# default; the runtime never reads either, so a value that diverges from the
+# launch's own derivation is caught at launch rather than served.
+image_state_directory=${QWEN_IMAGE_STATE_DIR:-"${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}/images"}
 image_service_socket=${QWEN_IMAGE_SERVICE_SOCKET:-$image_state_directory/image-service.sock}
 # The MCP child states the served profile's geometry and ceilings in its own
 # tool schema, and it reads them from the parameter file image-service.py runs
@@ -344,6 +354,18 @@ image_mcp_timeout_ms=${QWEN_IMAGE_MCP_TIMEOUT_MS:-360000}
 case $image_mcp_timeout_ms in
     '' | 0* | *[!0-9]*)
         printf 'QWEN_IMAGE_MCP_TIMEOUT_MS must be a positive decimal integer: %s\n' \
+            "$image_mcp_timeout_ms" >&2
+        exit 2
+        ;;
+esac
+# emit_web_mcp_configuration converts this to QWEN_IMAGE_MCP_TIMEOUT_S by
+# integer division at /1000, so a value that is not an exact multiple of 1000
+# would let generation succeed while read-image-mcp-server.py's own
+# millisecond/second agreement check then refuses the configuration it wrote.
+case $((image_mcp_timeout_ms % 1000)) in
+    0) ;;
+    *)
+        printf 'QWEN_IMAGE_MCP_TIMEOUT_MS must be an exact multiple of 1000 (whole seconds): %s\n' \
             "$image_mcp_timeout_ms" >&2
         exit 2
         ;;

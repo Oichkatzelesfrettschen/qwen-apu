@@ -272,7 +272,7 @@ env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
     QWEN_IMAGE_MODEL_PATH="$image_model_directory" \
     QWEN_RADV_ICD="$fixture_icd" \
     QWEN_SERVER_PORT=18082 \
-    QWEN_WEB_BROKER_PORT=18573 \
+    QWEN_WEB_BROKER_PORT=18083 \
     "$harness/admit-image-router.sh" "$lan_output" \
     >"$work/lan.stdout" 2>"$work/lan.stderr"
 lan_status=$?
@@ -348,8 +348,8 @@ env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
     QWEN_IMAGE_RUNTIME_TEMPLATE=fixture \
     QWEN_IMAGE_MODEL_PATH="$image_model_directory" \
     QWEN_RADV_ICD="$fixture_icd" \
-    QWEN_SERVER_PORT=18084 \
-    QWEN_WEB_BROKER_PORT=18575 \
+    QWEN_SERVER_PORT=18090 \
+    QWEN_WEB_BROKER_PORT=18091 \
     "$harness/admit-image-router.sh" "$open_output" \
     >"$work/lan-open.stdout" 2>"$work/lan-open.stderr"
 open_status=$?

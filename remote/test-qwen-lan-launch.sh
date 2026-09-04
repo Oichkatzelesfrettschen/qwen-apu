@@ -376,6 +376,32 @@ for bad_port in 65534 8x80 0; do
     fi
 done
 
+# An existing key that fails validation -- empty, wrong owner, wrong mode, not
+# a regular file -- refuses before the destructive teardown runs, so an
+# invalid relaunch configuration leaves a working session running rather than
+# tearing it down and then refusing to relaunch it.
+rm -f "$state/session.status" "$teardown_record"
+if run_wrapper >"$work/precheck.out" 2>"$work/precheck.err"; then
+    report existing_key_precheck_setup ok
+else
+    report existing_key_precheck_setup fail
+    cat "$work/precheck.err" >&2
+fi
+: >"$home/qwen-web-token.key"
+if run_wrapper >"$work/invalid-key.out" 2>"$work/invalid-key.err"; then
+    report invalid_existing_key_refused_before_teardown fail
+else
+    if [ "$?" -eq 1 ] && [ ! -e "$teardown_record" ] &&
+        grep -q 'is empty' "$work/invalid-key.err" &&
+        grep -q '^state=running ' "$state/session.status"; then
+        report invalid_existing_key_refused_before_teardown ok
+    else
+        report invalid_existing_key_refused_before_teardown fail
+        cat "$work/invalid-key.err" >&2
+    fi
+fi
+rm -f "$state/session.status"
+
 # A symlinked key file is refused, since the key is read as a regular file.
 ln -s "$work/elsewhere" "$home/linked.key"
 if QWEN_WEB_TOKEN_KEY_FILE=$home/linked.key \
