@@ -275,3 +275,44 @@ result = run(no_producer, len(no_producer_pipelines))
 assert result.returncode == 1, result.stdout
 assert "carries no producer dispatches to measure" in result.stderr, result.stderr
 print("no_producer_pipeline=refused")
+
+# A pipeline the census describes but the selected decode graphs never
+# dispatch is a zero-dispatch producer, not a missing one: producer_ids is
+# non-empty because the pipeline row exists, so the earlier refusal does not
+# fire, and the later useful-producer allowance would divide by zero without
+# an explicit check.
+zero_dispatch_records = [d for d in records if d["pipeline"] != 1]
+zero_dispatch = PIPELINES + graph_rows(1, zero_dispatch_records, 3_000_000, 60_000)
+result = run(zero_dispatch, len(PIPELINES))
+assert result.returncode == 1, result.stdout
+assert "none of the 1 selected decode graphs dispatches it" in result.stderr, result.stderr
+print("zero_dispatch_producer=refused")
+
+# Two graphs with different producer dispatch counts: graph 1 keeps the base
+# fixture's 4 producer dispatches (union 1_600 ns), graph 2 carries 2
+# producer dispatches of 1_000 ns each, disjoint (union 2_000 ns). The
+# correct per-producer cost weights by dispatch count -- total union over
+# total count, (1_600 + 2_000) / (4 + 2) = 600 ns -- rather than averaging
+# each graph's own union/count unweighted, which would read
+# (400 + 1_000) / 2 = 700 ns and disagree with the allowance's own
+# mean_count-weighted denominator.
+graph2_records = [
+    dispatch(2, 1, 0, "MUL_MAT_VEC_ID", 1, 100, 1_100, reach_query=1, complete_query=2, src0_type="f32"),
+    dispatch(2, 1, 1, "MUL_MAT_VEC_ID", 1, 2_000, 3_000, reach_query=3, complete_query=4, src0_type="f32"),
+    # graph_tokens() reads its column count from a non-f32 MUL_MAT/MUL_MAT_ID
+    # dispatch alone, and the producer's own op stays outside that pair by
+    # design (its op is MUL_MAT_VEC_ID and its src0 is f32), so a graph with
+    # producer dispatches and no Q4_K consumer needs one such marker to read
+    # as decode rather than prefill.
+    dispatch(2, 3, 2, "MUL_MAT", 1, 4_000, 4_500, reach_query=5, complete_query=6),
+]
+variable_count = PIPELINES + graph_rows(1, records, 3_000_000, 60_000) + \
+    graph_rows(2, graph2_records, 5_000_000, 10_000)
+result = run(variable_count, len(PIPELINES), expected=2)
+assert result.returncode == 0, result.stderr
+lines = [line.split("\t") for line in result.stdout.rstrip("\n").split("\n")]
+summary = next(line for line in lines if line[0] == "summary")
+assert field(summary, "mean_producer_dispatches_per_graph") == "3.000", summary
+assert field(summary, "mean_bracket_union_us") == "1.800", summary
+assert field(summary, "mean_per_producer_cost_us") == "0.600", summary
+print("weighted_per_producer_cost=ok")

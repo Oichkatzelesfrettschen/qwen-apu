@@ -230,8 +230,24 @@ def main():
     mean_count = sum(g["count"] for g in per_graph) / n_graphs
     mean_union_us = sum(g["union_ns"] for g in per_graph) / n_graphs / 1000.0
     mean_median_us = sum(g["median_ns"] for g in per_graph) / n_graphs / 1000.0
-    mean_per_producer_us = (sum(g["per_producer_ns"] for g in per_graph) / n_graphs / 1000.0
-                             if mean_count else 0.0)
+    if mean_count == 0:
+        # The pipeline is registered -- producer_ids is non-empty, or the
+        # earlier check would already have refused -- but no selected decode
+        # graph dispatches it. A mean over zero producer dispatches states
+        # nothing about a per-producer cost, and the useful-producer
+        # allowance below would divide by zero rather than name the reason.
+        print(
+            f"census_refused: the census describes {args.producer_pipeline_name!r} but "
+            f"none of the {n_graphs} selected decode graphs dispatches it; there is no "
+            f"producer cost to measure",
+            file=sys.stderr)
+        return 1
+    # The per-producer cost is read the same way the allowance is: total
+    # bracket union over total dispatch count, not a mean of each graph's own
+    # union/count. A per-graph mean would weight every graph equally even
+    # where the producer dispatch count varies graph to graph, which can flip
+    # the verdict against the allowance's own weighting.
+    mean_per_producer_us = mean_union_us / mean_count
 
     if family_ids and q4k_measured_ms_total > 0:
         q4k_interval_ms = q4k_measured_ms_total / n_graphs
@@ -241,7 +257,7 @@ def main():
         q4k_interval_source = "fallback"
 
     predicted_gain_us = args.predicted_gain_fraction * q4k_interval_ms * 1000.0
-    allowance_all_producers_us = (predicted_gain_us / mean_count) if mean_count else float("inf")
+    allowance_all_producers_us = predicted_gain_us / mean_count
     useful_count = mean_count - args.single_consumer_producers
     useful_count_source = "measured_minus_fallback_single_consumer"
     if useful_count <= 0:
