@@ -311,7 +311,7 @@
     {
       "id": "web-open",
       "model_id": "qwen38-4b-distill",
-      "execution_policy": "refused",
+      "execution_policy": "validator-gated",
       "features": [
         { "feature": "web-search", "status": "unsupported", "evidence": "evidence/web-provider-contract.md", "note": "execution_policy refused emits no MCP configuration under every setting; a validator-gated row under QWEN_WEB_AUTHORIZER_READY arms the lane" }
       ]
