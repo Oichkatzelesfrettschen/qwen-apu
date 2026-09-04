@@ -246,25 +246,25 @@ carried in rather than retained by that run.
 The appliance's distribution shaderc prints `GL_EXT_integer_dot_product not
 supported by glslc`
 (`evidence/web-admission-router-tools/build-raven2-vulkan-production.log:33`), so
-that host emits no `OpSDotKHR` at all. The gate sits in the SPIR-V producer, and
-the driver on the appliance consumes whatever module it is handed, so the plan
-separates producing the module from executing it. Each step names the file that
-carries it; none of them has run.
+that host emits no packed integer dot at all. The gate sits in the SPIR-V
+producer, and the driver on the appliance consumes whatever module it is handed,
+so the plan separates producing the module from executing it. Each step names
+the file that carries it, and the first three have run on the workstation.
 
 1. **Pin the producer.** `remote/shaderc-toolchain.tsv` states the project, the
-   revision, the release archive, and its SHA-256. It ships with `revision`,
-   `archive_url`, and `archive_sha256` reading `-`, because a digest recalled
-   rather than read from the publisher is a fabricated pin, and
-   `remote/fetch-shaderc-toolchain.sh` refuses an unfilled row rather than
-   downloading whatever the tag points at today. Filling those three fields from
-   the upstream release is step one.
+   revision, the release archive, and its SHA-256. It names `google/shaderc` at
+   `v2026.3` against `ee493ccf1b30...`, measured over the download rather than
+   recalled, and `remote/fetch-shaderc-toolchain.sh` refuses an unfilled row
+   rather than downloading whatever the tag points at today. The tag is chosen
+   by what it reproduces: its glslc writes the exact module every retained E5-S
+   receipt names.
 2. **Build it into a prefix of its own.**
    `remote/fetch-shaderc-toolchain.sh [PREFIX_ROOT]` verifies the archive against
    the pin, syncs shaderc's own vendored glslang and SPIRV-Tools revisions,
-   installs under `PREFIX_ROOT/shaderc-pinned`, refuses a prefix that already
-   exists, and compiles a one-line probe that requires the extension, so the
-   fetch proves the installed compiler accepts what the pack exists to reach.
-   The system toolchain is untouched.
+   installs under `PREFIX_ROOT/` in the ledger's own `prefix` directory, refuses
+   a prefix that already exists, and compiles a one-line probe that requires the
+   extension, so the fetch proves the installed compiler accepts what the pack
+   exists to reach. The system toolchain is untouched.
 3. **Generate the pack.**
    `remote/build-spirv-shader-pack.sh DECLARATION SOURCE_DIRECTORY OUTPUT` reads
    one declaration row per module -- module name, source relative to the source
@@ -274,15 +274,19 @@ carries it; none of them has run.
    relative source and its digest, the defines, the target environment, the
    recorded command line, the module's byte count and digest, and the `spirv-val`
    verdict; `pack-inputs.tsv` carries the compiler's own version string and
-   digest, the validator's, the declaration digest, and one digest over the
-   ledger. No absolute path enters either file: the compiler is recorded as
+   digest, the validator's, the declaration digest, the optimization setting,
+   and one digest over the ledger. `QWEN_SHADER_PACK_OPTIMIZE=1` adds the `-O`
+   that `vulkan-shaders-gen.cpp:352` compiles every ggml shader with, which is
+   what separates the 36940-byte served module from the 21312-byte unoptimized
+   form of the same source and defines. No absolute path enters either file: the compiler is recorded as
    `glslc` and every source relative, so a pack record is comparable between
    hosts and commits clean. A validator that is absent leaves
    `not_run:validator_absent` rather than an empty verdict, and one that refuses
    a module ends the pack. `remote/test-build-spirv-shader-pack.sh` drives the
    whole format against a fake `glslc` and a fake `spirv-val`, with no toolchain
    and no device.
-4. **Deploy the isolated driver.** E5-S1 reaches the device through
+4. **Deploy the isolated driver.** `remote/build-isolated-radv.sh SOURCE [PREFIX_ROOT]`
+   builds it. E5-S1 reaches the device through
    `radeon_devenv_icd.x86_64.json`, a meson target whose `library_path` names the
    build directory, so `VK_ICD_FILENAMES` and the library path select it and
    nothing is installed over the system driver. `radv-low-priority-env.sh` reads
@@ -290,7 +294,14 @@ carries it; none of them has run.
    own `vulkan-radeon` keeps serving everything else. `-Dllvm=enabled` is
    required for the disassembler rather than for ACO: without it RADV falls back
    to printing pre-RA IR that the lab's mnemonic counter reads as zero in every
-   field, which is a silently worthless receipt.
+   field, which is a silently worthless receipt. The script requires the
+   checkout's HEAD to equal the pinned revision and that revision to descend
+   from `f1078c57e5f02b611f2c69af9ac7e0f5aa82a0bb`, since a driver without that
+   merge lowers `nir_op_sdot_4x8_iadd` generically and would measure E5-S0 under
+   E5-S1's name; it writes an environment fragment naming `QWEN_RADV_ICD`,
+   `QWEN_AMDGPU_DRM_SHIM`, and the library path, and
+   `remote/test-build-isolated-radv.sh` drives every refusal against fake meson,
+   ninja, and git.
 5. **Read the executed ISA.** `RADV_DEBUG=shaders,shaderstats` through
    `remote/dump-radv-shader-isa.sh`, summarized by
    `remote/summarize-radv-isa.py`, against the module the census instrument
@@ -322,8 +333,9 @@ carries it; none of them has run.
 | E5-S1 ISA, target-aware lowering | measured | `E5-S1/` |
 | served arm carries the admission | measured | `test-run-served-binary-ab.sh`, workstation |
 | shader pack format and refusals | measured | `test-build-spirv-shader-pack.sh`, fake toolchain |
-| producer pinned and fetched | unrun | step 1 and 2 above |
-| pack generated from the real shaders | unrun | step 3 above |
+| producer pinned and fetched | measured | `E5-S0/shader-pack/`, workstation |
+| pack generated from the real shaders | measured | `E5-S0/shader-pack/`, module digest matches every E5-S receipt |
+| isolated driver build and its handoff | designed, tested against fake tools | `remote/build-isolated-radv.sh` |
 | isolated ICD on the appliance | unrun | step 4 above |
 | executed ACO ISA on the appliance | unrun | step 5, falsifier 1 |
 | kernel-delta bracket | unrun | step 6 |

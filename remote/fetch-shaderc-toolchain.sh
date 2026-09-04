@@ -77,7 +77,10 @@ if [ -e "$prefix_directory" ]; then
     exit 1
 fi
 
-for required_program in curl cmake ninja sha256sum tar; do
+# git and python3 are the two utils/git-sync-deps runs on: it reads the
+# revision's own DEPS with python3 and clones each dependency with git, so their
+# absence fails after the archive is verified rather than before the fetch.
+for required_program in curl cmake ninja sha256sum tar git python3; do
     if ! command -v "$required_program" >/dev/null 2>&1; then
         printf 'the toolchain build requires %s\n' "$required_program" >&2
         exit 1

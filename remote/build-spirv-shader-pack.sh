@@ -26,6 +26,14 @@ set -eu
 #   QWEN_SHADER_PACK_GLSLC       the pinned glslc, default ~/opt/shaderc-pinned/bin/glslc
 #   QWEN_SHADER_PACK_SPIRV_VAL   spirv-val, default beside that glslc
 #   QWEN_SHADER_PACK_TARGET_ENV  --target-env value, default vulkan1.2
+#   QWEN_SHADER_PACK_OPTIMIZE    1 adds -O, default 0
+#
+# The optimization setting belongs to the pack rather than to a row, the way the
+# target environment does, and it changes the module: `vulkan-shaders-gen`
+# compiles every ggml shader with `-O`, so a pack meant to reproduce a module a
+# served build executed sets it and a pack meant to read the unoptimized form
+# leaves it off. pack-inputs.tsv records which, and the recorded command line
+# carries the flag.
 
 if [ "$#" -ne 3 ]; then
     printf 'usage: %s DECLARATION SOURCE_DIRECTORY OUTPUT_DIRECTORY\n' "$0" >&2
@@ -64,6 +72,16 @@ case $target_env in
     *)
         printf 'the target environment is vulkan1.0 through vulkan1.3: %s\n' \
             "$target_env" >&2
+        exit 2
+        ;;
+esac
+optimize_setting=${QWEN_SHADER_PACK_OPTIMIZE:-0}
+optimize_arguments=''
+case $optimize_setting in
+    0) ;;
+    1) optimize_arguments=' -O' ;;
+    *)
+        printf 'the optimization setting is 0 or 1: %s\n' "$optimize_setting" >&2
         exit 2
         ;;
 esac
@@ -148,10 +166,10 @@ while IFS='	' read -r module_name module_source module_defines module_excess; do
     # The recorded command names the compiler as `glslc` and the source
     # relative to the declared root, so the record states the invocation
     # without carrying this host's own paths.
-    recorded_command="glslc --target-env=$target_env -fshader-stage=compute -I .$define_arguments -o - $module_source"
+    recorded_command="glslc --target-env=$target_env -fshader-stage=compute$optimize_arguments -I .$define_arguments -o - $module_source"
     # shellcheck disable=SC2086
     if ! "$glslc_program" --target-env="$target_env" -fshader-stage=compute \
-        -I "$source_root" $define_arguments \
+        $optimize_arguments -I "$source_root" $define_arguments \
         -o "$module_object" "$source_root/$module_source" \
         >"$output_directory/modules/$module_name.log" 2>&1; then
         printf 'the pinned compiler refused %s\n' "$module_name" >&2
@@ -210,6 +228,7 @@ pack_sha256=$(sha256sum "$pack_ledger" | cut -d ' ' -f 1)
     printf 'spirv_val\t%s\n' "$spirv_val_identity"
     printf 'spirv_val_sha256\t%s\n' "$spirv_val_sha256"
     printf 'target_env\t%s\n' "$target_env"
+    printf 'optimize\t%s\n' "$optimize_setting"
     printf 'modules\t%s\n' "$declared_rows"
     printf 'pack_sha256\t%s\n' "$pack_sha256"
 } >"$pack_inputs"
