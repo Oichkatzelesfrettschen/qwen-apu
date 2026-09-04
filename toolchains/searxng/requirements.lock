@@ -1,4 +1,3 @@
--e git+https://github.com/searxng/searxng@a30b2d47492ab46ae82ce25ee62a31626565cf67#egg=searxng
 Flask==3.1.3
 Jinja2==3.1.6
 MarkupSafe==3.0.3
