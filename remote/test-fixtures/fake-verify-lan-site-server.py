@@ -69,6 +69,10 @@ def make_router_handler(state):
                 return
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b"{}"
+            if state["hang_chat"]:
+                # a router that never answers, the shape the e909cfc epoch
+                # record retains; the checker's own timeout is what ends it
+                threading.Event().wait()
             try:
                 body = json.loads(raw.decode("utf-8"))
             except ValueError:
@@ -135,6 +139,8 @@ def main():
     parser.add_argument("--static", required=True)
     parser.add_argument("--roster", default="fixture-model")
     parser.add_argument("--unhealthy", action="store_true")
+    parser.add_argument("--hang-chat", action="store_true",
+                        help="never answer a chat completion")
     arguments = parser.parse_args()
 
     with open(os.path.join(arguments.static, "index.html"), encoding="utf-8") as handle:
@@ -144,6 +150,7 @@ def main():
         "roster": arguments.roster.split(","),
         "lock": threading.Lock(),
         "healthy": not arguments.unhealthy,
+        "hang_chat": arguments.hang_chat,
         "static_page": static_page,
         "no_checkpoint": os.environ.get("QWEN_FAKE_VERIFY_SERVER_NO_CHECKPOINT") == "1",
         "last_signature": None,

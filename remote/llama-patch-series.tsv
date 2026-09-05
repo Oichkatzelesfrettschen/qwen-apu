@@ -27,3 +27,4 @@ candidate	llama-vulkan-q4k-scale-word-select.patch
 candidate	llama-vulkan-q4k-superblock-loop-licm.patch
 candidate	llama-vulkan-q4k-variant-select.patch
 candidate	llama-vulkan-q4k-int24-mmvq.patch
+candidate	llama-router-cancelled-load-idle.patch

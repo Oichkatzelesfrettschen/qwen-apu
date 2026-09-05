@@ -1,0 +1,19 @@
+# case	check	status	detail
+different-model	child_a_held	pass	port=42917
+different-model	request_a_cancelled_during_load	pass	held_port=42917
+different-model	request_b_waiting_before_release	pass	pattern=request for name=model-b queued at position
+different-model	second_child_spawned	fail	no second held file before the deadline
+different-model	request_b_answered	fail	http=000 body=
+different-model	final_model_states	fail	model-a=loaded model-b=unloaded expected unloaded/loaded
+same-model	child_a_held	pass	port=38655
+same-model	request_a_cancelled_during_load	pass	held_port=38655
+same-model	request_b_waiting_before_release	pass	pattern=waiting until model name=model-a is fully loaded
+same-model	request_b_answered	pass	http=200
+same-model	final_model_states	pass	model-a=loaded model-b=unloaded
+load-failure	child_a_held	pass	port=33847
+load-failure	request_a_cancelled_during_load	pass	held_port=33847
+load-failure	request_b_waiting_before_release	pass	pattern=request for name=model-b queued at position
+load-failure	second_child_spawned	pass	port=45435
+load-failure	request_b_answered	pass	http=200
+load-failure	final_model_states	pass	model-a=unloaded model-b=loaded
+load-failure	model_a_reads_failed	pass	status.failed=true
