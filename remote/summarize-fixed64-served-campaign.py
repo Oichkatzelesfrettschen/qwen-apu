@@ -746,11 +746,35 @@ def validate_session_status(path: Path, model: dict[str, str]) -> int:
         "latency_mode",
         "utc",
     }
-    if set(state_fields) != expected_state_keys:
-        missing = sorted(expected_state_keys - set(state_fields))
-        extra = sorted(set(state_fields) - expected_state_keys)
+    # The session records its LAN exposure on the running line since the LAN
+    # lane landed, as five keys a campaign retained before that lane lacks.
+    # They are admitted as a set, and a denominator arm is a loopback launch,
+    # so an exposed session refuses the arm rather than passing as a rate.
+    lan_state_keys = {
+        "lan_exposure",
+        "lan_address",
+        "lan_name",
+        "lan_open",
+        "lan_boundary",
+    }
+    present_lan_keys = set(state_fields) & lan_state_keys
+    if present_lan_keys and present_lan_keys != lan_state_keys:
+        raise CampaignError(
+            f"{path} carries a partial LAN key set: {sorted(present_lan_keys)}"
+        )
+    core_fields = set(state_fields) - lan_state_keys
+    if core_fields != expected_state_keys:
+        missing = sorted(expected_state_keys - core_fields)
+        extra = sorted(core_fields - expected_state_keys)
         raise CampaignError(
             f"{path} state keys differ: missing={missing} extra={extra}"
+        )
+    if present_lan_keys and (
+        state_fields["lan_exposure"] != "0" or state_fields["lan_open"] != "0"
+    ):
+        raise CampaignError(
+            f"{path} names an exposed session: lan_exposure="
+            f"{state_fields['lan_exposure']} lan_open={state_fields['lan_open']}"
         )
     expected_state_values = {
         "state": "running",
