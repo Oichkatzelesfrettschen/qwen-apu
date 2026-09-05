@@ -528,6 +528,55 @@ def case_dpm_value_age():
     record, start, last = marked_record(120)
     result = validate(record, period_ns=period_ns)
     assert "dpm_value_age=not_run no window supplied" in result.stdout, result.stdout
+
+    # The bound is the declared multiple exactly rather than the 1.5 jitter
+    # allowance the row-gap and cadence rules carry, and a multiple of two is
+    # where the difference decides the verdict: a skipped refresh reads three
+    # rows of age against a bound of two, which `2 x 3 // 2` would admit.
+    def small_multiple_record(skip_marker_row=None):
+        lines = [
+            f"# clock=CLOCK_MONOTONIC period_ns={period_ns}"
+            " drm_device=/fake hwmon=/fake/hwmon0",
+            f"# sample_rates: gpu_busy_percent_period_ns={period_ns}"
+            f" pp_dpm_period_ns={2 * period_ns}",
+            "# interpretation: pp_dpm_sclk_selected_mhz is the selected"
+            " graphics clock step",
+            "# sampler_pid=4242 nice=10 cpu_affinity=1",
+            COLUMNS,
+        ]
+        start = 1_000_000_000
+        for index in range(40):
+            instant = start + index * period_ns
+            if index % 2 == 0 and index != skip_marker_row:
+                lines.append(f"# dpm_read={instant}")
+            lines.append(f"{instant}\t400\t933\t1067\t37\t61000\t30000")
+        last = start + 39 * period_ns
+        lines.append(f"# samples=40 achieved_period_ns={period_ns}"
+                     f" mean_sample_cost_ns=30000 max_sample_cost_ns=30000"
+                     f" samples_with_unavailable_sensor=0"
+                     f" first_sample_ns={start} last_sample_ns={last}")
+        return "\n".join(lines) + "\n", start, last
+
+    record, start, last = small_multiple_record()
+    result = validate(record, period_ns=period_ns, window=(start, last))
+    assert "dpm_value_age=accepted max_age_rows=1 bound_rows=2" in result.stdout, result.stdout
+    assert result.returncode == 0, result.stdout
+
+    record, start, last = small_multiple_record(skip_marker_row=20)
+    result = refused(record, "dpm_value_age",
+                     period_ns=period_ns, window=(start, last))
+    assert "dpm_marker_cadence=accepted" in result.stdout, result.stdout
+    assert "dpm_value_age=refused max_age_rows=3 bound_rows=2 row_index=21" \
+        in result.stdout, result.stdout
+
+    # A window opening ahead of the record's own first marker: those rows
+    # carry a value of unknown age and enter no maximum, which the line states
+    # rather than folding them into a reading it cannot support.
+    record, start, last = marked_record(120, skip_marker_row=0)
+    result = validate(record, period_ns=period_ns, window=(start, last))
+    assert "dpm_value_age=accepted max_age_rows=9 bound_rows=10" in result.stdout, result.stdout
+    assert "unmarked_window_rows=10" in result.stdout, result.stdout
+    assert result.returncode == 0, result.stdout
     print("case=dpm_value_age verdict=accepted")
 
 
