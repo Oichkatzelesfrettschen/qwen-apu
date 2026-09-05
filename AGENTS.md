@@ -1708,6 +1708,9 @@ make verify-layout                              # marker, schema, binding, layou
 make verify-components                          # sudo policy and every installed component identity
 make verify-live                                # transient system state, passing where a node is absent
 make verify                                     # the union of the three
+make verify-models                              # every registry model file and projector against
+                                                # the byte count and SHA-256 its fetch rule pins,
+                                                # fetching nothing
 QWEN_PURGE_LEGACY_CONFIRM=yes make purge-legacy # the enumerated predecessor paths, nothing else
 QWEN_RUNTIME_ROOT_CONFIRM=$PWD/.runtime make uninstall
                                                 # the root minus state/ and models/; the confirm is
@@ -2126,6 +2129,7 @@ directly:
 remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
+remote/test-verify-models.sh
 remote/test-model-tiers.sh
 remote/test-feature-roster.sh
 node remote/test-fallback-webui-roster.mjs

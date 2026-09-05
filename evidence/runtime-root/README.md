@@ -153,8 +153,35 @@ fail for three reasons:
   passes, because the workstation carries no amdgpu sysfs and a verification
   that refused there would refuse every gate run.
 
-Model bytes stay out of all three: `make verify-models` hashes 74 GB and is
-its own target.
+Model bytes stay out of all three, since 74 GB of hashing in a union would
+make it unusable.
+
+## The model files against their pins
+
+`make verify-models` runs `remote/verify-models.sh`, which joins
+`remote/models.tsv` against the pins the fetch rules state and reports one row
+per registry artifact -- the model file, and the projector where the row
+requires one:
+
+```text
+model_id  kind  path  status  expected  observed  fetch_script
+```
+
+`status` reads `verified`, `absent`, `bytes-differ`, `digest-differs`, or
+`unpinned`, and a pin the registry names nowhere reads `orphan-pin` on the
+reverse join. The pin comes from `remote/model-artifacts.tsv` where the ledger
+carries the row and from the fetch script's own `expected_bytes=` and
+`expected_sha256=` assignments otherwise, read out of the source rather than
+by running it. Only a `bytes-differ` or a `digest-differs` fails the run: an
+absent file is a state to report with the download script that produces it,
+and `unpinned` names a hole in the fetch rules rather than a fault in a file.
+The byte count is read before the digest, so a wrong file ends its row at a
+stat rather than at a full read. Nothing is fetched.
+
+Against the shipped ledgers, three rows read `unpinned`: the two 27B ladder
+rows, whose one fetch script pins no single artifact, and the derived
+`qwen35-08b-f16`, whose bytes `remote/derive-qwen35-08b-f16.sh` produces from
+the BF16 source rather than fetching.
 
 ## The ratchet
 

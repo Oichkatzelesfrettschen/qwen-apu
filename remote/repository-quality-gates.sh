@@ -119,6 +119,9 @@ gate_cell test-qwen-home derive \
 gate_cell test-runtime-root derive \
     'remote/test-runtime-root.sh remote/runtime-root.sh remote/qwen-home.sh' \
     remote/test-runtime-root.sh
+gate_cell test-verify-models derive \
+    'remote/test-verify-models.sh remote/verify-models.sh remote/qwen-home.sh' \
+    remote/test-verify-models.sh
 gate_cell test-check-appliance-paths derive \
     'remote/test-check-appliance-paths.sh remote/check-appliance-paths.py runtime/appliance-path-allowlist.tsv' \
     remote/test-check-appliance-paths.sh

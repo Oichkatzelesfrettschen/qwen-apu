@@ -18,7 +18,7 @@ export QWEN_HOME
 .PHONY: bootstrap install-searxng verify-searxng install-ryzenadj \
         install-image-runtime install-shaderc install-models build-llama \
         status doctor verify verify-layout verify-components verify-live \
-        uninstall purge purge-legacy \
+        verify-models uninstall purge purge-legacy \
         install-sudo-policy verify-sudo-policy uninstall-sudo-policy \
         check-paths test
 
@@ -81,6 +81,13 @@ verify-components: verify-sudo-policy
 
 verify-live:
 	$(REMOTE)/runtime-root.sh verify-live
+
+# Every registry model file and projector under the root against the byte
+# count and SHA-256 its fetch rule pins, fetching nothing. This stays out of
+# the verify union: it reads 74 GB where the three verifications above read
+# metadata, so a receipt runs it deliberately.
+verify-models:
+	$(REMOTE)/verify-models.sh
 
 verify: verify-layout verify-components verify-live
 
