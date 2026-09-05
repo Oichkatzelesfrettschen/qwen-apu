@@ -98,7 +98,7 @@ The next eight pipelines by exclusive time, same median-of-four basis:
 | `ssm_conv_silu_f32` | 18 | 20.68 | 0.57% |
 | `cpy_f32_f32` | 24 | 19.34 | 0.53% |
 
-Sum of every pipeline's exclusive time (26 pipelines, by id, median of the
+Sum of every pipeline's exclusive time (25 pipelines, by id, median of the
 four arms): 2993.38 ms, 82.62% of decode_ms, so 629.88 ms and 17.38% of the
 token sit outside every dispatch's exclusive bracket.
 
@@ -122,14 +122,26 @@ close the arithmetic (all values ms per decode graph, `decode_ms` over the
 The first three columns are ledger fields --
 `exclusive_ms_per_graph`, `ambiguous_overlap_ms_per_graph`, and
 `queue_non_dispatch_ms_per_graph`, the last of which is
-`queue_completion_span_ms_per_graph` minus `bracket_union_ms_per_graph`.
-The fourth is `retire_span_ms_per_graph` minus
-`queue_completion_span_ms_per_graph` and equals `residual_ms_per_graph` on
-all four arms. The fifth is `decode_ms / 63` minus
-`retire_span_ms_per_graph` and has no ledger field of its own. The bases
-differ between this table and the 82.62% above it: the share is a median of
-medians over the four arms, where each bridge row is one arm's own reading,
-so arm 18-I1 puts exclusive time at 82.48% of its own token.
+`queue_completion_span_ms_per_graph` minus `bracket_union_ms_per_graph`, an
+identity the retained values reproduce to rounding. The fourth is
+`retire_span_ms_per_graph` minus `queue_completion_span_ms_per_graph`, which
+is the definition `../fixed-cost-decomposition.md` gives
+`residual_ms_per_graph`, so the ledger already carries that column under its
+own name. The fifth is `decode_ms / 63` minus `retire_span_ms_per_graph` and
+has no ledger field of its own. The bases differ between this table and the
+82.62% above it: the share is a median of medians over the four arms, where
+each bridge row is one arm's own reading, so arm 18-I1 puts exclusive time
+at 82.48% of its own token and its 25 pipeline medians sum to 47.51 ms per
+graph against its own graph row's 47.538.
+
+The instrument's own retained cost sits outside the span chain and inside
+the last term. `record_ms_per_graph`, `readback_ms_per_graph`, and
+`dispatch_row_emit_ms_per_graph` are census bookkeeping fields rather than
+members of the bracket-to-served-time sequence, and the census places its
+host cost after fence retirement, so on arm 18-I1 the 0.048 ms readback and
+0.198 ms row emit land within the 2.095 ms served-time term, about 12% of
+it. That is the retained part of the perturbation the controls leave
+unbounded, not its measure.
 
 The bridge closes to a thousandth of a millisecond on every arm, and that
 is all it establishes. Vulkan timestamps delimit execution-stage intervals
