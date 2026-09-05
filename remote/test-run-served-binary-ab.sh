@@ -2113,6 +2113,7 @@ run_refusal() {
     shift 2
     run_index=$((run_index + 1))
     active_fixture=$refusal_case
+    diagnostic_file=$temporary_directory/$refusal_case-stderr.txt
     set +e
     env -i PATH="$execution_path" HOME="$home_directory" \
         QWEN_MODELS_DIRECTORY="$models_directory" \
@@ -2130,10 +2131,10 @@ run_refusal() {
     printf '%s=accepted\n' "$refusal_case"
 }
 run_refusal experiment_key_unknown \
-    'an experiment key is e4, e4-scale, or e4-scale-licm over /2, /4, or /8' \
+    'an experiment key is production/4, or e4, e4-scale, or e4-scale-licm over /2, /4, or /8' \
     QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e5-scale/4
 run_refusal experiment_key_rowless \
-    'an experiment key is e4, e4-scale, or e4-scale-licm over /2, /4, or /8' \
+    'an experiment key is production/4, or e4, e4-scale, or e4-scale-licm over /2, /4, or /8' \
     QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm
 run_refusal experiment_key_identical \
     'the two experiment keys name one arm' \
@@ -2168,6 +2169,87 @@ run_refusal_servers experiment_key_unadmitted \
     "$narrow_root/bin/llama-server" "$narrow_root/bin/llama-server" \
     QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 \
     QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4
+
+# A row that releases a formulation is the case a control key exists for.
+# qwen-capacity-policy.sh resolves an empty QWEN_Q4K_VARIANT to the registry
+# row, so an unkeyed comparison on such a row serves the release on both roles
+# and a control naming production/4 is what selects the pinned commit's own
+# module through the multiplexer instead. The registry the executing tree reads
+# is a symlink into the checked-in one, so the case replaces it with a copy
+# carrying the release and restores the link after.
+released_registry=$temporary_directory/models-released.tsv
+awk -F'\t' -v OFS='\t' -v id="$model_id" \
+    '$1 == id && NF >= 23 { $23 = "e4-scale-licm/4" } { print }' \
+    "$script_directory/models.tsv" >"$released_registry"
+[ "$("$registry_reader" id "$model_id" q4k_variant)" = - ]
+rm -- "$run_directory/models.tsv"
+cp -- "$released_registry" "$run_directory/models.tsv"
+released_variants=production/4,$keyed_variants
+released_root=$temporary_directory/keyed-build-released
+mkdir -p "$released_root/bin"
+cp -- "$keyed_server" "$released_root/bin/llama-server"
+chmod +x "$released_root/bin/llama-server"
+write_manifest "$released_root/artifact-manifest.tsv" "$keyed_bytes" "$keyed_sha256" \
+    "$candidate_patch" verified-candidate "$serving_cmake" "$serving_compiler" '' \
+    "$released_variants"
+case_control_key=production/4
+case_candidate_key=e4-scale-licm/4
+case_control_server=$released_root/bin/llama-server
+case_candidate_server=$released_root/bin/llama-server
+run_ab released_row_control 0 promoted "$experiment_rates" "$one_clock"
+active_fixture=released_row_control
+[ "$(awk -F'\t' '$1 == "control_experiment_key" { print $2 }' "$ab_last_output/inputs.tsv")" \
+    = 'production/4' ]
+released_key_failures=0
+released_control_arms=0
+for arm_record in "$ab_last_output"/arms/*/arm-environment.tsv; do
+    [ -f "$arm_record" ] || continue
+    arm_role=$(basename "$(dirname "$arm_record")")
+    arm_key=$(awk -F'\t' '$1 == "QWEN_Q4K_VARIANT" { print $2 }' "$arm_record")
+    case $arm_role in
+        *-K) arm_expected=e4-scale-licm/4 ;;
+        *) arm_expected=production/4; released_control_arms=$((released_control_arms + 1)) ;;
+    esac
+    if [ "$arm_key" != "$arm_expected" ]; then
+        printf 'arm %s carries experiment key %s where %s was asked for\n' \
+            "$arm_role" "${arm_key:--}" "$arm_expected" >&2
+        released_key_failures=1
+    fi
+done
+[ "$released_key_failures" -eq 0 ]
+[ "$released_control_arms" -gt 0 ]
+printf 'released_row_control=accepted control_arms=%s\n' "$released_control_arms"
+# The same registry, unkeyed, would run both roles under the release, so the
+# comparison is refused while the model id is the only thing it has spent.
+active_fixture=released_row_unkeyed
+run_index=$((run_index + 1))
+released_unkeyed_stderr=$temporary_directory/released-row-unkeyed-stderr.txt
+diagnostic_file=$released_unkeyed_stderr
+set +e
+env -i PATH="$run_path" HOME="$home_directory" \
+    SSH_CONNECTION="$run_ssh_connection" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+    QWEN_CENSUS_BROKER="$broker_stub" \
+    "$run_harness_path" "$released_root/bin/llama-server" \
+    "$released_root/bin/llama-server" "$model_id" \
+    "$temporary_directory/out-$run_index" \
+    >/dev/null 2>"$released_unkeyed_stderr"
+released_unkeyed_status=$?
+set -e
+[ "$released_unkeyed_status" -eq 2 ]
+grep -q 'the registry row releases q4k_variant e4-scale-licm/4' "$released_unkeyed_stderr"
+diagnostic_file=
+printf 'released_row_unkeyed=accepted\n'
+rm -- "$run_directory/models.tsv"
+ln -s -- "$script_directory/models.tsv" "$run_directory/models.tsv"
+case_control_key=
+case_candidate_key=
+case_control_server=$control_server
+case_candidate_server=$candidate_server
+
 
 # The witness reports another run's ids, so it is admitted only where that run
 # was this comparison: its own inputs name the model and both server digests.

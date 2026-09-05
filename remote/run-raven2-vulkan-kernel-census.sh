@@ -983,6 +983,22 @@ cache_v=$("$registry_reader" id "$model_id" cache_type_v)
 flash=$("$registry_reader" id "$model_id" flash_attention)
 ctx_checkpoints=$("$registry_reader" ctx-checkpoint "$model_id")
 checkpoint_min_step=8192
+# Every arm here reaches the device through qwen-launch.sh, so
+# qwen-capacity-policy.sh resolves the Q4_K formulation from the registry row
+# wherever QWEN_Q4K_VARIANT is absent, and the arm environment this campaign
+# writes names no such key. P is bound to the fixed-64 receipt's production
+# build, whose artifact manifest declares q4k_variants `-` and therefore admits
+# no key, so a row releasing a formulation refuses that launch at the policy
+# rather than measuring the pipeline the census attributes. The campaign states
+# that here while the model id is still the only thing it has spent.
+census_q4k_variant=$("$registry_reader" id "$model_id" q4k_variant)
+[ -n "$census_q4k_variant" ] || census_q4k_variant=-
+if [ "$census_q4k_variant" != - ]; then
+    printf 'the registry row releases q4k_variant %s, which every arm would serve unstated: %s\n' \
+        "$census_q4k_variant" "$model_id" >&2
+    printf 'measure the released formulation through run-served-binary-ab.sh under its own keys\n' >&2
+    exit 2
+fi
 if [ ! -r "$model_path" ]; then
     printf 'model file is unreadable: %s\n' "$model_path" >&2
     exit 2

@@ -85,14 +85,23 @@ margin_summarizer=${QWEN_WITNESS_MARGIN_SUMMARIZER:-"$script_directory/summarize
 # closed environment census_arm_exec writes, since this harness launches
 # llama-server directly rather than through radv-low-priority-env.sh, and
 # inputs.tsv records the pair; an unkeyed run records `-` on both.
+#
+# What an unkeyed arm serves is stated here rather than left to a reader. This
+# harness execs llama-server directly, so the arm reaches
+# ggml_vk_load_shaders() with GGML_VK_Q4K_VARIANT empty, which that function
+# reads as absent and answers with its own default: the production module on a
+# variant-select build and the single compiled module on every other build. The
+# registry row's release reaches this path never, so a row that releases a
+# formulation is witnessed under a key naming it rather than under an empty one.
 control_experiment_key=${QWEN_WITNESS_CONTROL_EXPERIMENT_KEY:-}
 candidate_experiment_key=${QWEN_WITNESS_CANDIDATE_EXPERIMENT_KEY:-}
 for experiment_key_value in "$control_experiment_key" "$candidate_experiment_key"; do
     case $experiment_key_value in
-        '' | e4/2 | e4/4 | e4/8 | e4-scale/2 | e4-scale/4 | e4-scale/8 | \
+        '' | production/4 | e4/2 | e4/4 | e4/8 | \
+        e4-scale/2 | e4-scale/4 | e4-scale/8 | \
         e4-scale-licm/2 | e4-scale-licm/4 | e4-scale-licm/8) ;;
         *)
-            printf 'an experiment key is e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s\n' \
+            printf 'an experiment key is production/4, or e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s\n' \
                 "$experiment_key_value" >&2
             exit 2
             ;;
@@ -191,6 +200,19 @@ model_ubatch=$(registry_field "$model_id" ubatch)
 model_cache_k=$(registry_field "$model_id" cache_type_k)
 model_cache_v=$(registry_field "$model_id" cache_type_v)
 model_flash_attention=$(registry_field "$model_id" flash_attention)
+# A witness of a row that releases a formulation states both arms. An empty key
+# creates the build's default pipeline, so an unkeyed witness of such a row
+# would compare the production module against itself and report token identity
+# about a formulation the row never serves.
+model_q4k_variant=$(registry_field "$model_id" q4k_variant)
+[ -n "$model_q4k_variant" ] || model_q4k_variant=-
+if [ "$model_q4k_variant" != - ] && [ -z "$control_experiment_key" ]; then
+    printf 'the registry row releases q4k_variant %s, which an unkeyed witness serves on neither arm: %s\n' \
+        "$model_q4k_variant" "$model_id" >&2
+    printf 'name QWEN_WITNESS_CONTROL_EXPERIMENT_KEY=production/4 and QWEN_WITNESS_CANDIDATE_EXPERIMENT_KEY=%s\n' \
+        "$model_q4k_variant" >&2
+    exit 2
+fi
 if [ ! -r "$model_path" ]; then
     printf 'model is unreadable: %s\n' "$model_path" >&2
     exit 2

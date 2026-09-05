@@ -93,13 +93,17 @@ set -eu
 #                                    carries, default
 #                                    llama-vulkan-q4k-activation-group-sums.patch
 #   QWEN_AB_CONTROL_EXPERIMENT_KEY   the Q4_K mat-vec arm the control server is asked for,
-#   QWEN_AB_CANDIDATE_EXPERIMENT_KEY and the arm the candidate is asked for: an algorithm over
-#                                    e4, e4-scale, and e4-scale-licm with a row count of /2,
-#                                    /4, or /8. Each reaches its arm as QWEN_Q4K_VARIANT beside
-#                                    QWEN_Q4K_EXPERIMENT_ARM=1, the declaration that lets the arm
-#                                    name a formulation the registry row does not release, and is
-#                                    recorded in that arm's own arm-environment.tsv; an empty
-#                                    value leaves the build's default
+#   QWEN_AB_CANDIDATE_EXPERIMENT_KEY and the arm the candidate is asked for: production/4, or an
+#                                    algorithm over e4, e4-scale, and e4-scale-licm with a row
+#                                    count of /2, /4, or /8. Each reaches its arm as
+#                                    QWEN_Q4K_VARIANT beside QWEN_Q4K_EXPERIMENT_ARM=1, the
+#                                    declaration that lets the arm name a formulation the
+#                                    registry row does not release, and is recorded in that
+#                                    arm's own arm-environment.tsv. production/4 is the control
+#                                    key against a build whose manifest admits it: an empty
+#                                    value leaves the registry row's own release, which a row
+#                                    releasing a formulation would serve on both roles, so an
+#                                    unkeyed comparison is refused on such a row
 #   QWEN_AB_WITNESS_DIRECTORY        a run-kernel-delta-witness.sh output directory whose
 #                                    token identity and margin contract the summary reports
 #                                    beside the paired bound
@@ -264,10 +268,11 @@ control_experiment_key=${QWEN_AB_CONTROL_EXPERIMENT_KEY:-}
 candidate_experiment_key=${QWEN_AB_CANDIDATE_EXPERIMENT_KEY:-}
 for experiment_key_value in "$control_experiment_key" "$candidate_experiment_key"; do
     case $experiment_key_value in
-        '' | e4/2 | e4/4 | e4/8 | e4-scale/2 | e4-scale/4 | e4-scale/8 | \
+        '' | production/4 | e4/2 | e4/4 | e4/8 | \
+        e4-scale/2 | e4-scale/4 | e4-scale/8 | \
         e4-scale-licm/2 | e4-scale-licm/4 | e4-scale-licm/8) ;;
         *)
-            printf 'an experiment key is e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s\n' \
+            printf 'an experiment key is production/4, or e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s\n' \
                 "$experiment_key_value" >&2
             exit 2
             ;;
@@ -654,6 +659,23 @@ cache_v=$("$registry_reader" id "$model_id" cache_type_v)
 flash=$("$registry_reader" id "$model_id" flash_attention)
 ctx_checkpoints=$("$registry_reader" ctx-checkpoint "$model_id")
 checkpoint_min_step=8192
+# The row's own Q4_K release decides what an unkeyed arm serves. Every arm
+# carries QWEN_Q4K_EXPERIMENT_ARM=1 and reaches qwen-capacity-policy.sh, which
+# takes the registry row wherever QWEN_Q4K_VARIANT is empty, so an unkeyed
+# comparison on a releasing row would run both roles under that row's
+# formulation while the receipt named a binary pair. A keyed comparison states
+# each role instead, and production/4 is the name the control takes: it selects
+# the pinned commit's own module through the multiplexer rather than leaving the
+# selection to a registry field the campaign never read.
+registry_q4k_variant=$("$registry_reader" id "$model_id" q4k_variant)
+[ -n "$registry_q4k_variant" ] || registry_q4k_variant=-
+if [ "$experiment_key_mode" -eq 0 ] && [ "$registry_q4k_variant" != - ]; then
+    printf 'the registry row releases q4k_variant %s, which an unkeyed comparison would serve on both roles: %s\n' \
+        "$registry_q4k_variant" "$model_id" >&2
+    printf 'name QWEN_AB_CONTROL_EXPERIMENT_KEY=production/4 and QWEN_AB_CANDIDATE_EXPERIMENT_KEY=%s\n' \
+        "$registry_q4k_variant" >&2
+    exit 2
+fi
 if [ ! -r "$model_path" ]; then
     printf 'model file is unreadable: %s\n' "$model_path" >&2
     exit 2
