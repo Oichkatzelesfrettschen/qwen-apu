@@ -153,7 +153,9 @@ if build_presets "$merged" QWEN_WEB_AUTHORIZER_READY=1 \
             print key
         }
     ' "$merged" | LC_ALL=C sort | tr '\n' ' ')
-    merged_expected='LLAMA_ARG_ALIAS LLAMA_ARG_BATCH LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CTX_SIZE LLAMA_ARG_FLASH_ATTN LLAMA_ARG_MCP_SERVERS_CONFIG LLAMA_ARG_MODEL LLAMA_ARG_TAGS LLAMA_ARG_UBATCH '
+    # web-open resolves to qwen38-4b-distill, whose row releases a Q4_K
+    # formulation, so its section carries that key beside the six tuple keys.
+    merged_expected='LLAMA_ARG_ALIAS LLAMA_ARG_BATCH LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CTX_SIZE LLAMA_ARG_FLASH_ATTN LLAMA_ARG_MCP_SERVERS_CONFIG LLAMA_ARG_MODEL LLAMA_ARG_TAGS LLAMA_ARG_UBATCH LLAMA_ARG_VK_Q4K_VARIANT '
     merged_config=$(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$merged")
     if [ "$(section_count "$merged")" -eq 16 ] &&
         grep -qx '# qwen_web_sections=web-open' "$merged" &&
@@ -306,6 +308,27 @@ else
     cat "$work/reviewed.err" >&2
 fi
 
+# The shipped registry releases a Q4_K formulation on one row, so the preset the
+# generator writes carries that key and the policy holds it to the build's own
+# declaration. The fixture server states the declaration the way a real build
+# does, in an artifact manifest beside the executable, so every launch here runs
+# against a build that admits the release rather than against one that admits no
+# key at all.
+release_build=$work/release-build
+mkdir -p "$release_build"
+cp "$fake_server" "$release_build/llama-server"
+chmod +x "$release_build/llama-server"
+{
+    printf 'executable\tllama-server\t%s\t%s\n' \
+        "$(stat -c %s -- "$release_build/llama-server")" \
+        "$(sha256sum -- "$release_build/llama-server" | cut -d ' ' -f 1)"
+    printf 'q4k_variants\tproduction/4,e4-scale-licm/4,route=arg:LLAMA_ARG_VK_Q4K_VARIANT\n'
+} >"$release_build/artifact-manifest.tsv"
+release_server=$release_build/llama-server
+# The formulation set the shipped preset names, which the exec guard compares
+# against what the policy bound.
+release_q4k_requirement=e4-scale-licm/4
+
 run_policy() {
     policy_preset=$1
     policy_ledger=${2:-$web_profiles}
@@ -317,7 +340,7 @@ run_policy() {
     QWEN_RADV_ICD=$fake_icd \
     QWEN_POLICY_TEST_OUTPUT=$work/policy.out \
     QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$policy_preset QWEN_ROUTER_MAX=1 \
-        "$policy" "$fake_server" \
+        "$policy" "$release_server" \
         "$model_root/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf" 8192 18080
 }
 
@@ -367,7 +390,7 @@ if "$exec_guard" "$merged" "$(guard_digest "$merged")" \
     "$(guard_digest "$script_directory/draft-pairs.tsv")" \
     "$web_profiles" "$(guard_digest "$web_profiles")" \
     "$ctx_ledger" "$(guard_digest "$ctx_ledger")" \
-    - \
+    "$release_q4k_requirement" \
     true >"$work/guard.log" 2>"$work/guard.err"; then
     report exec_guard_admits_both_ledgers ok
 else
@@ -381,7 +404,7 @@ if "$exec_guard" "$merged" "$(guard_digest "$merged")" \
     "$(guard_digest "$script_directory/draft-pairs.tsv")" \
     "$web_profiles" "$(guard_digest "$script_directory/models.tsv")" \
     "$ctx_ledger" "$(guard_digest "$ctx_ledger")" \
-    - \
+    "$release_q4k_requirement" \
     true >"$work/guard-swap.log" 2>"$work/guard-swap.err"; then
     report exec_guard_web_ledger_swap_refused admitted
 elif grep -q 'router web profile ledger identity changed' \
@@ -437,7 +460,7 @@ run_image_policy() {
     QWEN_RADV_ICD=$fake_icd \
     QWEN_POLICY_TEST_OUTPUT=$work/image-policy.out \
     QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$1 QWEN_ROUTER_MAX=1 \
-        "$policy" "$fake_server" \
+        "$policy" "$release_server" \
         "$model_root/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf" 8192 18080
 }
 if run_image_policy "$imaged" >"$work/image-policy.log" \
@@ -715,7 +738,7 @@ if "$exec_guard" "$q4k_preset" "$(guard_digest "$q4k_preset")" \
     - \
     true >"$work/q4k-guard.log" 2>"$work/q4k-guard.err"; then
     report q4k_guard_underderived_requirement_refused admitted
-elif grep -q 'names Q4_K formulations e4-scale/4 where the policy bound -' \
+elif grep -q 'names Q4_K formulations e4-scale-licm/4,e4-scale/4 where the policy bound -' \
     "$work/q4k-guard.err"; then
     report q4k_guard_underderived_requirement_refused ok
 else

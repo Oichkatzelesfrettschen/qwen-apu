@@ -634,13 +634,22 @@ else
 fi
 
 # The Q4_K formulation reaches a section exactly where its row releases one.
-# Every shipped row reads `-`, so the generated preset carries no key at all,
-# and a registry copy releasing one for the 2B distill puts exactly one key in
-# that section and leaves every other section unchanged.
-if grep -q '^LLAMA_ARG_VK_Q4K_VARIANT' "$presets"; then
-    report q4k_unreleased_registry_emits_no_key rejected
+# The shipped registry releases e4-scale-licm/4 on qwen38-4b-distill alone, so
+# the generated preset carries that key in the 4B roster section and the draft
+# pair whose target is that row, and nowhere else.
+shipped_q4k_sections=$(awk -F'[][]' '
+    /^\[/ { section = $2 }
+    /^LLAMA_ARG_VK_Q4K_VARIANT = e4-scale-licm\/4$/ { print section }' "$presets" |
+    sort -u | tr '\n' ' ')
+shipped_q4k_other=$(grep '^LLAMA_ARG_VK_Q4K_VARIANT' "$presets" |
+    grep -cv 'e4-scale-licm/4$' || true)
+if [ "$shipped_q4k_sections" = \
+        'qwen38-4b-distill qwen38-4b-distill+qwen35-08b-draft ' ] &&
+    [ "$shipped_q4k_other" -eq 0 ]; then
+    report q4k_released_registry_emits_row_key accepted
 else
-    report q4k_unreleased_registry_emits_no_key accepted
+    report q4k_released_registry_emits_row_key rejected
+    printf 'sections=%s other=%s\n' "$shipped_q4k_sections" "$shipped_q4k_other" >&2
 fi
 
 q4k_registry=$work/q4k-models.tsv
@@ -655,8 +664,10 @@ if QWEN_MODEL_REGISTRY=$q4k_registry QWEN_MODEL_ROOT=$model_root \
     "$builder" "$q4k_presets" >"$work/q4k-build.log" 2>"$work/q4k-build.err"; then
     q4k_key_lines=$(grep -c '^LLAMA_ARG_VK_Q4K_VARIANT = e4-scale/4$' \
         "$q4k_presets" || true)
+    # The 4B row of the copied registry keeps its own release, so a key that
+    # is neither the fixture's nor that row's is what a leak would read as.
     q4k_other_keys=$(grep '^LLAMA_ARG_VK_Q4K_VARIANT' "$q4k_presets" |
-        grep -cv 'e4-scale/4$' || true)
+        grep -cv -e 'e4-scale/4$' -e 'e4-scale-licm/4$' || true)
     q4k_section=$(awk -F'[][]' '
         /^\[/ { section = $2 }
         /^LLAMA_ARG_VK_Q4K_VARIANT/ { print section }' "$q4k_presets" |
@@ -665,7 +676,7 @@ if QWEN_MODEL_REGISTRY=$q4k_registry QWEN_MODEL_ROOT=$model_root \
     # target row key beside the roster section of the same checkpoint.
     if [ "$q4k_key_lines" -ge 1 ] && [ "$q4k_other_keys" -eq 0 ] &&
         [ "$q4k_section" = \
-            'qwen38-2b-distill qwen38-2b-distill+qwen35-08b-draft ' ]; then
+            'qwen38-2b-distill qwen38-2b-distill+qwen35-08b-draft qwen38-4b-distill qwen38-4b-distill+qwen35-08b-draft ' ]; then
         report q4k_released_row_emits_key accepted
     else
         report q4k_released_row_emits_key rejected
