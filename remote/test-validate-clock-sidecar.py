@@ -264,8 +264,58 @@ def case_dpm_marker_cadence():
     result = refused(record, "dpm_marker_cadence",
                      period_ns=period_ns, window=(start, last))
     terminal_gap = last - start
+    assert f"median_gap_ns={terminal_gap}" in result.stdout, result.stdout
     assert f"max_gap_ns={terminal_gap}" in result.stdout, result.stdout
     assert "failures=dpm_marker_cadence" in result.stdout, result.stdout
+
+    # One hold-off inside the window: telemetry-broker.c refreshes on a tick
+    # count and re-bases a missed deadline, so a sampler held off the CPU for
+    # 60 ms inside ten 5 ms ticks stretches that one marker gap to 110 ms --
+    # above the 75 ms bound -- while every other gap reads the declared 50 ms.
+    # The stride claim reads the median and accepts; the widest gap is host
+    # time the row-gap and lost-fraction rules price, and the line carries it
+    # beside the median so the hold-off stays visible. This is the shape of
+    # the two arms evidence/q4k-scale-decode/target-closure-20260905/ lost.
+    hold_off_ns = 60_000_000
+    lines = [
+        f"# clock=CLOCK_MONOTONIC period_ns={period_ns} drm_device=/fake hwmon=/fake/hwmon0",
+        f"# sample_rates: gpu_busy_percent_period_ns={period_ns} pp_dpm_period_ns={declared}",
+        "# interpretation: pp_dpm_sclk_selected_mhz is the selected graphics clock step",
+        "# sampler_pid=4242 nice=10 cpu_affinity=1",
+        COLUMNS,
+    ]
+    start = 1_000_000_000
+    instant = start
+    instants = []
+    for index in range(120):
+        if index == 45:
+            instant += hold_off_ns
+        if index % 10 == 0:
+            lines.append(f"# dpm_read={instant}")
+        lines.append(f"{instant}\t400\t933\t1067\t37\t61000\t30000")
+        instants.append(instant)
+        instant += period_ns
+    last = instants[-1]
+    lines.append(f"# samples=120 achieved_period_ns={(last - start) // 119}"
+                 f" mean_sample_cost_ns=30000 max_sample_cost_ns=30000"
+                 f" samples_with_unavailable_sensor=0"
+                 f" first_sample_ns={start} last_sample_ns={last}")
+    record = "\n".join(lines) + "\n"
+    result = validate(record, period_ns=period_ns, window=(start, last),
+                      extra=["--max-gap-ns", str(hold_off_ns + period_ns),
+                             "--max-lost-fraction", "0.2"])
+    assert (f"dpm_marker_cadence=accepted median_gap_ns={declared}"
+            f" max_gap_ns={declared + hold_off_ns} gaps=12") in result.stdout, result.stdout
+    assert "gaps=accepted" in result.stdout, result.stdout
+    assert result.returncode == 0, result.stdout
+
+    # The same record read under the row-gap bound the campaigns carry: the
+    # hold-off is refused by name as coverage, which is the rule that owns it.
+    result = validate(record, period_ns=period_ns, window=(start, last),
+                      extra=["--max-gap-ns", str(period_ns * 4)])
+    assert "dpm_marker_cadence=accepted" in result.stdout, result.stdout
+    assert "gaps=refused" in result.stdout, result.stdout
+    assert result.returncode != 0, result.stdout
     print("case=dpm_marker_cadence verdict=accepted")
 
 
