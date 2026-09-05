@@ -1251,6 +1251,40 @@ excluding zero, so the run neither confirms nor refutes the Q4_K
 activation-group-sums prediction and a higher replicate count or an
 identified scatter source is what would separate them.
 
+## Standing verdicts of the three calibration controls
+
+The instrument's three registered controls are each closed here as accepted
+or as recorded-unresolved, from the latest calibration under the commanded
+clock pair, `20260902T2124Z/`. A later calibration that moves a row replaces
+that row; a row that reads `recorded-unresolved` licenses no bound and
+retracts no local comparison.
+
+| control | claim | pair | interval from `20260902T2124Z/summary.tsv` | bound | standing verdict | what it licenses |
+| --- | --- | --- | --- | ---: | --- | --- |
+| C0 sidecar | the 10 ms clock sampler at nice 19 costs the served rate under 0.65% | P-nosidecar against P | incomplete: slot 3 refused on `window_lost_fraction=0.1000` under host `load1` 4.55 | 0.0065 | recorded-unresolved | a sidecar-sampled rate is a rate under the sampler; chain seven measured the cost at 1.0 to 1.4% above the bound, and no later chain has resolved it |
+| C1 compile | compiled-in census instrumentation, collection off, moves the rate under 0.65% | P against I0 | mean +0.0342, sd 0.0348, ci [-0.0211, +0.0895], four pairs | 0.0065 | recorded-unresolved | an I0 rate is read against an I0 control, never against P; the sign of the mean is toward I0 and the interval spans zero, so the arm-to-arm scatter and not the mechanism sets its width |
+| C2 collect | collection on moves the rate under 2% | I0 against I1 | mean -0.0114, sd 0.0064, ci [-0.0215, -0.0012], four pairs | 0.02 | recorded-unresolved | the collection cost is measured at about 1.1% with an interval that excludes zero and crosses the bound by 0.0015; an I1 ledger's ownership shares are read as shares of an I1 graph |
+
+Two scopes stay distinct. The E4 served comparisons under
+`e4/served-ab-*` and the composed run under `q4k-scale-decode/` put the
+instrument, or the absence of it, on both sides of each pair, so they
+establish a local paired effect between two servers under one state and
+nothing about the instrument's own cost; C0 through C2 reading
+recorded-unresolved retracts none of those comparisons. In the other
+direction, a precise paired E4 differential establishes no universal
+overhead bound, so an attribution census on a new class carries the C2
+figure as a stated 1.1% collection term rather than as a resolved zero, and
+its ownership shares are read against its own I1 graph span.
+
+What would move a row: for C0, one calibration whose four sidecar pairs
+complete under `load1` below 2 with the sampler on the standalone broker,
+which `dpm-authority/20260902T2154Z-nice-probe/` makes the registered next
+measurement; for C1 and C2, replicate counts that narrow the paired interval
+past the bound, since both intervals are set by scatter that the retained
+runs measure at 3.5% (C1) and 0.6% (C2) standard deviation. The instrument
+revision is closed at this enumeration; a future reader improvement reopens
+a row only where it changes a retained verdict.
+
 ## Order and falsifiers
 
 Runs go 2B, then 0.8B, then 4B. The 2B validates the instrument, the 0.8B

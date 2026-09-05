@@ -2373,6 +2373,55 @@ fi
 diagnostic_file=
 printf 'brick_receipt_unbound=accepted\n'
 
+# A brick measured under another instrumented executable carries that
+# binary's digest in its input closure, so its receipt is genuine and bound to
+# its root and the brick still goes back to the device: the closure, not the
+# receipt's integrity, is what a changed executable moves. The three bricks
+# whose closure still holds are reused around it.
+active_fixture=brick_closure_binary_changed
+prior_other_binary=$temporary_directory/prior-other-binary
+write_prior_calibration "$prior_other_binary"
+write_prior_receipt "$prior_other_binary" C3 13 S 3.000
+saved_instrumented_sha256=$instrumented_sha256
+instrumented_sha256=$(printf 'another instrumented build' | sha256sum | cut -d ' ' -f 1)
+write_prior_receipt "$prior_other_binary" C2 '9 10 11 12' 'I0 I1 I1 I0' "$(prior_rate_range 9 12)"
+instrumented_sha256=$saved_instrumented_sha256
+brick_other_output=$temporary_directory/out-brick-other-binary
+brick_status=$(run_brick_calibration brick_closure_binary_changed "$prior_other_binary" \
+    "$brick_other_output")
+other_binary_line=$(grep '^census_brick_reuse=closure_changed brick=C2 ' \
+    "$temporary_directory/brick_closure_binary_changed-stdout.txt" || true)
+if [ -z "$other_binary_line" ]; then
+    printf 'a brick closed over another executable was reused or refused without naming the closure\n' >&2
+    grep '^census_brick_reuse' "$temporary_directory/brick_closure_binary_changed-stdout.txt" >&2
+    exit 1
+fi
+recorded_closure=$(printf '%s\n' "$other_binary_line" | sed 's/.*recorded=\([0-9a-f]*\).*/\1/')
+current_closure=$(printf '%s\n' "$other_binary_line" | sed 's/.*current=\([0-9a-f]*\).*/\1/')
+if [ -z "$recorded_closure" ] || [ "$recorded_closure" = "$current_closure" ]; then
+    printf 'the closure line names one digest twice: %s\n' "$other_binary_line" >&2
+    exit 1
+fi
+if ! grep -q '^census_brick_reuse=preflight .*bricks=C0 C1 C3$' \
+    "$temporary_directory/brick_closure_binary_changed-stdout.txt"; then
+    printf 'the bricks whose closure held were not reused around the changed one\n' >&2
+    grep '^census_brick_reuse=preflight' "$temporary_directory/brick_closure_binary_changed-stdout.txt" >&2
+    exit 1
+fi
+if [ -r "$brick_other_output/arms.tsv" ]; then
+    if awk -F'\t' 'NR > 1 && $1 >= 9 && $1 <= 12 && $10 == "reused"' "$brick_other_output/arms.tsv" | grep -q .; then
+        printf 'a slot of the changed brick was echoed as reused\n' >&2
+        exit 1
+    fi
+fi
+if [ -z "$(find "$brick_other_output/arms" -maxdepth 1 -type d -name '09-*' -print -quit 2>/dev/null)" ]; then
+    printf 'the changed brick left no measured arm directory for slot 9\n' >&2
+    ls "$brick_other_output/arms" >&2 || true
+    exit 1
+fi
+diagnostic_file=
+printf 'brick_closure_binary_changed=accepted status=%s\n' "$brick_status"
+
 # A brick is reused only where the readers this run names accept the bytes its
 # arms retained, so the four ways that can fail are read one at a time. Each
 # case leaves the campaign to measure the refused brick again, which is the

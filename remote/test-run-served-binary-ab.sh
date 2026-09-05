@@ -727,6 +727,15 @@ arm_control() {
 env >>"$arm_environment"
 arm_label=$1
 model_launch_path=$2
+# A case that signals the campaign mid-arm names a release file here, so the
+# arm stays in flight until the case has read the state it is about to change
+# rather than finishing inside the poll interval the case reads at.
+arm_hold_file=$(arm_control hold)
+if [ -n "$arm_hold_file" ]; then
+    while [ ! -e "$arm_hold_file" ]; do
+        sleep 0.05
+    done
+fi
 served_rate=$(awk -F'\t' -v label="$arm_label" '$1 == label { print $2 }' \
     "$(arm_control rates)")
 # The identities the launch chain is handed reach the ledger the case reads, so
@@ -1799,7 +1808,14 @@ cp -R -- "$fixture_drm" "$engine_clock_term_drm"
 printf 'auto\n' >"$engine_clock_term_drm/power_dpm_force_performance_level"
 engine_clock_term_stdout=$temporary_directory/engine-clock-term-stdout.txt
 : >"$engine_clock_term_stdout"
-printf 'rates\t%s\n' "$promoted_rates" >"$arm_controls"
+diagnostic_file=$engine_clock_term_stdout
+# The priming arm holds until the signal has been sent, so the campaign is
+# provably at the applied clock when TERM arrives; a fake arm otherwise
+# completes the whole campaign inside one poll interval and exits 0 on its
+# own, which is the race this case measured one run in three.
+engine_clock_term_release=$temporary_directory/engine-clock-term-release
+rm -f "$engine_clock_term_release"
+printf 'rates\t%s\nhold\t%s\n' "$promoted_rates" "$engine_clock_term_release" >"$arm_controls"
 env -i PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
     QWEN_MODELS_DIRECTORY="$models_directory" \
     QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
@@ -1815,6 +1831,7 @@ env -i PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connecti
     "$temporary_directory/out-$run_index" \
     >"$engine_clock_term_stdout" 2>"$temporary_directory/engine-clock-term-stderr.txt" &
 engine_clock_term_pid=$!
+diagnostic_file=$temporary_directory/engine-clock-term-stderr.txt
 # The signal is sent once the campaign has written the level, which its
 # applied line proves. The wait is bounded by the campaign's own life rather
 # than by a fixed budget: the digests and registry reads ahead of the write
@@ -1839,10 +1856,20 @@ while ! grep -q '^engine_clock=applied ' "$engine_clock_term_stdout"; do
 done
 [ "$(cat "$engine_clock_term_drm/power_dpm_force_performance_level")" = manual ]
 kill -TERM "$engine_clock_term_pid"
+# The trap runs once the held arm returns, so the release follows the signal.
+: >"$engine_clock_term_release"
 set +e
 wait "$engine_clock_term_pid"
 engine_clock_term_status=$?
 set -e
+# The readback belongs on the campaign's stdout alone: a signal that lands
+# while an arm's ledger append holds the redirection once put it into
+# inputs.tsv, which is the corruption the descriptor-9 traps remove.
+if grep -rq 'dpm_restore=' "$temporary_directory/out-$run_index"; then
+    printf 'the restore readback reached a campaign ledger:\n' >&2
+    grep -r 'dpm_restore=' "$temporary_directory/out-$run_index" >&2
+    exit 1
+fi
 if [ "$engine_clock_term_status" -ne 143 ]; then
     printf 'the signalled campaign exited %s where its TERM trap exits 143:\n' \
         "$engine_clock_term_status" >&2

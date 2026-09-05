@@ -1,0 +1,12 @@
+# check	status	detail
+initial-page-get	pass	http=200 bytes=201544
+initial-health	pass	http=200
+initial-models	pass	count=16 ids=lfm25-vl-16b,qwen35-08b,qwen35-08b-f16,qwen35-08b-unsloth-unc,qwen35-2b,qwen35-2b-hauhau,qwen35-2b-heretic,qwen35-2b-unredacted,qwen35-4b-base,qwen38-2b-distill,qwen38-2b-distill+qwen35-08b-draft,qwen38-2b-uncensored,qwen38-4b-distill,qwen38-4b-distill+qwen35-08b-draft,qwenseer-2b,web-open
+initial-props	pass	model=qwen35-08b
+initial-broker-health	pass	origin=http://qwen-laptop.local:42070 source=explicit-or-query
+initial-artifacts-health	pass	origin=http://qwen-laptop.local:42071 source=explicit-or-query
+web_search_turn	pass	dialog_heading=Authorize one web search grant_requests=1
+image_generation_turn	pass	caption=sha256 45769cfedea00a976f6178736deb0e82c3d6134eaebe5fd5dc23a203a214cd07 | seed 123456789 | 512x512 | 1 steps | image-sdx
+conversation_restoration	pass	id=cmtnzfvoyfdqoyy
+tool_prefix_checkpoint	pass	model=qwen35-08b subject_source=roster-first-qwen35-architecture-id prefix=cold nonce=20260905T061048Z-3241707 first_status=200 first_prompt_n=334 second_status=200 second_prompt_n=18 ratio<=0.5
+relaunch	skip	pass --with-relaunch as an operator on the laptop to run it

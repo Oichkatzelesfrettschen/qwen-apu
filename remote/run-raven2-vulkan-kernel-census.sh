@@ -1703,7 +1703,17 @@ if [ -n "$reuse_directory" ]; then
         fi
         reuse_closure=$(awk -F'\t' '$1 == "input_closure_sha256" { count++; value = $2 }
             END { if (count == 1) print value; else print "-" }' "$reuse_receipt")
-        [ "$reuse_closure" = "$(brick_input_closure_sha256 "$brick_id")" ] || continue
+        # The closure names the acquisition contract, the brick's arm list, and,
+        # for the two bricks that execute the census build, that executable's
+        # digest, so a brick measured under another instrumented server is a
+        # genuine, bound receipt that still goes back to the device; the line
+        # says which input moved rather than leaving the rerun unexplained.
+        reuse_current_closure=$(brick_input_closure_sha256 "$brick_id")
+        if [ "$reuse_closure" != "$reuse_current_closure" ]; then
+            printf 'census_brick_reuse=closure_changed brick=%s recorded=%s current=%s\n' \
+                "$brick_id" "$reuse_closure" "$reuse_current_closure"
+            continue
+        fi
         # A receipt states rates the echoed ledger rows must carry, so the
         # prior arms.tsv is rejoined to it slot by slot: a directory whose
         # ledger and receipt disagree is not reused rather than reused on
@@ -1847,10 +1857,16 @@ engine_clock_mclk_readback=-
 if [ "$engine_clock_policy" != auto ]; then
     census_engine_clock_require_sudo
     engine_clock_snapshot=$(census_engine_clock_snapshot "$drm_device") || exit 2
-    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; remove_workload_lease_proof' EXIT
-    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; remove_workload_lease_proof; trap - EXIT; exit 143' TERM
-    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; remove_workload_lease_proof; trap - EXIT; exit 130' INT
-    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; remove_workload_lease_proof; trap - EXIT; exit 129' HUP
+    # The readback the restore prints belongs on the campaign's own stdout. A
+    # signal can arrive while an arm's ledger append holds a redirection of
+    # this shell's stdout, and a trap running then would write the readback
+    # into that ledger and hide it from the caller, so the original stdout is
+    # kept on descriptor 9 and every trap prints there.
+    exec 9>&1
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot" >&9; remove_workload_lease_proof' EXIT
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot" >&9; remove_workload_lease_proof; trap - EXIT; exit 143' TERM
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot" >&9; remove_workload_lease_proof; trap - EXIT; exit 130' INT
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot" >&9; remove_workload_lease_proof; trap - EXIT; exit 129' HUP
     census_engine_clock_write_level "$engine_clock_policy" "$drm_device"
     if [ "$engine_clock_policy" = manual ]; then
         # The selection is captured rather than redirected: a refusal inside
