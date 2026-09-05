@@ -348,7 +348,7 @@ different outcomes.
 | --- | --- | --- | --- |
 | component admission | does the change help at all, correctly | paired lower bound above zero, correctness held | **passed** |
 | target closure | does the production candidate clear the serving target | absolute lower bound above 10 tok/s | **closed once, unresolved on the repeat** (`target-closure-20260905/`) |
-| 4B promotion | does the composed candidate beat production on the 4B by the paired rule | paired lower bound above +5% | **promoted**, +6.63% [+6.17, +7.09] (`../raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/`) |
+| 4B promotion | does the composed candidate beat production on `qwen38-4b-distill` Q4_K_M by the paired rule | paired lower bound above +5% | **promoted**, +6.63% [+6.17, +7.09] (`../raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/`) |
 | platform promotion | is it worth a Raven2-wide default | one-sided 5% | **not passed** |
 
 **Component admission passed.** The 2B distill's paired interval is +1.63% to +2.04%, whose
@@ -374,9 +374,17 @@ composition run of the production candidate against `main`, read on its own abso
 bound in a single sweep.
 
 **Platform promotion is not passed.** The whole interval lies below +5% on the primary class,
-the 4B measures -0.02% on the same binary and the same shader, and a default that helps one
+the 4B measured -0.02% on the two-patch binary and the same shader, and a default that helps one
 checkpoint and not another of the same quantization recipe is a profile setting rather than a
-platform default.
+platform default. The composed five-patch stack later read +6.63% [+6.17, +7.09] on
+`qwen38-4b-distill` Q4_K_M
+(`../raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/`),
+which promotes that one artifact at its own tuple and shader selection and leaves the
+platform verdict where the class disagreement puts it. The candidate mean in that window
+is 3.2885 tok/s against the production mean 3.084: +6.63% removes about 6.22% of the time
+per token, and the 5.25 tok/s interactive target of `evidence/decode-bound-analysis.md`
+sits about 59.6% of rate above 3.2885, so both figures describe that window rather than a
+replacement baseline.
 
 Reading these apart is what the numbers support. One arm answering all three would have to be
 promoted on a bound it does not clear or discarded despite a gain it does carry, and the 2B
