@@ -1,0 +1,26 @@
+# field	value	source_path
+main_commit	e909cfc9f0c50eb19969469d047bbd363439ea36	$HOME/Github/qwen-apu/runtime-tree-manifest.tsv
+runtime_tree_digest	aef80b814741b84b0fd33814c624af807220946ae952cacb370e788e8b54faf5	$HOME/Github/qwen-apu/runtime-tree-manifest.tsv
+patch_tree_digest	146b74301a50fb33bdbf35a61c1648b85517bdf75d94637e3561ee85b580ea1d	$HOME/Github/qwen-apu/runtime-tree-manifest.tsv
+server_digest	5dd86b90154f6143a5303efd2590b9268a0a5e3e908c4d6791f1fde03a4782c2	$HOME/Github/qwen-apu/.runtime/deployments/main-e909cfc-r1/bundle-manifest.tsv
+bundle_digest	e472abc53b7fd671133554035844fda9de6d524a3abc25a47832aed891b245a4	$HOME/Github/qwen-apu/.runtime/deployments/main-e909cfc-r1/bundle-manifest.tsv
+router_preset_digest	7500aac9f80b038619b720fbd1e0af4f294c1cf89cecc2ea50c4c4e10616504a	$HOME/Github/qwen-apu/.runtime/deployments/main-e909cfc-r1/router-presets.ini
+web_preset_digest	-	-
+model_ledger_digest	c6ff402827d6e09db85bccbbe453c4f2d30bc46a6a69528bbf06a275b606dd82	$HOME/Github/qwen-apu/remote/models.tsv
+checkpoint_ledger_digest	b8644d874a0e34b7e3be8e4d673961805991b30396edd2c84467c0b4261f419a	$HOME/Github/qwen-apu/.runtime/deployments/main-e909cfc-r1/ctx-checkpoints.tsv
+tool_prefix_identity	-:-	$HOME/Github/qwen-apu/.runtime/deployments/main-e909cfc-r1/artifact-manifest.tsv
+open_lan_policy_identity	lan_exposure=1 lan_address=10.0.0.170 lan_name=qwen-laptop.local lan_open=0 lan_boundary=lan-authenticated profile=low-async host=10.0.0.170 port=42069 context=24576 latency_mode=observe utc=2026-09-05T01:42:34Z	$HOME/Github/qwen-apu/.runtime/state/session.status
+served_page_identity	source=$HOME/Github/qwen-apu/remote/../webui sha256=dcb26eee4d9a78ac20ba23041283163d9db51750d4f694c4a48d5afbbc3cb999 prompt_bound=- output_bound=-	$HOME/Github/qwen-apu/.runtime/state/session.status
+runtime_schema_version	1	$HOME/Github/qwen-apu/.runtime/.qwen-runtime-root
+qwen_home	$HOME/Github/qwen-apu/.runtime	$HOME/Github/qwen-apu/remote/qwen-home.sh
+runtime_manifest_sha256	46a185b147fe2b286bb721c08740f1d1f1544cf88553f00906160ede4da7ef2f	$HOME/Github/qwen-apu/.runtime/manifest.tsv
+searxng_source_commit	a30b2d47492ab46ae82ce25ee62a31626565cf67	$HOME/Github/qwen-apu/.runtime/manifest.tsv
+searxng_venv_identity	118541c556ae88c920e778bd5b08877a9f50720b1c7a5ef762ff651c7d33dc7e	$HOME/Github/qwen-apu/.runtime/manifest.tsv
+ryzenadj_digest	a5127380499a6bdbad5134fdab6801957b03b963a72aa9f6b8e16a0d67250803	$HOME/Github/qwen-apu/.runtime/manifest.tsv
+image_runtime_digest	4eb6d155c8b1e077de5613a7282410d78c2fc984e9c3aedf9287c0aa788817c8	$HOME/Github/qwen-apu/.runtime/manifest.tsv
+shaderc_digest	absent	$HOME/Github/qwen-apu/.runtime/manifest.tsv
+models_manifest_digest	dcf46173a9bac5ebc6e7eea125ead7877502f0e11a46c6dacbb7a856dde87d1f	$HOME/Github/qwen-apu/.runtime/manifest.tsv
+sudo_policy_digest	12ca4063486c8c3207daf6ba40cedec0790cc39c525e0ff1b81358b927820333	$HOME/Github/qwen-apu/.runtime/manifest.tsv
+legacy_paths_present	no	$HOME/Github/qwen-apu/remote/runtime-root.sh
+foreign_owned_paths	0	$HOME/Github/qwen-apu/remote/runtime-root.sh
+receipt_sha256	5e1ac36f88706fd8fdc3a0517596cbf8fe56460657bb7aec5d1e599365a98eeb	$HOME/Github/qwen-apu/.runtime/results/receipt-main-e909cfc-r1.tsv
