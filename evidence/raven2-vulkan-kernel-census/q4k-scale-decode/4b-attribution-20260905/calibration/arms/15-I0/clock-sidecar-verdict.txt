@@ -1,0 +1,36 @@
+sidecar_exit=accepted status=0
+record_readable=accepted path=$HOME/Github/qwen-apu/.runtime/results/4b-attribution-20260905T1545Z/calibration/arms/15-I0/clock-sidecar.tsv
+clock=accepted clock=CLOCK_MONOTONIC
+period_declared=accepted declared=20000000 requested=20000000
+sampler_identity=accepted pid=3628636 nice=19 cpu_affinity=0,1
+sampler_nice=accepted nice=19 expected=19
+sampler_affinity=accepted cpu_affinity=0,1 expected=0,1
+sampler_format=not_run no sampler_format header key
+channel_cadence=accepted missing=-
+cadence_values=accepted -
+dpm_read_markers=accepted invalid=-
+dpm_marker_cadence=accepted median_gap_ns=200000437 max_gap_ns=258649587 gaps=98 declared_ns=200000000 bound_ns=300000000
+columns=accepted columns=monotonic_ns	pp_dpm_sclk_selected_mhz	pp_dpm_mclk_surface_mhz	pp_dpm_fclk_surface_mhz	gpu_busy_percent	temp1_millidegrees	sample_cost_ns	sclk_actual_mhz width=8
+footer_cardinality=accepted footers=1
+footer_fields=accepted present=achieved_period_ns,first_sample_ns,last_sample_ns,max_sample_cost_ns,mean_sample_cost_ns,samples,samples_with_unavailable_sensor
+samples=accepted samples=1608 rows=1608
+row_arity=accepted columns=8
+cell_values=accepted nonnumeric_columns=-
+footer_derived=accepted achieved_ns=20134693 footer_achieved_ns=20134693 mean_cost_ns=436330 footer_mean_cost_ns=436330 max_cost_ns=40773968 footer_max_cost_ns=40773968
+achieved_period=accepted achieved_ns=20134693 requested_ns=20000000 tolerance=0.25
+sample_cost=accepted mean_ns=436330 max_ns=40773968 bound_ns=1000000
+allowed_columns=accepted allowed=pp_dpm_fclk_surface_mhz
+sensor_rows=accepted rows_with_unavailable=1608 footer=1608
+sensors=accepted unavailable_outside_allowance=- allowed=pp_dpm_fclk_surface_mhz
+footer_instants=accepted first=642917430115688 last=642949786568249
+instant_order=accepted first=642917430115688 last=642949786568249 rows=1608
+window_order=accepted begin=642929389787795 end=642948713061923
+window_coverage=accepted first=642917430115688 begin=642929389787795 end=642948713061923 last=642949786568249
+gaps=accepted median_ns=20000093 p95_ns=21923269 p99_ns=33707607 max_ns=77390268 over_1_5x=23 over_missed=9 over_max=0
+window_lost=accepted window_lost_fraction=0.0050 bound=0.0300 missed_bound_ns=40000000
+gaps_in_window=0 begin=642929389787795 end=642948713061923 bound_ns=250000000 window_lost_fraction=0.0050
+clock_state=measured window_samples=964 sclk_mode_mhz=1100 sclk_share=1.0000 mclk_mode_mhz=933 temp_mean_c=75.4 temp_max_c=80.0 busy_mean=96.89
+dpm_freshness_reads=accepted fresh_samples=96 window_samples=964 period_multiple=10
+temp1_freshness_reads=accepted fresh_samples=96 window_samples=964 period_multiple=10
+clock_invariant=held samples_at_required=96 samples_below_required=0 below_required_fraction=0.0000 sclk_source=sclk_actual_mhz required_sclk_mhz=1100 required_mclk_mhz=933 max_below_mclk_floor_fraction=0.0100 samples_at_mclk_floor=96 samples_below_mclk_floor=0 below_mclk_floor_fraction=0.0000 samples_above_required=0 dpm_freshness=marker dpm_period_multiple=10 fresh_dpm_samples=96 temp1_period_multiple=10 fresh_temp1_samples=96
+clock_sidecar=accepted failures=-

@@ -1113,8 +1113,13 @@ fi
 # the CMake flags with the one census flag removed; the compiler identity
 # is read from each executable's own .comment section, since the manifest
 # records flags rather than the toolchain. The two identities must be
-# equal, and I's CMake delta must be exactly -DGGML_VULKAN_PIPELINE_CENSUS=ON
-# with one candidate_series row naming llama-vulkan-pipeline-census.patch.
+# equal, I's CMake delta must be exactly -DGGML_VULKAN_PIPELINE_CENSUS=ON,
+# and I's candidate_series must be P's own candidate series plus
+# llama-vulkan-pipeline-census.patch, in ledger order: a
+# production P carries no candidate row, so its I names the census patch
+# alone, and a candidate P sealed over a kernel stack is instrumented by
+# the same stack beneath the census, which is what lets an attribution arm
+# read the modules a candidate executes rather than the production shader's.
 census_cmake_flag=-DGGML_VULKAN_PIPELINE_CENSUS=ON
 production_base_identity_sha256=-
 instrumented_base_identity_sha256=-
@@ -1144,9 +1149,27 @@ if [ "$needs_production" = 1 ] && [ "$needs_instrumented" = 1 ]; then
         exit 2
     fi
     candidate_series=$(census_manifest_value "$instrumented_manifest" candidate_series instrumented) || exit 2
-    if [ "$candidate_series" != llama-vulkan-pipeline-census.patch ]; then
-        printf 'the instrumented manifest must name candidate_series llama-vulkan-pipeline-census.patch: %s\n' \
-            "$candidate_series" >&2
+    production_candidate_series=$(awk -F'\t' '$1 == "candidate_series" { value = $2; count++ }
+        END { if (count > 1) exit 1; if (count == 1 && value != "-") print value }' \
+        "$production_manifest") || {
+        printf 'the production manifest names candidate_series more than once\n' >&2
+        exit 2
+    }
+    # build-llama-preset.sh writes candidate_series in ledger order, so the
+    # expected value is the ledger's candidate rows filtered to P's members
+    # plus the census patch, in that order.
+    if [ ! -r "$script_directory/llama-patch-series.tsv" ]; then
+        printf 'the candidate series comparison reads the patch ledger beside the runner: %s\n' \
+            "$script_directory/llama-patch-series.tsv" >&2
+        exit 2
+    fi
+    expected_candidate_series=$(awk -F'\t' -v wanted="${production_candidate_series:+$production_candidate_series,}llama-vulkan-pipeline-census.patch" '
+        BEGIN { n = split(wanted, names, ","); for (i = 1; i <= n; i++) want[names[i]] = 1 }
+        $1 == "candidate" && ($2 in want) { out = out (out == "" ? "" : ",") $2 }
+        END { print out }' "$script_directory/llama-patch-series.tsv")
+    if [ "$candidate_series" != "$expected_candidate_series" ]; then
+        printf 'the instrumented manifest must name candidate_series as the production candidate series plus llama-vulkan-pipeline-census.patch in ledger order (%s): %s\n' \
+            "$expected_candidate_series" "$candidate_series" >&2
         exit 2
     fi
 fi

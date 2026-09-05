@@ -145,18 +145,22 @@ arithmetic on it, since a marker's prefix parsing cleanly states nothing
 about the text after it, and requires that instant to name a row the record
 actually carries, since a marker naming no row is a fabricated or misplaced
 timestamp that would otherwise shrink a `dpm_marker_cadence` gap without a
-real refresh behind it; `dpm_marker_cadence` then compares the widest gap
+real refresh behind it; `dpm_marker_cadence` then compares the median gap
 against the declared `pp_dpm_period_ns` times 1.5, the same jitter allowance
 the row-gap check already carries, over both the gaps between consecutive
 in-window markers and the terminal gap from the last in-window marker to the
 window's own end, and refuses a sampler whose own freshness stamps drifted
 past what it declared: this is the sampler's read-time claim checked against
 itself, the marker half of the two mechanisms that keep a cached value from
-being counted as a fresh observation. The terminal gap closes the case a
-pairwise scan alone misses -- one early marker inside the window and none
-after it -- where the widest-pair check has nothing to compare and would
-otherwise read the rest of the window as fresh on the strength of a single
-early stamp. A record naming a cadence through row position alone -- no
+being counted as a fresh observation. The statistic is the median because
+telemetry-broker.c refreshes on a tick count and re-bases a missed deadline,
+so one wide marker gap is the sampler held off the CPU inside ten ticks --
+host time `gaps` and `window_lost` already bound over every row -- where a
+stride wider than declared moves every gap; the widest gap is printed beside
+the median. The terminal gap closes the case a pairwise scan alone misses --
+one early marker inside the window and none after it -- where the pairwise
+scan has nothing to compare and would otherwise read the rest of the window
+as fresh on the strength of a single early stamp. A record naming a cadence through row position alone -- no
 marker, one `pp_dpm_period_ns` -- is already read through
 `dpm_period_multiple` further down, over reads rather than rows, and a
 `temp1_period_multiple` beside it reads the temperature channel the same way;
@@ -569,14 +573,26 @@ def main():
     else:
         print("dpm_read_markers=not_run no dpm_read markers")
 
-    # The sampler's own claim about when it refreshed the DPM bundle, checked
-    # against the cadence it declared for that bundle: a marker gap wider
-    # than 1.5 declared periods is a freshness stamp presenting a cache as a
-    # read newer than it is, the same jitter allowance the row-gap check
-    # already carries. A PAUSE/RESUME span is a real hole in every channel at
-    # once, so this reads only the marker gaps overlapping the request
-    # window, the same overlap the row-gap check applies to `gaps_in_window`;
-    # a gap the window never touches costs the arm nothing here either.
+    # The sampler's own claim about how often it refreshed the DPM bundle,
+    # checked against the cadence it declared for that bundle. telemetry-
+    # broker.c refreshes on `tick % DPM_PERIOD_MULTIPLE == 0` and re-bases a
+    # missed deadline rather than firing the lost ticks back to back, so a
+    # marker gap is the sum of ten consecutive row gaps and a single wide one
+    # is the sampler held off the CPU inside those ten ticks -- host time the
+    # `gaps` and `window_lost` rules already price over every row. The stride
+    # claim is therefore read over the median in-window marker gap: a sampler
+    # reading on a wider stride than it declared moves every gap, where a
+    # hold-off moves one. Two retained arms (evidence/q4k-scale-decode/
+    # target-closure-20260905/) measured one marker gap of 307 and 310 ms
+    # against a 200 ms declaration with the clock held on every read, row
+    # gaps of 49 to 88 ms inside it, and a lost fraction of 0.0001 to 0.0056,
+    # which the widest-gap reading refused as a cadence drift it was not. The
+    # 1.5 allowance is the one the row-gap check carries. A PAUSE/RESUME span
+    # is a real hole in every channel at once, so this reads only the marker
+    # gaps overlapping the request window, the same overlap the row-gap check
+    # applies to `gaps_in_window`; a gap the window never touches costs the
+    # arm nothing here either. The widest gap stays on the line beside the
+    # median so a reader sees the hold-off the coverage rules bounded.
     if malformed_markers:
         print("dpm_marker_cadence=not_run malformed dpm_read markers")
     elif dpm_read_instants and dpm_multiple_declared is not None:
@@ -605,9 +621,17 @@ def main():
             declared_cadence_ns = dpm_multiple_declared * requested_period_ns
             marker_bound_ns = declared_cadence_ns * 3 // 2
             max_marker_gap_ns = max(marker_gaps)
-            check("dpm_marker_cadence", max_marker_gap_ns <= marker_bound_ns,
-                  f"max_gap_ns={max_marker_gap_ns} declared_ns={declared_cadence_ns}"
-                  f" bound_ns={marker_bound_ns}")
+            ordered_marker_gaps = sorted(marker_gaps)
+            half = len(ordered_marker_gaps) // 2
+            if len(ordered_marker_gaps) % 2 == 1:
+                median_marker_gap_ns = ordered_marker_gaps[half]
+            else:
+                median_marker_gap_ns = (ordered_marker_gaps[half - 1]
+                                        + ordered_marker_gaps[half]) // 2
+            check("dpm_marker_cadence", median_marker_gap_ns <= marker_bound_ns,
+                  f"median_gap_ns={median_marker_gap_ns}"
+                  f" max_gap_ns={max_marker_gap_ns} gaps={len(marker_gaps)}"
+                  f" declared_ns={declared_cadence_ns} bound_ns={marker_bound_ns}")
         else:
             print(f"dpm_marker_cadence=not_run markers={len(marker_instants)}"
                  " overlapping the window")

@@ -34,11 +34,41 @@ and +5.21%, sit above the 5% bound with one pair of six below it, which is
 what a four-pair interval would have been read over; the summary's own
 `detail` column retains them and no verdict is read from them here, since the
 registration admits a paired verdict from four pairs and the harness's own
-rule. What would settle the paired question is the cadence bound itself: a
-7 to 10 ms overshoot on one marker in a 9 s window refuses an arm whose
-clock and coverage both held, and that rule belongs to the instrument
-(`evidence/raven2-vulkan-kernel-census/README.md`, the clock sidecar) rather
-than to this comparison.
+rule. The cadence bound was the instrument's, and it was re-registered
+after these runs (`evidence/raven2-vulkan-kernel-census/README.md`):
+`telemetry-broker.c` refreshes the DPM bundle every tenth sampler tick and
+re-bases a missed deadline, so a marker gap is the sum of ten row gaps and
+one wide gap is the sampler held off the CPU, host time the row-gap and
+lost-fraction rules already price; both refused gaps straddle the request
+window's start and hold row gaps of 49 to 88 ms with the coverage rules
+passing. The re-registered rule reads the median marker gap, and every arm
+of both runs reads a median of 200.00 ms.
+
+## The paired verdict, re-read under the re-registered rule
+
+`remote/reread-served-ab-sidecar.sh` re-validated every retained
+`clock-sidecar.tsv` of both runs with the arguments each `inputs.tsv` bound
+and re-summarized the ledgers; `run1/reread/` and `run2/reread/` retain the
+verdicts, the re-read `arms.tsv`, the summary, and the provenance naming both
+validator digests. The one refused control arm of each run completes under
+the re-read (`arm_moved` in `reread.tsv`), the rate and clock state it
+measured once are unchanged, and the paired verdict is then read from four
+pairs in both runs:
+
+| run | paired deltas | mean | nominal 95% interval | verdict at +5% one-sided |
+| --- | --- | ---: | --- | --- |
+| `run1/reread/` | +4.18, +5.71, +4.69, +6.52% | +5.28% | [+3.61, +6.94] | **unresolved** |
+| `run2/reread/` | +2.57, +5.18, +6.24, +7.88% | +5.47% | [+1.92, +9.01] | **unresolved** |
+
+Both means sit above the bound and neither lower endpoint clears it, which is
+the same reading the four-arm interval gives the absolute target: the
+composed candidate's gain over the nine-member production build on the 2B is
+near 5% and two whole runs at four replicates cannot separate it from that
+bound. Promotion requires the lower endpoint above +5%, so no serving default
+moves. What the re-read replaces is the incomplete verdict, not the
+registration's arithmetic: the same four-pair paired rule ran over the
+retained arms, the measurement head and the analysis head being recorded
+apart.
 
 ## The identities
 

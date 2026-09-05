@@ -245,6 +245,22 @@ checkpoint whose achieved GB/s sits between them should land between +1.83% and
 kernel-delta bracket run on both classes would settle it more directly by
 reading the Q4_K pipeline's own exclusive time rather than the whole token.
 
+### The null is attributed: the composed path executes and is unchanged on this shape
+
+`4b-attribution-20260905/` runs the census on the 4B with the composed
+candidate as P and its instrumented twin as I. Three accepted I1 arms name the
+composed shader as the executed Q4_K module (the plain shader name is the
+composed formulation in that build, at specialization `64,4,1`), owning 57% of
+the token against Q6_K at 27%; a local shortening of the size the 2B measured
+(-3.93% exclusive) would move the token by about -2.2%, which the served
+interval above excludes by more than twenty half-widths. The supported
+conclusion is selected with no local improvement on this shape, and the Q4_K
+family's 10.0 GB/s inside its own dispatches against the same class's Q6_K at
+13.1 says what bounds it is neither DRAM nor the saving the composition
+carries. The memory-boundness account below stands as an observation the
+census does not confirm: the 4B's Q4_K dispatches sit further from the
+streaming ceiling than the 2B's, not nearer it.
+
 ### The first attempt is retained, and thermal state is why it failed
 
 `served-ab-4b-20260903T2020Z` is the first attempt and it reads

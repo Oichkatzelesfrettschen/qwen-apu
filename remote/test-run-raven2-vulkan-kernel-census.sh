@@ -283,6 +283,45 @@ chmod +x "$instrumented_mismatch_root/bin/llama-server"
     printf 'cmake_flags\t-DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_VULKAN_PIPELINE_CENSUS=ON\n'
     printf 'candidate_series\tllama-vulkan-pipeline-census.patch\n'
 } >"$instrumented_mismatch_root/artifact-manifest.tsv"
+# A production server sealed over a candidate kernel stack is instrumented by
+# the same stack beneath the census patch, so an instrumented manifest naming
+# the census patch alone against that production refuses, and one naming the
+# stack plus the census patch against a stack-free production refuses too:
+# the two manifests would otherwise measure different shaders under one
+# base identity.
+stacked_production_root=$temporary_directory/prod-stacked
+mkdir -p "$stacked_production_root/bin"
+cp -- "$production_server" "$stacked_production_root/bin/llama-server"
+chmod +x "$stacked_production_root/bin/llama-server"
+{
+    printf 'executable\tllama-server\t%s\t%s\n' "$production_bytes" "$production_sha256"
+    printf 'checkpoint_semantics\tnatural-boundary-v1\n'
+    printf 'checkpoint_patch_series_sha256\t%s\n' "$patch_series_sha256"
+    printf 'serving_eligible\tyes\n'
+    printf 'commit\tf280b26983ad0fdb705a0d9ebf0503e76f2899b0\n'
+    printf 'checkpoint_patch_sha256\t%s\n' "$patch_series_sha256"
+    printf 'checkpoint_source_sha256\t%s\n' "$patch_series_sha256"
+    printf 'compiler_flags\t-march=znver1 -mtune=znver1\n'
+    printf 'cmake_flags\t-DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON\n'
+    printf 'candidate_series\tllama-vulkan-q4k-variant-select.patch\n'
+} >"$stacked_production_root/artifact-manifest.tsv"
+stacked_instrumented_root=$temporary_directory/inst-stacked
+mkdir -p "$stacked_instrumented_root/bin"
+cp -- "$instrumented_server" "$stacked_instrumented_root/bin/llama-server"
+chmod +x "$stacked_instrumented_root/bin/llama-server"
+{
+    printf 'executable\tllama-server\t%s\t%s\n' "$instrumented_bytes" "$instrumented_sha256"
+    printf 'checkpoint_semantics\tnatural-boundary-v1\n'
+    printf 'checkpoint_patch_series_sha256\t%s\n' "$patch_series_sha256"
+    printf 'instrumentation\tpipeline-census-v3\n'
+    printf 'serving_eligible\tno\n'
+    printf 'commit\tf280b26983ad0fdb705a0d9ebf0503e76f2899b0\n'
+    printf 'checkpoint_patch_sha256\t%s\n' "$patch_series_sha256"
+    printf 'checkpoint_source_sha256\t%s\n' "$patch_series_sha256"
+    printf 'compiler_flags\t-march=znver1 -mtune=znver1\n'
+    printf 'cmake_flags\t-DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_VULKAN_PIPELINE_CENSUS=ON\n'
+    printf 'candidate_series\tllama-vulkan-pipeline-census.patch,llama-vulkan-q4k-variant-select.patch\n'
+} >"$stacked_instrumented_root/artifact-manifest.tsv"
 instrumented_forced_tail_root=$temporary_directory/inst-forced-tail
 mkdir -p "$instrumented_forced_tail_root/bin"
 cp -- "$instrumented_server" "$instrumented_forced_tail_root/bin/llama-server"
@@ -1121,6 +1160,12 @@ run_runner instrumented_executable_row 'the instrumented server is not the one e
 run_runner instrumented_forced_tail 'natural-boundary-v1 is required' \
     QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_forced_tail_root/bin/llama-server"
 
+run_runner instrumented_series_missing_stack 'ledger order .llama-vulkan-pipeline-census.patch,llama-vulkan-q4k-variant-select.patch.: llama-vulkan-pipeline-census.patch$' \
+    QWEN_CENSUS_PRODUCTION_SERVER="$stacked_production_root/bin/llama-server"
+
+run_runner instrumented_series_foreign_stack 'ledger order .llama-vulkan-pipeline-census.patch.: llama-vulkan-pipeline-census.patch,llama-vulkan-q4k-variant-select.patch$' \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$stacked_instrumented_root/bin/llama-server"
+
 run_runner fclk_absent 'pp_dpm_fclk is absent' \
     QWEN_DRM_DEVICE="$drm_absent"
 
@@ -1210,7 +1255,7 @@ for linked_member in model-registry.sh qwen-home.sh models.tsv ctx-checkpoints.t
     sample-clock-sidecar.py validate-clock-sidecar.py \
     telemetry-broker.c build-telemetry-broker.sh \
     verify-external-vulkan-lease.py check-runtime-tree.sh \
-    summarize-perf-logger-slice.py; do
+    summarize-perf-logger-slice.py llama-patch-series.tsv; do
     ln -s -- "$script_directory/$linked_member" "$signal_directory/$linked_member"
 done
 
@@ -1496,7 +1541,7 @@ for linked_member in model-registry.sh qwen-home.sh models.tsv ctx-checkpoints.t
     sample-clock-sidecar.py \
     telemetry-broker.c build-telemetry-broker.sh \
     verify-external-vulkan-lease.py check-runtime-tree.sh \
-    summarize-perf-logger-slice.py; do
+    summarize-perf-logger-slice.py llama-patch-series.tsv; do
     ln -s -- "$script_directory/$linked_member" "$brick_directory/$linked_member"
 done
 # The sidecar validator stands in for itself: it runs the tree's own reader on

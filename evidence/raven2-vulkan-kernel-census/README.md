@@ -1109,16 +1109,32 @@ header to completeness -- `gpu_busy_percent_period_ns` and
 `pp_dpm_period_ns` present -- and to arithmetic -- each declared cadence a
 positive multiple of the requested period, with the busy channel's equal to
 it exactly, since that channel is read on every sample. Where the header
-also carries `# dpm_read=` markers, `dpm_marker_cadence` compares the widest
+also carries `# dpm_read=` markers, `dpm_marker_cadence` compares the median
 gap against 1.5 times the declared DPM cadence over both the gaps between
 consecutive in-window markers and the terminal gap from the last in-window
 marker to the window's own end, catching a sampler whose own freshness
 stamps drifted past what it declared -- the marker half of what keeps a
-cached value from being counted as a fresh observation. The terminal gap
-closes the case a pairwise scan alone misses: one marker refreshed early in
-the window and none after it leaves no second marker to pair against, and a
-widest-pair check with nothing to compare read that channel `not_run` while
-it stayed stale for the rest of the window. The row half already reads
+cached value from being counted as a fresh observation. The median is the
+statistic because `telemetry-broker.c` refreshes the DPM bundle on
+`tick % DPM_PERIOD_MULTIPLE == 0` and re-bases a missed deadline rather than
+firing the lost ticks back to back, so a marker gap is the sum of ten row
+gaps and one wide gap is the sampler held off the CPU inside those ticks,
+host time `gaps` and `window_lost` already bound over every row; a stride
+wider than declared moves every gap. The widest-gap form of the rule refused
+two arms of `evidence/q4k-scale-decode/target-closure-20260905/` on one gap
+of 307 and 310 ms with the clock held on all 36 reads, row gaps of 49 to 88 ms
+inside it, and a lost fraction of 0.0001 and 0.0056; every other retained
+arm of those two runs and the twelve-arm denominator reads a median of
+200.00 ms with maxima of 201 to 261 ms, so the median passes each of them
+and the stride fixture at three declared periods still refuses. The widest
+gap stays on the line. The terminal gap closes the case a pairwise scan
+alone misses: one marker refreshed early in the window and none after it
+leaves no second marker to pair against, and a pairwise check with nothing
+to compare read that channel `not_run` while it stayed stale for the rest of
+the window. `remote/reread-served-ab-sidecar.sh` re-reads a retained served
+A/B campaign under the current validator with the arguments its `inputs.tsv`
+bound and re-summarizes it, since the measurement head and the analysis head
+are recorded apart. The row half already reads
 `dpm_period_multiple` over reads rather than rows and now carries a
 `temp1_period_multiple` beside it for the temperature channel.
 `sampler_format`, sample-clock-sidecar.py's own `native-fresh-v1` claim that

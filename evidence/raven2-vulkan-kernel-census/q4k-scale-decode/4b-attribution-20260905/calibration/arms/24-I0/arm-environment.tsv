@@ -1,0 +1,43 @@
+name	value
+PATH	/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+HOME	$HOME
+TMPDIR	/tmp
+LC_ALL	C
+PYTHONDONTWRITEBYTECODE	1
+QWEN_LLAMA_SERVER	$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-q4k-census/build-raven2-vulkan-census/bin/llama-server
+QWEN_LAUNCH_SCRIPT	$HOME/Github/qwen-apu/remote/qwen-launch.sh
+QWEN_TEARDOWN_SCRIPT	$HOME/Github/qwen-apu/remote/qwen-teardown.sh
+QWEN_INTENDED_GIT_HEAD	12082933e9f8014795e6952feae999c88ec5ff76
+QWEN_INTENDED_PAYLOAD_SHA256	d1c1fb2c7b3da930167e8d0a1231264cde26c52aed721fc5ac51bce0a6184e3d
+QWEN_MODELS_DIRECTORY	$HOME/Github/qwen-apu/.runtime/models
+QWEN_MODEL_ARTIFACTS	$HOME/Github/qwen-apu/remote/model-artifacts.tsv
+QWEN_RESULT_DIRECTORY	$HOME/Github/qwen-apu/.runtime/results/4b-attribution-20260905T1545Z/calibration/arms/24-I0
+QWEN_CONTEXT_SIZE	24576
+QWEN_BATCH_SIZE	128
+QWEN_UBATCH_SIZE	32
+QWEN_CACHE_TYPE_K	q8_0
+QWEN_CACHE_TYPE_V	q4_0
+QWEN_FLASH_ATTN	on
+QWEN_CTX_CHECKPOINTS	2
+QWEN_CHECKPOINT_MIN_STEP	8192
+QWEN_SPEC_TYPE	off
+QWEN_BACKEND_SAMPLING	0
+QWEN_SPEC_BACKEND_SAMPLING	0
+QWEN_ROUTER	0
+QWEN_INFERENCE_CPU	0
+QWEN_BIND_HOST	127.0.0.1
+QWEN_LATENCY_MODE	observe
+QWEN_REQUIRE_API_KEY	0
+QWEN_WEB_BROKER	0
+QWEN_IMAGE_SERVICE	0
+QWEN_VULKAN_LATENCY_PROBE	
+QWEN_PIPELINE_CENSUS	
+QWEN_PERF_LOGGER	
+QWEN_EXECUTION_SURFACE	qwen-laptop-ssh
+QWEN_HOST_SHORTNAME	qwen-laptop
+QWEN_SSH_SESSION	present
+QWEN_EXECUTION_PROOF	$HOME/Github/qwen-apu/.runtime/results/4b-attribution-20260905T1545Z/calibration/campaign-inputs.tsv
+QWEN_EXECUTION_PROOF_SHA256	8b11129cb33d86f56aa0911fb3f7914ed0de452c0eac5d0499761474b2eb8036
+QWEN_BENCH_GENERATE	64
+QWEN_VULKAN_EXTERNAL_LEASE_PROOF	$HOME/Github/qwen-apu/.runtime/state/.census-vulkan-external-lease.3381368.tsv
+QWEN_STATE_DIRECTORY	$HOME/Github/qwen-apu/.runtime/state

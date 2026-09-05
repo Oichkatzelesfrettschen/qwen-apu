@@ -1,0 +1,12 @@
+{
+  "label": "08-P-nosidecar",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 12.08525319241504,
+  "prefill_ms": 1572.164,
+  "decode_tok_per_second": 3.5176818231106335,
+  "decode_ms": 17909.522,
+  "prompt_tokens": 19,
+  "decode_tokens": 64,
+  "valid": true
+}
