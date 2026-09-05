@@ -34,6 +34,28 @@ for tool in python3 curl jq flock tmux ss; do
     fi
 done
 
+# Binding port zero lets the kernel select an available loopback TCP port.
+# Both sockets stay open while the two numbers are read, so the pair is
+# distinct, and the fixed 18080/18571 defaults this test once carried are
+# gone: two repositories gate on this workstation at once and another
+# fixture's broker held 18571 while this cell ran. An explicit
+# QWEN_SERVER_PORT or QWEN_WEB_BROKER_PORT stays authoritative.
+free_loopback_port_pair() {
+    python3 - <<'PYTHON'
+import socket
+
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as first_socket, \
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as second_socket:
+    first_socket.bind(("127.0.0.1", 0))
+    second_socket.bind(("127.0.0.1", 0))
+    print(first_socket.getsockname()[1])
+    print(second_socket.getsockname()[1])
+PYTHON
+}
+free_port_pair=$(free_loopback_port_pair)
+test_server_port=${QWEN_SERVER_PORT:-$(printf '%s\n' "$free_port_pair" | sed -n 1p)}
+test_broker_port=${QWEN_WEB_BROKER_PORT:-$(printf '%s\n' "$free_port_pair" | sed -n 2p)}
+
 work=$(mktemp -d "${TMPDIR:-/tmp}/qwen-image-admission.XXXXXX")
 harness=$work/remote
 state_directory=$work/state
@@ -193,8 +215,8 @@ env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
     QWEN_IMAGE_RUNTIME_TEMPLATE=fixture \
     QWEN_IMAGE_MODEL_PATH="$image_model_directory" \
     QWEN_RADV_ICD="$fixture_icd" \
-    QWEN_SERVER_PORT="${QWEN_SERVER_PORT:-18080}" \
-    QWEN_WEB_BROKER_PORT="${QWEN_WEB_BROKER_PORT:-18571}" \
+    QWEN_SERVER_PORT="$test_server_port" \
+    QWEN_WEB_BROKER_PORT="$test_broker_port" \
     "$harness/admit-image-router.sh" "$output_directory" \
     >"$work/admission.stdout" 2>"$work/admission.stderr"
 admission_status=$?
@@ -408,8 +430,8 @@ env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
     QWEN_IMAGE_RUNTIME_TEMPLATE=fixture \
     QWEN_IMAGE_MODEL_PATH="$image_model_directory" \
     QWEN_RADV_ICD="$fixture_icd" \
-    QWEN_SERVER_PORT="${QWEN_SERVER_PORT:-18080}" \
-    QWEN_WEB_BROKER_PORT="${QWEN_WEB_BROKER_PORT:-18571}" \
+    QWEN_SERVER_PORT="$test_server_port" \
+    QWEN_WEB_BROKER_PORT="$test_broker_port" \
     "$harness/admit-image-router.sh" "$review_output" \
     >"$work/review.stdout" 2>"$work/review.stderr"
 review_status=$?
@@ -480,8 +502,8 @@ env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
     QWEN_IMAGE_RUNTIME_TEMPLATE=fixture \
     QWEN_IMAGE_MODEL_PATH="$image_model_directory" \
     QWEN_RADV_ICD="$fixture_icd" \
-    QWEN_SERVER_PORT="${QWEN_SERVER_PORT:-18080}" \
-    QWEN_WEB_BROKER_PORT="${QWEN_WEB_BROKER_PORT:-18571}" \
+    QWEN_SERVER_PORT="$test_server_port" \
+    QWEN_WEB_BROKER_PORT="$test_broker_port" \
     QWEN_ADMISSION_BROWSER_ATTEMPTS=2 \
     QWEN_ADMISSION_BROWSER_DIALOG_TIMEOUT=5 \
     QWEN_ADMISSION_BROWSER_PROMPT='Call the image tool now.' \
