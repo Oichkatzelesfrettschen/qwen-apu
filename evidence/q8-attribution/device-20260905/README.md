@@ -1,7 +1,8 @@
-# The 0.8B attribution, closed: Q8_0's mat-vec owns two thirds of the token, and the fixed-cost account is refuted
+# The 0.8B attribution, closed: Q8_0's mat-vec owns two thirds of the token, and the registered fixed-cost account is refuted
 
 ```text
 measurement_status=attribution
+record_class=diagnostic attribution with unbounded instrument perturbation
 calibration_verdict=failed (arm_failures=1, controls incomplete/unresolved)
 attribution_arms=18-I1 19-I1 22-I1 23-I1
 production_server=70aa78bc0eed708ce8d06b690467affce3bb222014714af4dbd92e00fa5ff010 (served Q8_0 build)
@@ -17,14 +18,15 @@ signature: three 0.8B checkpoints (`evidence/model-admission/runtime-class-throu
 decode within 5.2% of each other while streaming 67.9% apart in bytes, which
 that document read as evidence of a per-dispatch fixed cost the 2B and 4B
 classes carry at a smaller relative weight. This record answers each
-prediction from the executed ledger and refutes the account: the served
-Q8_0 mat-vec owns 66.69% of the token on its own, well above either K-quant
-class's mat-vec share, and the residue the fixed-cost account needed --
-queue-and-host overhead, and the Gated DeltaNet/norm/rotary/attention group
--- both measure small. The 0.8B decodes faster than the 2B and 4B not
-because a fixed term saturates, but because its single Q8_0 mat-vec family
-is cheap enough, per dispatch, to leave the rest of the graph a bigger share
-of a much shorter token.
+prediction from the executed ledger and refutes that registered account:
+`mul_mat_vec_q8_0_f32_f32` is the dominant individual pipeline of the 0.8B
+decode graph at 66.69% of the token, above the 2B's Q4_K family read alone
+(49.53%) and below the two K-quant families read together (2B 84.95%, 4B
+84.35%), and the residue the fixed-cost account needed -- queue-and-host
+overhead, and the Gated DeltaNet/norm/rotary/attention group -- both
+measure small. What the three-class comparison states is the complement:
+work outside the mat-vec families occupies 33.31% of this shorter token
+against 15.05% on the 2B and 15.64% on the 4B.
 
 ## What ran
 
@@ -38,13 +40,15 @@ window short enough that the sidecar's 20 ms period and the census's
 retirement bookkeeping compete for the same core more visibly than they do
 on the 2B's and 4B's longer windows -- and the three controls read
 `unresolved` (sidecar, `ci=[-0.0538,+0.0224]` against a 0.0065 bound;
-collect, `ci=[-0.0237,+0.0060]` against a 0.02 bound, mean -0.88%) or
-`incomplete` (compile, 3 of 4 surviving pairs, surviving mean -2.40%). No
-control licenses an instrument bound in either direction, and none of the
-three moves any standing verdict in `../README.md`. The four accepted I1
-arms are the attribution record read below, with the C2 collection term
-(-0.88%, order "about 1%") stated beside every I1 share as its own
-uncertainty rather than folded into it.
+collect, `ci=[-0.0237,+0.0060]` against a 0.02 bound) or `incomplete`
+(compile, 3 of 4 surviving pairs, surviving mean -2.40%), all four figures
+verbatim from `calibration/summary.tsv`. No control licenses an instrument
+bound in either direction, and none of the three moves any standing verdict
+in `../README.md`. The four accepted I1 arms are the attribution record read
+below, and the record's class is diagnostic attribution with unbounded
+instrument perturbation: the collect control's interval spans its bound, so
+its point estimate is a sample of an unresolved comparison rather than an
+error bar any share below carries.
 
 ## The executed pipeline and its shares
 
@@ -68,6 +72,19 @@ subgroups per SIMD, at 187 calls per graph and a 186.4 us median dispatch:
 | exclusive_bracket_ms per graph | 38.36 |
 | share of decode_ms | 66.69% |
 
+The median dispatch and the family total are distinct quantities and the
+ownership arithmetic uses the summed exclusive durations alone. Multiplying
+the 186.4 us median by 187 calls gives 34.86 ms per graph against the
+family's own 38.36 ms per graph (2416.42 / 63), because the distribution has
+a long upper tail: `pipeline-ledger-decode.tsv` carries p90 315.8 us, p99
+326.4 us, and max 13597.8 us on arm 18-I1, so one representative dispatch
+loses the information the sum keeps. A Q8 comparison that wants the shape
+split -- a first dispatch of a submit against a later one, a wide row block
+against a narrow one -- needs the per-dispatch rows rather than this ledger,
+which carries one row per pipeline; those rows stay in the raw
+`pipeline-census.tsv` on the appliance under
+`results/08b-attribution-20260905T1835Z/`.
+
 The next eight pipelines by exclusive time, same median-of-four basis:
 
 | pipeline | calls/graph | exclusive_ms, whole run | share |
@@ -82,49 +99,101 @@ The next eight pipelines by exclusive time, same median-of-four basis:
 | `cpy_f32_f32` | 24 | 19.34 | 0.53% |
 
 Sum of every pipeline's exclusive time (26 pipelines, by id, median of the
-four arms): 2993.38 ms, 82.62% of decode_ms. The remainder -- host time and
-inter-dispatch queue time no dispatch's bracket covers -- is 629.88 ms,
-17.38% of the token.
+four arms): 2993.38 ms, 82.62% of decode_ms, so 629.88 ms and 17.38% of the
+token sit outside every dispatch's exclusive bracket.
 
-## Achieved bandwidth
+## What the 17% outside every dispatch contains
 
-`served-0.8b-q8_0-census.txt` reports `streamed_bytes_per_token=800881920`.
-Divided by the Q8_0 mat-vec family's own per-graph exclusive time
-(38.36 ms = 0.038356 s):
+That remainder is a subtraction of exclusive pipeline time from served
+decode time, so it holds every quantity the exclusive brackets exclude,
+starting with the ambiguous overlap the ledger reports separately. Built
+per arm from that arm's own `graphs` row of `pipeline-ledger-decode.tsv`
+and its `summary.json` `decode_ms`, the token divides into five terms that
+close the arithmetic (all values ms per decode graph, `decode_ms` over the
+63 graphs of a 64-token reply):
 
-- **Family achieved bandwidth:** 800881920 / 0.038356 s = 20.88 GB/s, inside
-  the family's own dispatches.
-- **Whole-token achieved bandwidth:** decode_ms per graph is 57.51 ms
-  (3623.26 / 63); 800881920 / 0.057512 s = 13.93 GB/s.
+| arm | exclusive | ambiguous overlap | queue span outside the bracket union | retirement beyond queue span | served time beyond retirement | total | decode_ms/63 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 18-I1 | 47.538 | 0.608 | 4.529 | 2.868 | 2.095 | 57.638 | 57.638 |
+| 19-I1 | 47.460 | 0.605 | 3.569 | 2.075 | 2.302 | 56.011 | 56.012 |
+| 22-I1 | 47.523 | 0.607 | 5.605 | 2.007 | 3.074 | 58.816 | 58.815 |
+| 23-I1 | 47.515 | 0.607 | 4.938 | 1.941 | 2.384 | 57.385 | 57.386 |
 
-Both read well above the 34.13 GB/s theoretical dual-channel peak's usual
-achieved fraction for the 2B and 4B (`evidence/decode-bound-analysis.md`: 8.11
-GB/s on the 4B, 10.41 GB/s on the 2B, four-block means) -- the 0.8B's mat-vec
-dispatches stream at a higher fraction of peak than either K-quant class does,
-which is consistent with Q8_0's one-cast-one-multiply dequant leaving more of
-the dispatch's time as memory-bound streaming rather than nibble and
-scale-and-minimum arithmetic.
+The first three columns are ledger fields --
+`exclusive_ms_per_graph`, `ambiguous_overlap_ms_per_graph`, and
+`queue_non_dispatch_ms_per_graph`, the last of which is
+`queue_completion_span_ms_per_graph` minus `bracket_union_ms_per_graph`.
+The fourth is `retire_span_ms_per_graph` minus
+`queue_completion_span_ms_per_graph` and equals `residual_ms_per_graph` on
+all four arms. The fifth is `decode_ms / 63` minus
+`retire_span_ms_per_graph` and has no ledger field of its own. The bases
+differ between this table and the 82.62% above it: the share is a median of
+medians over the four arms, where each bridge row is one arm's own reading,
+so arm 18-I1 puts exclusive time at 82.48% of its own token.
+
+The bridge closes to a thousandth of a millisecond on every arm, and that
+is all it establishes. Vulkan timestamps delimit execution-stage intervals
+-- a top-of-pipe write ahead of each dispatch and an all-commands write
+after it -- so a bracket bounds queue residency rather than measuring
+arithmetic occupancy, and the differences between successive spans are not
+proven to be independent serial costs or uniquely attributable CPU phases.
+The terms name where the arithmetic goes, not what a processor was doing.
+
+## Logical bytes over a measured interval
+
+`served-0.8b-q8_0-census.txt` reports `streamed_bytes_per_token=800881920`,
+the logical weight bytes an ordinary load reads once per token. Divided by a
+measured interval it gives a comparison figure, and each figure names its
+own denominator:
+
+- **Over the Q8_0 mat-vec family's exclusive time** (38.36 ms per graph):
+  800881920 / 0.038356 s = 20.88 GB/s.
+- **Over the whole token** (57.51 ms per graph, 3623.26 / 63): 800881920 /
+  0.057512 s = 13.93 GB/s.
+
+Neither is a memory-controller counter. The numerator is a census of tensor
+bytes rather than a read of transferred bytes, so cache hits, KV traffic,
+activation traffic, and any refetch inside a dispatch all sit outside it,
+and neither figure states that the memory system reached a ceiling.
+
+The comparable figure against `evidence/decode-bound-analysis.md`'s 8.11
+GB/s on the 4B and 10.41 GB/s on the 2B is the whole-token 13.93 GB/s, since
+those two are whole-token four-block means; the 20.88 GB/s carries a
+family-interval denominator and compares to neither. On the matched
+whole-token basis the 0.8B moves more logical bytes per second than either
+K-quant class, which restates that its token is short rather than
+establishing where in the memory system the difference arises.
 
 ## Three classes, one table
 
-Mat-vec share and the token time outside every mat-vec family, same
-median-of-accepted-I1-arms basis for each class (2B: `mul_mat_vec_q4_k_f32_f32`
-+ `mul_mat_vec_q6_k_f32_f32`, `evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/18-I1/`;
-4B: same two families, `evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/`;
-0.8B: `mul_mat_vec_q8_0_f32_f32` alone, this record):
+Mat-vec share and the token time outside every mat-vec family. Each class
+carries its own basis, which the three campaigns' own accepted sets fix
+rather than a shared rule: the 0.8B row is the median of four accepted I1
+arms of this record; the 4B row the median of the three accepted I1 arms
+(18, 19, 23) of
+`evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/`,
+whose 22-I1 the census reader refused; the 2B row the one retained I1 arm 18
+of `evidence/raven2-vulkan-kernel-census/20260902T2124Z/`. The 2B
+denominator is that arm's `predicted_ms` from `arms.tsv` where the other two
+are `decode_ms` from `summary.json`; both campaigns compute `tok_s` as 64
+tokens over that same quantity, so the two names read one served decode
+interval.
 
-| class | decode_ms | mat-vec exclusive_ms | mat-vec share | time outside mat-vec |
-| --- | ---: | ---: | ---: | ---: |
-| 2B (Q4_K + Q6_K) | 6513 | 5533 (3226 + 2307) | 84.95% | 980 ms, 15.05% |
-| 4B (Q4_K + Q6_K) | 18788 | 15849 (10712 + 5137) | 84.36% | 2939 ms, 15.64% |
-| 0.8B (Q8_0) | 3623.26 | 2416.42 | 66.69% | 1206.84 ms, 33.31% |
+| class | mat-vec families | decode_ms | mat-vec exclusive_ms | mat-vec share | time outside mat-vec |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 2B | Q4_K + Q6_K | 6513.24 | 5533.32 (3225.84 + 2307.48) | 84.95% | 979.93 ms, 15.05% |
+| 4B | Q4_K + Q6_K | 18788.43 | 15848.64 (10712.01 + 5136.64) | 84.35% | 2939.79 ms, 15.65% |
+| 0.8B | Q8_0 | 3623.26 | 2416.42 | 66.69% | 1206.84 ms, 33.31% |
 
-The two K-quant classes agree with each other within 0.6 points and disagree
-with the single-format 0.8B class by 18 points. A one-family, one-cast dequant
-does not carry a smaller mat-vec share; it carries a much larger one, because
-the token itself is short enough (57.5 ms against the 2B's 103.4 ms and the
-4B's 298.2 ms per graph) that a 38.4 ms dispatch dominates it the way a
-nibble-and-scale dispatch never gets the chance to on the larger classes.
+Read the last column rather than the fourth. Q8_0 is the dominant individual
+pipeline of its graph, and its single-family share exceeds the 2B's Q4_K
+family read alone, 66.69% against 3225.84 / 6513.24 = 49.53%; against the
+two K-quant families summed it is 18 points smaller. What separates the
+classes is therefore the complement: work outside the mat-vec families
+occupies 33.31% of the 0.8B token against 15.05% and 15.65%, on a token
+short enough (57.51 ms against the 2B's 103.38 ms and the 4B's 298.23 ms per
+graph) that the same non-mat-vec dispatch inventory buys a fifth of the
+graph rather than a sixth of a much longer one.
 
 ## The five registered predictions, answered
 
@@ -136,17 +205,35 @@ nibble-and-scale dispatch never gets the chance to on the larger classes.
 | Q4 | submits and dispatches per graph land near the ~25 submissions / ~360 dispatches estimated by analogy to the 2B's 24 blocks | a count far outside the estimate means the per-block estimate needs correcting | `submits_per_graph=40` (identical across all four arms) and 658 total dispatches per graph (sum of `calls_per_graph`, by pipeline id) | **refuted** -- 40 submits is 60% above the estimate and 658 dispatches is 83% above it; `attention.head_count_kv=2`, `ssm.group_count=16`, and `ssm.inner_size=2048` make this architecture issue more per-block work than the 2B's shapes, so the per-block dispatch count the estimate assumed does not transfer |
 | Q5 | DRAM floor (23.5 ms) plus the mat-vec VALU account (Q1) plus P3 (Q3) plus residue (Q2) sums to within 15% of the observed token's margin above that floor | a sum outside the band means a bracket is double-counted, or an unbracketed family owns the remainder | margin = 57.51 - 23.5 = 34.01 ms/graph; Q1 + Q2 + Q3 alone = 38.36 + 6.77 + 3.85 = 48.98 ms/graph, 44% over the margin | **refuted**, by double-counting: the DRAM floor is not a term separate from the mat-vec dispatch's own exclusive time -- streaming and the dequant-and-dot arithmetic execute inside the same dispatch bracket, so adding a DRAM floor on top of the mat-vec's exclusive time counts the same bytes twice. The mat-vec exclusive time alone (38.36 ms/graph) already exceeds the margin the floor-plus-account framing predicted |
 
-Q1 and Q3 fail in the same direction and for related reasons: Q8_0's cheap
-dequant does not translate into a smaller mat-vec footprint or a
-correspondingly larger footprint for everything else, because the 0.8B's
-token is short enough that whatever the mat-vec pipeline costs per
-dispatch dominates the graph regardless of arithmetic complexity per weight.
-Q2 and Q4 rule out both alternative carriers the fixed-cost account named:
-queue/host overhead stays in the single digits of milliseconds, and the
-dispatch count is architecture-driven rather than fixed. The account this
-directory registered ahead of the run -- that the 0.8B's flat rate-across-bytes
-signature is a per-dispatch cost independent of tensor type -- is refuted by
-its own falsifiers.
+What these four verdicts refute is the specific account
+`fixed-cost-decomposition.md` registered -- that the 0.8B's flat
+rate-across-bytes signature is a per-dispatch cost independent of tensor
+type -- through the falsifiers that document wrote for it. Each verdict
+carries a narrower reading than the account's own framing invites.
+
+Q1 and Q3 fail in the same direction: Q8_0's cheap dequant does not
+translate into a smaller mat-vec footprint or a correspondingly larger
+footprint for everything else, because the 0.8B's token is short enough that
+whatever the mat-vec pipeline costs per dispatch dominates the graph
+regardless of arithmetic complexity per weight. Q3's outcome is a
+measurement of one family group on one architecture; a fractional-ownership
+prediction failing for the P3 group establishes that group's share and
+nothing about a universal bandwidth mechanism setting the rate.
+
+Q4 refutes the estimated dispatch inventory rather than per-dispatch
+overhead as such: 40 submits and 658 dispatches against ~25 and ~360 says
+the per-block estimate carried over from the 2B does not transfer to this
+architecture, which leaves the cost of a dispatch unmeasured in either
+direction. Q2 is the reading that bears on the carrier, and it bounds it:
+queue and host residue reads 6.77 ms per graph rather than the 30 to 45 ms
+the account needed.
+
+Q5 refutes the additive model rather than the floor. A DRAM floor computed
+from streamed bytes and a mat-vec exclusive bracket are not separable terms,
+because memory service for those bytes happens inside that bracket, so
+summing them counts the same traffic twice; the arithmetic fails for that
+reason and states nothing about whether a bandwidth floor of that size
+exists.
 
 ## Coverage limits
 
@@ -155,10 +242,12 @@ its own falsifiers.
   none changes any standing verdict in `evidence/raven2-vulkan-kernel-census/README.md`.
   Every I1 share above is read with that absence stated, not with a
   confirmed zero-overhead instrument.
-- The collect control (C2, instrumentation collection on/off) reads a mean
-  delta of -0.88%, order "about 1%" against a 0.02 (2%) bound, `unresolved`
-  rather than `held`. Every I1 share in this record carries that term beside
-  it as an unresolved uncertainty rather than a corrected offset.
+- The collect control (C2, instrumentation collection on/off) reads
+  `ci=[-0.0237,+0.0060]` against a 0.02 bound and `unresolved` rather than
+  `held`, because that interval spans the bound. An unresolved comparison
+  supplies no error bar, so every I1 share in this record stands with the
+  instrument's perturbation unbounded rather than with a stated term
+  subtracted from or added to it.
 - One P arm (slot 16) refused on `window_lost_fraction=0.0580` against the
   0.03 bound: the clock sidecar lost 5.8% of its declared window inside the
   0.8B's 3.6 to 3.8 s decode, above the bound the 2B's and 4B's longer
@@ -185,15 +274,33 @@ the composed Q4_K formulation shortened a dispatch owning 57% of the token by
 about 10% and moved the served rate 6.6%
 (`../../raven2-vulkan-kernel-census/q4k-scale-decode/4b-kernel-delta-20260905/README.md`),
 and the Q8_0 family here owns 67% of a token a fifth as long, so a shader
-change of the same relative size on `mul_mat_vec_q8_0_f32_f32` is worth
-about 7% of the 0.8B token and nothing else in the graph is worth more than
-4%.
+change of the same relative size on `mul_mat_vec_q8_0_f32_f32` moves 38.36 x
+0.10 = 3.84 ms of a 57.51 ms token, 6.7%, and nothing else in the graph is
+worth more than 4%.
+
+The same lever read from a planning target rather than from the 4B
+precedent: reaching a 50 ms token from the diagnostic 57.51 ms one needs
+7.51 ms removed, and taken entirely from the 38.36 ms Q8_0 family that is a
+19.6% local reduction. Both figures describe one shader and one token; the
+6.7% is what a 4B-sized delta buys, the 19.6% is what a 50 ms token would
+demand of it. The 57.51 ms denominator is the instrumented I1 token under
+controls that closed neither the sidecar nor the collect comparison, so the
+figure is a conditional planning estimate rather than a production target,
+and a production number comes from a served A/B under a bound instrument.
 
 The first Q8-specific experiment this record chooses is therefore inside
 the mat-vec itself: a kernel-delta bracket on `mul_mat_vec_q8_0_f32_f32` at
-its served specialization (`64,2,1`, 40 VGPRs, 6 subgroups per SIMD), the
-family that streams at 20.9 GB/s inside its own dispatches, against a
-candidate that changes one thing in the Q8_0 dequant-and-dot body. The
+its served specialization against a candidate that changes one thing in the
+Q8_0 dequant-and-dot body. The mechanism receipt preserves the baseline this
+record measures -- `mul_mat_vec_q8_0_f32_f32`, specialization constants
+`64,2,1`, subgroup 64, 40 VGPRs, 48 SGPRs, zero spilled VGPRs, 6 subgroups
+per SIMD, 187 calls per graph -- and a candidate is read against every one
+of those fields rather than against its rate alone. A larger row tile is the
+obvious candidate and the one this baseline argues caution about: raising
+NUM_ROWS raises register pressure, and 6 subgroups per SIMD at 40 VGPRs is
+the occupancy that hides this shader's memory latency, so a formulation that
+falls to fewer resident subgroups can lose more to exposed latency than it
+gains in reuse. The
 largest non-mat-vec owner, `get_rows_f32_f32` at 2.22 ms per graph (3.86%)
 over 37 calls, reads f32 sources -- the Q8_0 embedding table would dispatch
 `get_rows_q8_0` -- so it is a state or cache gather on the recurrent path,

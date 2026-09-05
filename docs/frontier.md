@@ -93,13 +93,20 @@ outside it.
 - Result: `evidence/q8-attribution/device-20260905/`. Run 2026-09-05: a
   canary and a 25-arm calibration at 1100/933 on the production server and
   its census twin; four I1 arms put `mul_mat_vec_q8_0_f32_f32` at 66.7% of
-  the 0.8B token (38.4 of 57.5 ms per graph, 187 dispatches at 186 us),
-  streaming at 20.9 GB/s inside its own dispatches, with every other
-  pipeline under 4% and 17% of the token outside every dispatch. The
-  fixed-cost account is refuted on four of its five registered predictions.
-  The controls read unresolved and incomplete and license no instrument
-  bound. The ending condition is met; the first Q8-specific experiment is a
-  kernel-delta bracket inside the Q8_0 mat-vec body.
+  the 0.8B token (38.4 of 57.5 ms per graph over 187 dispatches, above the
+  2B's Q4_K family alone at 49.5% and below the 2B's and 4B's two K-quant
+  families together at 85.0% and 84.4%), with every other pipeline under 4%
+  and 33% of the token outside the mat-vec family. Logical streamed bytes
+  over that family's own interval give 20.9 GB/s, a comparison figure rather
+  than a memory-controller read. A per-arm bridge closes the token from
+  exclusive bracket through ambiguous overlap, queue span, retirement span,
+  and served time. The registered fixed-cost account is refuted on four of
+  its five predictions. The controls read unresolved and incomplete and
+  license no instrument bound, so the record is diagnostic attribution with
+  unbounded instrument perturbation. The ending condition is met; the first
+  Q8-specific experiment is a kernel-delta bracket inside the Q8_0 mat-vec
+  body, where reaching a 50 ms token asks a 19.6% local reduction of that
+  family.
 
 ## E5: the standard packed dot through OpSDotKHR and ACO
 
