@@ -131,6 +131,31 @@ directory, a linked worktree carries it as a `gitdir:` file, and a fixture
 tree carries neither, so the rule names the tree the appliance serves from
 while naming no path the ratchet would refuse.
 
+## The three verifications
+
+`make verify` is the union of three targets that answer three questions and
+fail for three reasons:
+
+- `make verify-layout` reads the structure alone -- the marker, its schema,
+  its binding to this checkout, every layout directory, and any entry under
+  the root outside the layout -- beside the lexical ratchet. It touches no
+  installed component, so it answers on a root `make bootstrap` just laid
+  out, and a foreign entry or an absent layout directory fails it.
+- `make verify-components` refreshes the manifest and reads the identity of
+  every component out of it, naming each `present` with its installed digest,
+  `absent` with the command that rebuilds it, or `mutable` where the component
+  declares no identity. `make verify-sudo-policy` runs ahead of it. Absence is
+  reported and counted rather than failed, since a partially expanded root is
+  a state the manifest exists to state.
+- `make verify-live` reads the transient system state -- the DPM level, the
+  boost state, the KSM run state -- with the session state and the legacy
+  summary beside it. A node absent from this machine reads `absent` and
+  passes, because the workstation carries no amdgpu sysfs and a verification
+  that refused there would refuse every gate run.
+
+Model bytes stay out of all three: `make verify-models` hashes 74 GB and is
+its own target.
+
 ## The ratchet
 
 `remote/check-appliance-paths.py` fails the repository gate where a tracked

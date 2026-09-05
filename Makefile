@@ -17,7 +17,8 @@ export QWEN_HOME
 
 .PHONY: bootstrap install-searxng verify-searxng install-ryzenadj \
         install-image-runtime install-shaderc install-models build-llama \
-        status doctor verify uninstall purge purge-legacy \
+        status doctor verify verify-layout verify-components verify-live \
+        uninstall purge purge-legacy \
         install-sudo-policy verify-sudo-policy uninstall-sudo-policy \
         check-paths test
 
@@ -61,9 +62,27 @@ status:
 doctor:
 	$(REMOTE)/runtime-root.sh doctor
 
-verify: verify-sudo-policy
-	$(REMOTE)/runtime-root.sh status >/dev/null
+# Three verifications answering three questions and failing for three
+# reasons. verify-layout reads the structure alone -- the marker, its schema,
+# its binding to this checkout, the layout directories, and any entry under
+# the root outside the layout -- beside the lexical ratchet. verify-components
+# reads the identity of every installed component out of the manifest and
+# names each present, absent, or mutable, beside the sudo policy.
+# verify-live reads the transient system state and the legacy summary and
+# passes where a node is absent, since the workstation carries no amdgpu
+# sysfs. `make verify` is their union.
+verify-layout:
+	$(REMOTE)/runtime-root.sh verify-layout
 	$(REMOTE)/check-appliance-paths.py
+
+verify-components: verify-sudo-policy
+	$(REMOTE)/runtime-root.sh status >/dev/null
+	$(REMOTE)/runtime-root.sh verify-components
+
+verify-live:
+	$(REMOTE)/runtime-root.sh verify-live
+
+verify: verify-layout verify-components verify-live
 
 # uninstall keeps state/ and models/; purge removes the root whole and
 # requires QWEN_RUNTIME_ROOT_CONFIRM=$(QWEN_HOME); purge-legacy removes the

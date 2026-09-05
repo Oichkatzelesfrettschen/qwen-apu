@@ -39,6 +39,48 @@ rebuild=$(awk -F'\t' '$1 == "searxng-venv" { print $9 }' "$QWEN_HOME/manifest.ts
 [ "$rebuild" = 'make install-searxng' ] && report rebuild_command_named ok || report rebuild_command_named "$rebuild"
 case $status_out in *runtime_manifest_sha256=*) report status_prints_manifest_digest ok ;; *) report status_prints_manifest_digest missing ;; esac
 
+# ---- verify-layout, verify-components, verify-live ----
+layout_out=$("$tool" verify-layout)
+printf '%s\n' "$layout_out" | grep -q '^verify_layout=passed foreign_entries=0$' \
+    && report verify_layout_passes_clean_root ok || report verify_layout_passes_clean_root "$(printf '%s\n' "$layout_out" | tail -n 1)"
+printf '%s\n' "$layout_out" | grep -q '^layout_marker=present schema=1 binding=bound$' \
+    && report verify_layout_reads_binding ok || report verify_layout_reads_binding missing
+mkdir -p "$QWEN_HOME/intruder"
+if "$tool" verify-layout >"$work/layout-foreign.log" 2>&1; then
+    report verify_layout_fails_on_foreign accepted
+else
+    report verify_layout_fails_on_foreign ok
+fi
+grep -q "^layout_foreign=$QWEN_HOME/intruder$" "$work/layout-foreign.log" \
+    && report verify_layout_names_foreign ok || report verify_layout_names_foreign missing
+rmdir "$QWEN_HOME/intruder"
+rmdir "$QWEN_HOME/results"
+if "$tool" verify-layout >/dev/null 2>&1; then
+    report verify_layout_fails_on_missing_directory accepted
+else
+    report verify_layout_fails_on_missing_directory ok
+fi
+mkdir -p "$QWEN_HOME/results"
+components_out=$("$tool" verify-components)
+printf '%s\n' "$components_out" | grep -q '^component=searxng-venv state=absent rebuild=make install-searxng$' \
+    && report verify_components_names_absent ok || report verify_components_names_absent missing
+printf '%s\n' "$components_out" | grep -q '^component=state state=mutable ' \
+    && report verify_components_names_mutable ok || report verify_components_names_mutable missing
+printf '%s\n' "$components_out" | grep -q '^verify_components=passed absent_components=[0-9]* manifest_sha256=[0-9a-f]\{64\}$' \
+    && report verify_components_summary ok || report verify_components_summary "$(printf '%s\n' "$components_out" | tail -n 1)"
+missing_manifest=$work/no-manifest
+mkdir -p "$missing_manifest"
+if QWEN_HOME=$missing_manifest "$tool" verify-components >/dev/null 2>&1; then
+    report verify_components_needs_manifest accepted
+else
+    report verify_components_needs_manifest ok
+fi
+live_out=$("$tool" verify-live)
+printf '%s\n' "$live_out" | grep -q '^verify_live=passed session_state=absent legacy_paths=[0-9]* foreign_owned_paths=[0-9]*$' \
+    && report verify_live_passes_on_absence ok || report verify_live_passes_on_absence "$(printf '%s\n' "$live_out" | tail -n 1)"
+printf '%s\n' "$live_out" | grep -q '^live_node=/sys/kernel/mm/ksm/run value=' \
+    && report verify_live_reads_nodes ok || report verify_live_reads_nodes missing
+
 # ---- the marker binds the root to the checkout that laid it out ----
 tree_root_path=$(CDPATH='' cd -- "$script_directory/.." && pwd -P)
 marker_tree=$(sed -n 's/^tree_root=//p' "$QWEN_HOME/.qwen-runtime-root")

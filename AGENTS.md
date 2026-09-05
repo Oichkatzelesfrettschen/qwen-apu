@@ -1704,9 +1704,15 @@ make install-searxng && make verify-searxng     # the pinned instance under opt/
 make install-ryzenadj install-image-runtime install-shaderc install-models build-llama
 make status                                     # every claimed component into $QWEN_HOME/manifest.tsv
 make doctor                                     # legacy, foreign, and transient paths, untouched
-make verify                                     # sudo policy, manifest, and the path ratchet
+make verify-layout                              # marker, schema, binding, layout, and the path ratchet
+make verify-components                          # sudo policy and every installed component identity
+make verify-live                                # transient system state, passing where a node is absent
+make verify                                     # the union of the three
 QWEN_PURGE_LEGACY_CONFIRM=yes make purge-legacy # the enumerated predecessor paths, nothing else
-make uninstall                                  # the root minus state/ and models/
+QWEN_RUNTIME_ROOT_CONFIRM=$PWD/.runtime make uninstall
+                                                # the root minus state/ and models/; the confirm is
+                                                # required where the marker binds the root to a
+                                                # production checkout
 QWEN_RUNTIME_ROOT_CONFIRM=$PWD/.runtime make purge
 
 # Start and stop the appliance (run on the laptop)
