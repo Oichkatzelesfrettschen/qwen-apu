@@ -25,15 +25,16 @@ outside it.
   scale-word-select and loop LICM), the sequence (a priming arm and two
   mirrored quadruples), the operating point (nice 19 server, stock package
   limits, standing guest, KSM as found, manual 1100/933), and both verdicts.
-- Remaining: run it as written, with every arm and its identity record.
-- Device: one window.
-- Ends when: the lower endpoint of the nominal two-sided 95% t interval over
-  candidate absolute rate is above 10 tok/s (closed), the interval spans 10
-  (unresolved), or lies below it (negative); promotion is the separate +5%
-  paired verdict. An incomplete run stays incomplete. A pass establishes the
-  fixed-64 request under the named operating point and no other depth and no
-  new serving default.
-- Result: `evidence/q4k-scale-decode/`.
+- Result: `evidence/q4k-scale-decode/target-closure-20260905/`. Run as
+  written twice on 2026-09-05: closed once ([10.026, 10.240]) and unresolved
+  on the repeat ([9.768, 10.452]); the paired verdict incomplete both times
+  on one control arm the clock sidecar refused by 7 to 10 ms of marker
+  cadence, with the surviving three pairs at +5.6% and +5.2% mean. No new
+  serving default.
+- Remaining: none for this registration. The paired question moves to the
+  instrument: the `dpm_marker_cadence` bound refuses an arm whose clock and
+  coverage held, which is a sidecar rule to re-register ahead of any further
+  paired run.
 
 ## The 4B null
 

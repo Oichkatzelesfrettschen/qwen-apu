@@ -1,0 +1,31 @@
+preset	raven2-vulkan-production
+commit	f280b26983ad0fdb705a0d9ebf0503e76f2899b0
+worktree	dirty
+build_role	serving
+serving_eligible	yes
+checkpoint_semantics	natural-boundary-v1
+checkpoint_patch	patches/llama-server-natural-checkpoint-boundary.patch
+checkpoint_patch_sha256	c9d4010594da1f632be009b934cd045f6625b8baba68d09b7ed6190b02f9ddfc
+checkpoint_source_sha256	3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a
+checkpoint_patch_series_sha256	a91a215ac769c4372b230a0084f01bfa3acfea81d777e3b480400f565a5e4bec
+checkpoint_series_tree	verified
+q4k_variants	-
+candidate_series	-
+candidate_series_sha256	-
+checkpoint_series_tree_sha256	94c7919123ca85b586deb6e009fe17703e95376e9174e63ad3a2faf49a0c7c2d
+checkpoint_sources_ledger_sha256	0e77bb7779f51900d2fe4769d287695284e6a2ca71f931ecb3965a644c2f7910
+checkpoint_source_root	$HOME/Github/qwen-apu/.runtime/opt/llama.cpp
+compiler_flags	-march=znver1 -mtune=znver1
+cmake_flags	-DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_OPENSSL=OFF -DGGML_CCACHE=ON -DGGML_LTO=OFF -DGGML_OPENMP=OFF -DGGML_BLAS=OFF -DGGML_LLAMAFILE=OFF -DGGML_CPU=ON -DGGML_CUDA=OFF -DGGML_HIP=OFF -DGGML_OPENCL=OFF -DGGML_RPC=OFF -DGGML_SYCL=OFF -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=ON -DGGML_VULKAN_INT24_DOT=OFF -DGGML_NATIVE=OFF -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON
+file_prefix_map	-ffile-prefix-map=$HOME/Github/qwen-apu/.runtime/opt/llama.cpp=/src -ffile-prefix-map=$HOME/Github/qwen-apu/.runtime/opt/llama.cpp/build-raven2-vulkan-production=/build
+shader_pack_key	6937809a1f8ead2ec994876748d05c7ce220b40084da859361e4fa1cec3f1f3f
+shader_pack	restored
+object_cache	none
+ccache_hits	0
+ccache_misses	0
+instrument_binary_key	30e1140694627a5753b62f95cd40515f3a1284bbac7be1bfb3f9fad21573f51f
+binary	built
+executable	llama-server	57732160	70aa78bc0eed708ce8d06b690467affce3bb222014714af4dbd92e00fa5ff010
+executable	llama-cli	57900392	c1fd961777ebd8fad71320e5128044a121d0df6c4d12b1022b7da688d17346f6
+executable	llama-bench	54195248	4f58f5b7cf368fc1cf4200aee9132a7bbaaefe4573808d046dd6b17bea86e89b
+executable	llama-mtmd-cli	55837136	ad2191e5226dc43d8ae7c22cd419febcffd88f8d953020af23fcdb224c3a2dc8
