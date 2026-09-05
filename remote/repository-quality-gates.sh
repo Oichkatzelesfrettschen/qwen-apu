@@ -193,6 +193,8 @@ gate_cell test-sample-clock-sidecar derive remote/test-sample-clock-sidecar.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-sample-clock-sidecar.py'
 gate_cell test-validate-clock-sidecar derive remote/test-validate-clock-sidecar.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-validate-clock-sidecar.py'
+gate_cell test-reread-served-ab-sidecar derive remote/test-reread-served-ab-sidecar.sh \
+    remote/test-reread-served-ab-sidecar.sh
 gate_cell test-census-controls derive remote/test-census-controls.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-census-controls.py'
 gate_cell test-census-replay-corpus derive \
