@@ -362,6 +362,100 @@ def main() -> int:
             "carries a partial LAN key set: ['lan_exposure']",
         )
 
+        # The launch serves a staged copy of the page from <state>/webui-served
+        # and names its source on the served_page line: the staged --path is
+        # admitted where that line names the canonical source, and refused
+        # without the line or under a foreign source.
+        canonical_argv = summarizer.expected_server_argv(
+            str(server_path), "/proc/4321/fd/7", model, str(campaign_directory)
+        )
+        path_index = canonical_argv.index("--path") + 1
+        canonical_source = canonical_argv[path_index]
+        staged_directory = str(campaign_directory / "state/webui-served")
+
+        def staged_argv(
+            executable: str, descriptor: str, row: dict[str, str], directory: str
+        ) -> list[str]:
+            argv: list[str] = list(
+                summarizer.expected_server_argv(executable, descriptor, row, directory)
+            )
+            argv[path_index] = staged_directory
+            return argv
+
+        def write_status_with_served_page(source: str | None) -> None:
+            write_session_status(session_status_path)
+            if source is not None:
+                with session_status_path.open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        f"served_page source={source} sha256={'0' * 64} "
+                        "prompt_bound=- output_bound=-\n"
+                    )
+
+        write_status_with_served_page(canonical_source)
+        write_server_process(
+            server_process_path,
+            server_path,
+            server_sha256,
+            model,
+            campaign_directory,
+            staged_argv,
+        )
+        reseal_artifacts(
+            campaign_directory / "SHA256SUMS",
+            (session_status_path, server_process_path, runtime_inputs_path),
+        )
+        staged_pid = summarizer.validate_arm_server_identity(
+            session_status_path,
+            server_process_path,
+            runtime_inputs_path,
+            str(server_path),
+            server_sha256,
+            str(server_path.stat().st_size),
+            model,
+            str(campaign_directory),
+            "hp14-ssh",
+            "hp14-dk1xxx",
+            "present",
+        )
+        if staged_pid != 1234:
+            raise AssertionError(f"staged page path refused: {staged_pid}")
+
+        write_status_with_served_page(None)
+        expect_resealed_refusal(
+            summarizer,
+            session_status_path,
+            server_process_path,
+            runtime_inputs_path,
+            server_path,
+            server_sha256,
+            model,
+            campaign_directory,
+            f"argv differs from the canonical launch at index {path_index}",
+        )
+
+        write_status_with_served_page("/elsewhere/webui")
+        expect_resealed_refusal(
+            summarizer,
+            session_status_path,
+            server_process_path,
+            runtime_inputs_path,
+            server_path,
+            server_sha256,
+            model,
+            campaign_directory,
+            f"argv differs from the canonical launch at index {path_index}",
+        )
+
+        write_session_status(session_status_path)
+        write_server_process(
+            server_process_path,
+            server_path,
+            server_sha256,
+            model,
+            campaign_directory,
+            summarizer.expected_server_argv,
+        )
+
         write_session_status(session_status_path)
         write_server_process(
             server_process_path,
