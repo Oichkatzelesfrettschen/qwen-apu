@@ -94,7 +94,28 @@ read through the `pp_dpm_period_ns` key of the broker's own
 one, every multiple-th row is fresh, and a header naming no such key is a
 sampler reading the attributes on every sample, so the multiple is 1 and
 every row is fresh. `dpm_freshness=marker|derived dpm_period_multiple=N
-fresh_dpm_samples=M` states which of the two the verdict rests on.
+fresh_dpm_samples=M` states which of the two the verdict rests on, and
+`fresh_dpm_samples` counts marker-backed rows alone on the marker path, so
+`clock_invariant` reads the reads rather than their repeats.
+
+Freshness is three separate claims and one check carries each. Sampler-row
+coverage is `gaps` and `window_lost`, over the host time the record can place
+no clock step in. Refresh cadence is `dpm_marker_cadence`, over the median
+in-window marker gap against the declared `pp_dpm_period_ns` times 1.5, which
+asks whether the channel refreshed on the stride it declared. The age of the
+value each row carries is `dpm_value_age`, which the other two leave open: a
+median passes with one refresh missing, and coverage is silent about a row
+that arrived on time carrying a stale cache. It counts, for every in-window
+row, the rows since the most recent `# dpm_read=` marker at or before it, and
+bounds the maximum by the declared multiple exactly. Age is measured in rows
+that exist rather than in host time, because the broker refreshes on a tick
+count and appends one row per tick: a skipped refresh doubles the row count
+between markers, while a sampler held off the CPU stretches host time and
+leaves that count where it was. The line carries the maximum age in rows, the
+row it fell on, the same age in nanoseconds as an observation the coverage
+rules own, and the count of in-window rows ahead of every marker in the
+record, which enter no maximum and which `dpm_freshness_reads` bounds at the
+extreme.
 
 Every derived quantity is computed from the rows and the footer is held to
 it. `achieved_period` is `(last - first) // (samples - 1)` over the row
@@ -892,6 +913,68 @@ def main():
 
     freshness_reads_check("dpm_freshness_reads", dpm_multiple, len(fresh_rows))
     freshness_reads_check("temp1_freshness_reads", temp_multiple, len(temp_fresh_rows))
+    # The age of the value each row carries, the third authority beside
+    # sampler-row coverage and refresh cadence. dpm_marker_cadence reads the
+    # median marker gap, so a single refresh the broker skipped mid-window
+    # leaves the median at the declared cadence and passes while every row
+    # between the two surviving markers repeats a value twice as old as the
+    # channel declares. Age is counted in rows that exist rather than in host
+    # time: telemetry-broker.c refreshes on `tick % DPM_PERIOD_MULTIPLE == 0`
+    # and appends one row per tick, so no row sits more than `multiple` rows
+    # past a refresh, a skipped refresh puts one at `2 x multiple - 1`, and a
+    # sampler held off the CPU stretches or drops rows without changing the
+    # refresh stride in ticks -- the two arms of
+    # evidence/q4k-scale-decode/target-closure-20260905/ stretched one marker
+    # gap to 307 ms with the markers still ten rows apart. Host time inside a
+    # hold-off is priced by `gaps` and `window_lost`, which is why the bound
+    # here carries no jitter allowance; the widest host-time span is printed
+    # beside the verdict as the observation those two rules own. A broker that
+    # suppresses a marker on a failed sysfs read while still writing the row
+    # is refused here, and that is the intended reading: the value that row
+    # carries is stale.
+    if not window_defined:
+        print("dpm_value_age=not_run no window supplied")
+    elif malformed_markers:
+        print("dpm_value_age=not_run malformed dpm_read markers")
+    elif not dpm_read_instants:
+        # The derived path builds its fresh rows by row position, so every
+        # age is 0 to multiple-1 by construction and the check is vacuous.
+        print("dpm_value_age=not_run no dpm_read markers")
+    elif dpm_multiple <= 1:
+        print("dpm_value_age=not_run period_multiple=1")
+    elif not window_rows:
+        print("dpm_value_age=not_run window holds no rows")
+    else:
+        marker_row = None
+        marker_instant = None
+        # A row ahead of every marker in the record carries a value of unknown
+        # age, so it enters no maximum here; dpm_freshness_reads is what
+        # refuses the extreme of a window holding only such rows.
+        unmarked_window_rows = 0
+        max_age_rows = 0
+        max_age_row_index = -1
+        max_age_ns = 0
+        for index, row in enumerate(rows):
+            instant = int(row[0])
+            if row[0] in dpm_read_instants:
+                marker_row = index
+                marker_instant = instant
+            if not args.window_begin_ns <= instant <= args.window_end_ns:
+                continue
+            if marker_row is None:
+                unmarked_window_rows += 1
+                continue
+            age_rows = index - marker_row
+            if age_rows > max_age_rows:
+                max_age_rows = age_rows
+                max_age_row_index = index
+                max_age_ns = instant - marker_instant
+        bound_rows = dpm_multiple
+        check("dpm_value_age", max_age_rows <= bound_rows,
+              f"max_age_rows={max_age_rows} bound_rows={bound_rows}"
+              f" row_index={max_age_row_index} max_age_ns={max_age_ns}"
+              f" period_multiple={dpm_multiple}"
+              f" unmarked_window_rows={unmarked_window_rows}")
     # The invariant a forced clock policy replaces the regime taxonomy with. A
     # sample reading below the required step is the governor moving under a
     # policy that states it cannot, which is the one observation that costs the
