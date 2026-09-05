@@ -612,6 +612,16 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
 
     projector=$(registry_field "$registry_row" projector)
     raw_tool_selection=$(registry_field "$registry_row" raw_tool_selection)
+    # The Q4_K formulation belongs to the checkpoint rather than to the profile,
+    # so several profiles serving one row all dispatch the same mat-vec. The key
+    # reaches the section only where the row names one.
+    q4k_variant=$(registry_field "$registry_row" q4k_variant)
+    if ! "$script_directory/model-registry.sh" validate-q4k-variant \
+        "${q4k_variant:--}"; then
+        printf 'profile %s names model %s whose q4k_variant reads %s, which is outside the vocabulary\n' \
+            "$profile_id" "$model_id" "$q4k_variant" >&2
+        exit 1
+    fi
     case $projector in
         required) registry_vision_allowed=yes ;;
         none) registry_vision_allowed=no ;;
@@ -782,6 +792,9 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
         printf 'LLAMA_ARG_BATCH = %s\n' "$batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$ubatch"
         printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' "$profile_ctx_checkpoints"
+        if [ "$q4k_variant" != - ]; then
+            printf 'LLAMA_ARG_VK_Q4K_VARIANT = %s\n' "$q4k_variant"
+        fi
         if [ -n "$profile_projector_path" ]; then
             printf 'LLAMA_ARG_MMPROJ = %s\n' "$profile_projector_path"
         fi
@@ -829,6 +842,9 @@ if [ -n "$review_section" ]; then
         printf 'LLAMA_ARG_BATCH = %s\n' "$review_batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$review_ubatch"
         printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' "$review_ctx_checkpoints"
+        if [ "$review_q4k_variant" != - ]; then
+            printf 'LLAMA_ARG_VK_Q4K_VARIANT = %s\n' "$review_q4k_variant"
+        fi
         printf 'LLAMA_ARG_MMPROJ = %s\n' "$review_projector_path"
         printf 'LLAMA_ARG_TAGS = vision-review,review-only\n'
         printf '\n'

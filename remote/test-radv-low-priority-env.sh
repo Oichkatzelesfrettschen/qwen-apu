@@ -187,7 +187,15 @@ if [ "$variant_status" -ne 2 ]; then
     exit 1
 fi
 printf '%s\n' "$variant_error" | grep -Fx \
-    'QWEN_Q4K_VARIANT is e4, e4-scale, or e4-scale-licm over /2, /4, or /8: e5-scale/4' >/dev/null
+    'QWEN_Q4K_VARIANT is production/4, or e4, e4-scale, or e4-scale-licm over /2, /4, or /8: e5-scale/4' >/dev/null
+# production/4 names the production module through the multiplexer, so a control
+# arm of a variant-select build reaches the wrapper under a key rather than
+# under an absent one.
+# shellcheck disable=SC2016
+variant_production_output=$(QWEN_Q4K_VARIANT=production/4 \
+    QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" sh -c 'printf "variant=%s\n" "${GGML_VK_Q4K_VARIANT-unset}"')
+printf '%s\n' "$variant_production_output" | grep -Fx 'variant=production/4' >/dev/null
 variant_status=0
 QWEN_Q4K_VARIANT=e4-scale-licm/16 QWEN_VULKAN_PROFILE=low-async "$wrapper" true \
     >/dev/null 2>/dev/null || variant_status=$?

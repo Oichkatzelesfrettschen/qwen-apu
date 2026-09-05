@@ -394,9 +394,9 @@ mkdir -p "$fixture_reasons" "$fixture_model_root/Hidden" \
 : >"$fixture_reasons/profile-record.md"
 : >"$fixture_reasons/archived-record.md"
 printf '%s\n' \
-    'hidden-model	fixture	Hidden/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-	unmeasured	refused' \
-    'profile-model	fixture	Profile/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-	unmeasured	refused' \
-    'archived-model	fixture	Archived/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	archive	128	32	-	-	unmeasured	refused' \
+    'hidden-model	fixture	Hidden/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-	unmeasured	refused	-' \
+    'profile-model	fixture	Profile/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-	unmeasured	refused	-' \
+    'archived-model	fixture	Archived/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	archive	128	32	-	-	unmeasured	refused	-' \
     >"$fixture_registry"
 printf '%s\n' \
     'hidden-record	model	hidden-model	device-lost	-	-	-	-	-	-	-	-	evidence/quarantine/hidden-record.md	any' \
@@ -499,8 +499,8 @@ mkdir -p "$pair_fixture_reasons" "$pair_fixture_root/Target" \
 : >"$pair_fixture_root/Draft/model.gguf"
 : >"$pair_fixture_reasons/draft-record.md"
 printf '%s\n' \
-    'target-model	fixture	Target/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-	unmeasured	refused' \
-    'draft-model	fixture	Draft/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	candidate	128	32	-	-	unmeasured	refused' \
+    'target-model	fixture	Target/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-	unmeasured	refused	-' \
+    'draft-model	fixture	Draft/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	candidate	128	32	-	-	unmeasured	refused	-' \
     >"$pair_fixture_registry"
 printf '%s\n' \
     'draft-record	model	draft-model	device-lost	-	-	-	-	-	-	-	-	evidence/quarantine/draft-record.md	any' \
@@ -631,6 +631,69 @@ if QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
 else
     report ctx_checkpoint_ledger_read_from_snapshot rejected
     cat "$work/snapshot.err" >&2
+fi
+
+# The Q4_K formulation reaches a section exactly where its row releases one.
+# Every shipped row reads `-`, so the generated preset carries no key at all,
+# and a registry copy releasing one for the 2B distill puts exactly one key in
+# that section and leaves every other section unchanged.
+if grep -q '^LLAMA_ARG_VK_Q4K_VARIANT' "$presets"; then
+    report q4k_unreleased_registry_emits_no_key rejected
+else
+    report q4k_unreleased_registry_emits_no_key accepted
+fi
+
+q4k_registry=$work/q4k-models.tsv
+awk -F'\t' 'BEGIN { OFS = "\t" }
+    /^#/ || NF == 0 { print; next }
+    $1 == "qwen38-2b-distill" { $23 = "e4-scale/4" }
+    { print }' "$registry" >"$q4k_registry"
+q4k_presets=$work/q4k-router-presets.ini
+if QWEN_MODEL_REGISTRY=$q4k_registry QWEN_MODEL_ROOT=$model_root \
+    QWEN_QUARANTINE_REGISTRY=$quarantine \
+    QWEN_QUARANTINE_REASONS=$repository_root/evidence/quarantine \
+    "$builder" "$q4k_presets" >"$work/q4k-build.log" 2>"$work/q4k-build.err"; then
+    q4k_key_lines=$(grep -c '^LLAMA_ARG_VK_Q4K_VARIANT = e4-scale/4$' \
+        "$q4k_presets" || true)
+    q4k_other_keys=$(grep '^LLAMA_ARG_VK_Q4K_VARIANT' "$q4k_presets" |
+        grep -cv 'e4-scale/4$' || true)
+    q4k_section=$(awk -F'[][]' '
+        /^\[/ { section = $2 }
+        /^LLAMA_ARG_VK_Q4K_VARIANT/ { print section }' "$q4k_presets" |
+        sort -u | tr '\n' ' ')
+    # The pairing serves the target row weights, so its section carries the
+    # target row key beside the roster section of the same checkpoint.
+    if [ "$q4k_key_lines" -ge 1 ] && [ "$q4k_other_keys" -eq 0 ] &&
+        [ "$q4k_section" = \
+            'qwen38-2b-distill qwen38-2b-distill+qwen35-08b-draft ' ]; then
+        report q4k_released_row_emits_key accepted
+    else
+        report q4k_released_row_emits_key rejected
+        printf 'keys=%s other=%s sections=%s\n' "$q4k_key_lines" \
+            "$q4k_other_keys" "$q4k_section" >&2
+    fi
+else
+    report q4k_released_row_emits_key rejected
+    cat "$work/q4k-build.err" >&2
+fi
+
+# A key outside the vocabulary stops generation rather than landing a preset a
+# build refuses at load.
+q4k_bad_registry=$work/q4k-bad-models.tsv
+awk -F'\t' 'BEGIN { OFS = "\t" }
+    /^#/ || NF == 0 { print; next }
+    $1 == "qwen38-2b-distill" { $23 = "e4-scale/3" }
+    { print }' "$registry" >"$q4k_bad_registry"
+if QWEN_MODEL_REGISTRY=$q4k_bad_registry QWEN_MODEL_ROOT=$model_root \
+    QWEN_QUARANTINE_REGISTRY=$quarantine \
+    QWEN_QUARANTINE_REASONS=$repository_root/evidence/quarantine \
+    "$builder" "$work/q4k-bad.ini" >/dev/null 2>"$work/q4k-bad.err"; then
+    report q4k_invalid_key_refused rejected
+elif grep -q 'outside the vocabulary' "$work/q4k-bad.err"; then
+    report q4k_invalid_key_refused accepted
+else
+    report q4k_invalid_key_refused rejected
+    cat "$work/q4k-bad.err" >&2
 fi
 
 if [ "$failures" -eq 0 ]; then

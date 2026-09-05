@@ -28,6 +28,27 @@ validate_tier() {
     esac
 }
 
+# The Q4_K mat-vec formulation vocabulary is closed for the same reason the tier
+# vocabulary is: the key selects a compiled pipeline at load, and a value the
+# build does not carry ends the load rather than falling back. `-` is the
+# production module every build executes unkeyed; `production/4` names that same
+# module through the multiplexer, so a variant-select build serves the control
+# arm under a key rather than under an absent one.
+validate_q4k_variant() {
+    case $1 in
+        - | production/4) return 0 ;;
+        e4/2 | e4/4 | e4/8) return 0 ;;
+        e4-scale/2 | e4-scale/4 | e4-scale/8) return 0 ;;
+        e4-scale-licm/2 | e4-scale-licm/4 | e4-scale-licm/8) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+if [ "$#" -eq 2 ] && [ "$1" = validate-q4k-variant ]; then
+    validate_q4k_variant "$2"
+    exit $?
+fi
+
 if [ "$#" -eq 2 ] && [ "$1" = validate-cache-type ]; then
     validate_cache_type "$2"
     exit $?
@@ -255,8 +276,18 @@ emit_servable_rows() {
         }
         $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
         invalid { next }
-        NF != 22 {
-            printf "model row %d holds %d fields, expected 22\n", FNR, NF \
+        NF != 23 {
+            printf "model row %d holds %d fields, expected 23\n", FNR, NF \
+                > "/dev/stderr"
+            invalid = 1
+            next
+        }
+        # The Q4_K formulation vocabulary is closed, so a typo names a pipeline
+        # the variant-select build refuses at load rather than a row that serves
+        # the production module. The whole registry is validated before any row
+        # is emitted, the discipline every closed field here takes.
+        $23 !~ /^(-|production\/4|e4\/[248]|e4-scale\/[248]|e4-scale-licm\/[248])$/ {
+            printf "model row %d carries invalid q4k_variant: %s\n", FNR, $23 \
                 > "/dev/stderr"
             invalid = 1
             next
@@ -877,6 +908,7 @@ fi
 if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf 'usage: %s id|path SELECTOR [FIELD]\n' "$0" >&2
     printf '       %s validate-cache-type TYPE\n' "$0" >&2
+    printf '       %s validate-q4k-variant KEY\n' "$0" >&2
     printf '       %s validate-tier TIER\n' "$0" >&2
     printf '       %s quarantine-subjects|quarantine-profiles|quarantine-rows [RUNTIME_MODE]\n' "$0" >&2
     printf '       %s servable-files | servable-ids\n' "$0" >&2
@@ -891,7 +923,7 @@ if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf '        projector projector_fetch_script decode_tok_s prefill_tok_s\n' >&2
     printf '        quality tier batch\n' >&2
     printf '        ubatch validated_filled_depth validation_evidence\n' >&2
-    printf '        raw_tool_selection guarded_tool_execution\n' >&2
+    printf '        raw_tool_selection guarded_tool_execution q4k_variant\n' >&2
     printf 'omit FIELD to print the whole row as key=value lines\n' >&2
     exit 2
 fi
@@ -904,7 +936,7 @@ registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
 case $selector_kind in
     id | path) ;;
     *)
-        printf 'selector kind must be id, path, validate-cache-type, validate-tier, or a quarantine query: %s\n' \
+        printf 'selector kind must be id, path, validate-cache-type, validate-q4k-variant, validate-tier, or a quarantine query: %s\n' \
             "$selector_kind" >&2
         exit 2
         ;;
@@ -917,7 +949,7 @@ fi
 
 awk -F'\t' -v kind="$selector_kind" -v selector="$selector" -v field="$field" '
     /^#/ { next }
-    NF < 22 { next }
+    NF < 23 { next }
     {
         matched = 0
         if (kind == "id" && $1 == selector) {
@@ -935,11 +967,11 @@ awk -F'\t' -v kind="$selector_kind" -v selector="$selector" -v field="$field" '
               "context_target cache_type_k cache_type_v flash_attention projector " \
               "projector_fetch_script decode_tok_s prefill_tok_s quality tier batch ubatch " \
               "validated_filled_depth validation_evidence raw_tool_selection " \
-              "guarded_tool_execution", names, " ")
+              "guarded_tool_execution q4k_variant", names, " ")
         if (field == "") {
-            for (i = 1; i <= 22; i++) { printf "%s=%s\n", names[i], $i }
+            for (i = 1; i <= 23; i++) { printf "%s=%s\n", names[i], $i }
         } else {
-            for (i = 1; i <= 22; i++) {
+            for (i = 1; i <= 23; i++) {
                 if (names[i] == field) { printf "%s\n", $i; found = 1 }
             }
             if (!found) { exit 3 }

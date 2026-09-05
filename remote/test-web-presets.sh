@@ -52,12 +52,12 @@ export QWEN_IMAGE_PROFILES
 # whose depth reads `-`, and an archive row.
 model_registry=$work/models.tsv
 cat >"$model_registry" <<'EOF'
-# id	role	model_file	fetch_script	context_default	context_ceiling	context_target	cache_type_k	cache_type_v	flash_attention	projector	projector_fetch_script	decode_tok_s	prefill_tok_s	quality	tier	batch	ubatch	validated_filled_depth	validation_evidence	raw_tool_selection	guarded_tool_execution
-fixture-production	fixture-role	Fixture-GGUF/production.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	production	128	32	8192	evidence/fixture.md	9/10	refused
-fixture-candidate-validated	fixture-role	Fixture-GGUF/candidate-validated.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	8192	evidence/fixture.md	9/10	refused
-fixture-candidate-unknown	fixture-role	Fixture-GGUF/candidate-unknown.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	-	-	9/10	refused
-fixture-archive	fixture-role	Fixture-GGUF/archive.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	archive	128	32	-	-	9/10	refused
-fixture-vision	fixture-role	Fixture-Vision-GGUF/vision.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	required	download-fixture-mmproj.sh	1.00	1.00	untested	production	128	32	8192	evidence/fixture.md	9/10	refused
+# id	role	model_file	fetch_script	context_default	context_ceiling	context_target	cache_type_k	cache_type_v	flash_attention	projector	projector_fetch_script	decode_tok_s	prefill_tok_s	quality	tier	batch	ubatch	validated_filled_depth	validation_evidence	raw_tool_selection	guarded_tool_execution	q4k_variant
+fixture-production	fixture-role	Fixture-GGUF/production.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	production	128	32	8192	evidence/fixture.md	9/10	refused	-
+fixture-candidate-validated	fixture-role	Fixture-GGUF/candidate-validated.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	8192	evidence/fixture.md	9/10	refused	-
+fixture-candidate-unknown	fixture-role	Fixture-GGUF/candidate-unknown.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	-	-	9/10	refused	-
+fixture-archive	fixture-role	Fixture-GGUF/archive.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	archive	128	32	-	-	9/10	refused	-
+fixture-vision	fixture-role	Fixture-Vision-GGUF/vision.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	required	download-fixture-mmproj.sh	1.00	1.00	untested	production	128	32	8192	evidence/fixture.md	9/10	refused	-
 EOF
 
 web_profiles_ok=$work/web-profiles-ok.tsv
@@ -155,6 +155,43 @@ if build "$web_profiles_ok" "$presets_ok" \
 else
     report accepted_within_bounds failed
     cat "$work/ok.err" >&2
+fi
+
+# The Q4_K formulation belongs to the checkpoint a profile resolves to, so the
+# web section carries the key exactly where its row releases one. Every fixture
+# row reads `-`, so the accepted preset carries none, and a registry copy
+# releasing one for the profile's own checkpoint puts one key in that section.
+if grep -q '^LLAMA_ARG_VK_Q4K_VARIANT' "$presets_ok"; then
+    report q4k_unreleased_row_emits_no_key failed
+else
+    report q4k_unreleased_row_emits_no_key ok
+fi
+q4k_model_registry=$work/q4k-models.tsv
+awk -F'\t' 'BEGIN { OFS = "\t" }
+    /^#/ || NF == 0 { print; next }
+    $1 == "fixture-production" { $23 = "e4-scale/4" }
+    { print }' "$model_registry" >"$q4k_model_registry"
+q4k_web_presets=$work/q4k-web-presets.ini
+if QWEN_MODEL_REGISTRY=$q4k_model_registry \
+    QWEN_WEB_PROFILES=$web_profiles_ok \
+    QWEN_WEB_AUTHORIZER_READY=1 \
+    QWEN_MODEL_ROOT=${QWEN_MODEL_ROOT:-$policy_model_root} \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+        QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+        QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" \
+        QWEN_WEB_STATE_DIR="$work/q4k-web-state" \
+        "$builder" "$q4k_web_presets" \
+    >"$work/q4k-web.log" 2>"$work/q4k-web.err"; then
+    if [ "$(grep -c '^LLAMA_ARG_VK_Q4K_VARIANT = e4-scale/4$' \
+        "$q4k_web_presets")" = 1 ]; then
+        report q4k_released_row_emits_key ok
+    else
+        report q4k_released_row_emits_key failed
+        cat "$q4k_web_presets" >&2
+    fi
+else
+    report q4k_released_row_emits_key failed
+    cat "$work/q4k-web.err" >&2
 fi
 
 required_keys='LLAMA_ARG_MODEL LLAMA_ARG_ALIAS LLAMA_ARG_CTX_SIZE LLAMA_ARG_BATCH LLAMA_ARG_UBATCH LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_FLASH_ATTN LLAMA_ARG_MCP_SERVERS_CONFIG LLAMA_ARG_TAGS'

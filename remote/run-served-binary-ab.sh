@@ -95,7 +95,9 @@ set -eu
 #   QWEN_AB_CONTROL_EXPERIMENT_KEY   the Q4_K mat-vec arm the control server is asked for,
 #   QWEN_AB_CANDIDATE_EXPERIMENT_KEY and the arm the candidate is asked for: an algorithm over
 #                                    e4, e4-scale, and e4-scale-licm with a row count of /2,
-#                                    /4, or /8. Each reaches its arm as QWEN_Q4K_VARIANT and is
+#                                    /4, or /8. Each reaches its arm as QWEN_Q4K_VARIANT beside
+#                                    QWEN_Q4K_EXPERIMENT_ARM=1, the declaration that lets the arm
+#                                    name a formulation the registry row does not release, and is
 #                                    recorded in that arm's own arm-environment.tsv; an empty
 #                                    value leaves the build's default
 #   QWEN_AB_WITNESS_DIRECTORY        a run-kernel-delta-witness.sh output directory whose
@@ -1464,6 +1466,7 @@ for arm in $execution_arms; do
             QWEN_BENCH_GENERATE="$ab_generate" \
             QWEN_PIPELINE_CENSUS="$census_file" \
             QWEN_Q4K_VARIANT="$arm_experiment_key" \
+            QWEN_Q4K_EXPERIMENT_ARM=1 \
             QWEN_FORCE_INTEGER_DOT="$arm_force_integer_dot" \
             QWEN_VULKAN_EXTERNAL_LEASE_PROOF="$workload_lease_proof" \
             QWEN_STATE_DIRECTORY="$workload_lease_state_directory" \

@@ -237,12 +237,13 @@ fi
 # promoted build carries no reader and is never bundled with one.
 if [ -n "${QWEN_Q4K_VARIANT:-}" ]; then
     case $QWEN_Q4K_VARIANT in
+        production/4 | \
         e4/2 | e4/4 | e4/8 | e4-scale/2 | e4-scale/4 | e4-scale/8 | \
         e4-scale-licm/2 | e4-scale-licm/4 | e4-scale-licm/8)
             export GGML_VK_Q4K_VARIANT=$QWEN_Q4K_VARIANT
             ;;
         *)
-            printf 'QWEN_Q4K_VARIANT is e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s\n' \
+            printf 'QWEN_Q4K_VARIANT is production/4, or e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s\n' \
                 "$QWEN_Q4K_VARIANT" >&2
             exit 2
             ;;
