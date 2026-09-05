@@ -63,16 +63,36 @@ outside it.
   and `4b-kernel-delta-20260905/`. Run 2026-09-05: three I1 arms at 1100/933
   name the composed shader as the executed Q4_K module, owning 57% of the 4B
   token beside Q6_K at 27%. The kernel-delta bracket then read the composed
-  module 10.4% shorter per dispatch than production's over three clean pairs
-  (744 against 820 us median), the Q6_K null held, and the graph span 6.8%
-  shorter. The retained null of 2026-09-03 belongs to a two-patch candidate
-  without the activation patches; the composed stack had never been served
-  on the 4B. The supported conclusion is **improved locally, with a graph
-  effect**. The served `W C K K C C K K C` of the uninstrumented builds on
-  the 4B (`served-ab-4b-composed-20260905/`) reads **promoted**, +6.63%
-  [+6.17, +7.09] over four pairs with zero arm failures, so under the class
-  rule the composition is a 4B-class profile result; moving it into serving
-  is the operator's decision, since it changes the production series.
+  module's median dispatch 9.3% shorter than production's (744 against 820
+  us on the clean arms) and its aggregate Q4_K exclusive time 12.16% shorter
+  [-17.56, -6.76] over the whole four-pair acquisition and 10.5% over the
+  three clean pairs, with the graph span 6.8% shorter on those pairs. Its Q6_K control
+  reads `state-changed` over the whole four-pair acquisition, CI [-11.03%,
+  +5.96%], so that null is unresolved rather than held, and the three-pair
+  figures are a sensitivity analysis excluding the degraded slot 8 post hoc
+  rather than a preregistered exclusion. The retained null of 2026-09-03
+  belongs to a two-patch candidate without the activation patches; the
+  composed stack had never been served on the 4B. The supported conclusion is
+  **improved locally, with a graph effect**. The bracket explains that
+  mechanism under its own instrument contamination and prices no promotion;
+  the served `W C K K C C K K C` of the uninstrumented builds
+  (`served-ab-4b-composed-20260905/`) carries the performance-admission claim
+  and reads **promoted**, +6.63% [+6.17, +7.09] over four pairs with zero arm
+  failures, production mean 3.084 tok/s against the candidate's 3.2885. Under
+  the class rule the composition is a 4B-class profile result measured on one
+  artifact, `qwen38-4b-distill` Q4_K_M at that receipt's tuple under the
+  composed stack's shader selection, so another checkpoint, quantization,
+  depth, or projector configuration stays unmeasured. Against the 5.25 tok/s
+  interactive target of `evidence/decode-bound-analysis.md`, +6.63% removes
+  about 6.22% of the time per token and leaves about 59.6% of rate to find
+  from 3.2885; both figures describe that window rather than a replacement
+  baseline. Moving the composition into serving is the operator's decision,
+  since it changes the production series, and it waits on a correctness
+  witness: the bracket's `token_identity` and `margin_contract` rows read
+  `unavailable` with `no --witness directory`, which establishes nothing about
+  either executable, and the one retained 4B witness,
+  `kernel-delta-witness-4b-20260903T2020Z/`, names the older two-patch build
+  `2955d6dd...`, so neither `4844d0dc...` nor `83684f3c...` carries one.
 - Remaining: none for the question. The larger 4B program returns to temporal
   amortization as experiments.
 

@@ -201,7 +201,7 @@ machine at about +/-0.5% of a paired mean. The 2B's +1.83% with an interval of
 Q4_K arm's gain is an effect rather than a scheduling artifact. Reading the two
 arms together is what licenses that statement; neither reads it alone.
 
-## The 4B carries the same shader and none of the gain
+## The 4B carries the same shader and none of the two-patch gain
 
 The third class is the one that changes the reading. `qwen38-4b-distill` is
 Q4_K_M like the 2B, so it dispatches the same patched `mul_mat_vec_q4_k`, and
@@ -256,9 +256,14 @@ arms name the composed shader as the executed Q4_K module (the plain shader
 name is the composed formulation in that build, at specialization `64,4,1`),
 owning 57% of the token against Q6_K at 27%. `4b-kernel-delta-20260905/`
 then brackets the production census twin against the composed one on the
-4B: the composed module's exclusive time is 10.4% shorter over the three
-clean pairs (744 against 820 us per dispatch), the Q6_K null holds, and the
-graph span shortens 6.8%. The memory-boundness account above is therefore
+4B: the composed module's median dispatch reads 744 us against 820 us, -9.3%,
+and its aggregate Q4_K exclusive time 12.16% shorter [-17.56, -6.76] over
+the whole four-pair acquisition and 10.5% shorter over the three clean pairs,
+with the graph span 6.8% shorter on those pairs. The Q6_K control
+reads `state-changed` over the whole four-pair acquisition, CI [-11.03%,
++5.96%], so that null is unresolved rather than held, and the three-pair
+figures are a sensitivity analysis excluding the degraded slot 8 post hoc
+rather than a preregistered exclusion. The memory-boundness account above is therefore
 withdrawn as an ordering of classes: the 4B's Q4_K dispatches sit further
 from the streaming ceiling than the 2B's (10.0 against 12.5 GB/s inside the
 family, with Q6_K at 13.1 and 17.9), and the composed formulation shortens
@@ -267,9 +272,29 @@ uninstrumented builds on the 4B under the registration's shape: production
 `70aa78bc...` at 3.076 to 3.088 tok/s against the composed candidate
 `83684f3c...` at 3.267 to 3.299, paired deltas +6.68, +6.83, +6.80, +6.21%,
 mean +6.63% with interval [+6.17, +7.09], every arm at 1100/933 and zero arm
-failures: **promoted** against the +5% bound. The composition is therefore a
+failures: **promoted** against the +5% bound. The bracket and the served
+campaign divide the work: the bracket explains the mechanism under its own
+instrument contamination and prices no promotion, and this uninstrumented
+served comparison carries the performance-admission claim, with a production
+mean of 3.084 tok/s against the candidate's 3.2885. The composition is a
 4B-class result under the class rule, where the 2B reads unresolved at +5.3%
-and +5.5% against the same bound and the 0.8B dispatches the shader never.
+and +5.5% against the same bound and the 0.8B dispatches the shader never;
+its scope is the measured artifact, `qwen38-4b-distill` Q4_K_M at the
+receipt's tuple under the composed stack's shader selection, rather than
+every 4B checkpoint, quantization, depth, or projector configuration. The
+candidate mean in this window is 3.2885 tok/s: +6.63% removes about 6.22% of
+the time per token, and the 5.25 tok/s interactive target of
+`evidence/decode-bound-analysis.md` sits about 59.6% of rate above it. Both
+figures describe this window's machine state rather than a replacement
+baseline.
+
+`summary.tsv` of `4b-kernel-delta-20260905/` reads `token_identity` and
+`margin_contract` `unavailable` with `no --witness directory`, which
+establishes nothing about either executable, and the one retained 4B witness,
+`kernel-delta-witness-4b-20260903T2020Z/inputs.tsv`, names the older two-patch
+build `2955d6dd...`. Neither the census candidate `4844d0dc...` nor the
+serving candidate `83684f3c...` carries a witness. A witness run over the release executable
+precedes any activation.
 
 ### The first attempt is retained, and thermal state is why it failed
 
