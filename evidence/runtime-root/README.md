@@ -117,9 +117,18 @@ is written from. `require_image_parameters` in `remote/image-launch-lib.sh`
 refuses a launch whose `QWEN_IMAGE_PROFILES_JSON` resolves outside the root and
 names the served path in the refusal. The comparison is on the resolved path,
 so a symlink under the root pointing outside it meets the same refusal.
-`QWEN_IMAGE_PARAMETERS_EXTERNAL=1` admits a harness that writes its own
-parameter set into its own output directory, which is what
-`remote/admit-image-router.sh` does; a served launch names nothing of the sort.
+`QWEN_IMAGE_PARAMETERS_EXTERNAL=1` admits a path outside the root, which two
+callers need. A harness writing its own parameter set into its own output
+directory is one, and `remote/admit-image-router.sh` states it. The other is
+an operator serving a bundle assembled before the file was declared: its MCP
+configuration names the predecessor path and `web-mcp-manifest.tsv` binds that
+path and digest, so requiring the declared path of every bundle would repeat
+the `natural-boundary-13d05a0-r2` refusal this file already records. The
+migration is to regenerate the preset against
+`$QWEN_HOME/state/image-parameters.json`, which the generator invocations in
+`AGENTS.md` now name, and the refusal prints both that path and the variable.
+Whether the appliance's activated bundle names the predecessor path is
+unmeasured from the workstation.
 
 ## The doctor
 
@@ -256,7 +265,10 @@ file in the directory the manifest leaves unnamed. An install over a populated
 wheelhouse verifies it and then resolves with `--no-index` against
 `--find-links` alone, so the same bytes install on a machine with no network
 and a reinstall a year on installs what the first one did rather than what the
-index serves that day. `QWEN_SEARXNG_OFFLINE=1` refuses an install where no
+index serves that day. The download runs `--only-binary :all:`, so a
+distribution shipping no wheel fails the population on the networked machine
+rather than leaving an sdist the manifest hashes and the offline install then
+fails to build. `QWEN_SEARXNG_OFFLINE=1` refuses an install where no
 manifest stands, so a machine that meant to install from its own wheels says
 so rather than silently fetching. The wheelhouse lives under `opt/searxng/`
 rather than under `cache/`, because an offline reinstall depends on it and

@@ -536,7 +536,7 @@ elif grep -q 'outside the runtime root' "$work/outside.err"; then
 else
     report external_parameters_refuse_the_launch "$(tail -n 3 "$work/outside.err")"
 fi
-grep -q "the served parameter file is $image_parameters" "$work/outside.err" \
+grep -q "the declared parameter file is $image_parameters" "$work/outside.err" \
     && report refusal_names_the_served_parameters ok \
     || report refusal_names_the_served_parameters "$(tail -n 2 "$work/outside.err")"
 

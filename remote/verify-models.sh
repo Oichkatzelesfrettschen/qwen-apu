@@ -30,7 +30,7 @@ set -eu
 # where any row's bytes or digest differ from its pin.
 
 usage() {
-    sed -n '25,30p' "$0" >&2
+    sed -n '24,30p' "$0" >&2
     exit 2
 }
 
@@ -87,7 +87,15 @@ report_artifact() {
     report_relative=$3
     report_script=$4
     report_file=$model_root/$report_relative
-    if ! ledger_pin "$report_id" && ! script_pin "$report_script"; then
+    # The pin ledger is keyed by model id, so it answers for the model file
+    # alone; a projector shares its row's id and takes its own script's pin.
+    report_pinned=1
+    if [ "$report_kind" = model ] && ledger_pin "$report_id"; then
+        report_pinned=0
+    elif script_pin "$report_script"; then
+        report_pinned=0
+    fi
+    if [ "$report_pinned" -ne 0 ]; then
         printf '%s\t%s\t%s\tunpinned\t-\t-\t%s\n' \
             "$report_id" "$report_kind" "$report_relative" "$report_script"
         return 0

@@ -42,7 +42,7 @@ set -eu
 #   QWEN_DOCTOR_ACCOUNT_LOOKUP   command that tests a legacy account (fixtures)
 
 usage() {
-    sed -n '32,41p' "$0" >&2
+    sed -n '33,42p' "$0" >&2
     exit 2
 }
 
@@ -186,7 +186,15 @@ status_rows() {
 # service-account form and need sudo to remove; `account` names the service
 # account that form created.
 legacy_rows() {
-    legacy_home=${QWEN_DOCTOR_HOME:-${HOME:?}}
+    # The legacy table is a report rather than a requirement, so an unset HOME
+    # leaves the user rows unenumerated and the system rows and the transient
+    # state still answer. `make verify-live` runs in environments that carry
+    # no HOME, and a refusal there would report an environment rather than the
+    # appliance.
+    legacy_home=${QWEN_DOCTOR_HOME:-${HOME:-}}
+    if [ -z "$legacy_home" ]; then
+        legacy_home=/nonexistent-home  # appliance-path: named
+    fi
     legacy_prefix=${QWEN_DOCTOR_SYSTEM_PREFIX:-}
     for relative in qwen-laptop-setup qwen-deployments qwen-webui-state models \
         src/llama.cpp-qwen-apu src/llama.cpp-qwen-apu-trace src/llama.cpp \

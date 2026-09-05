@@ -43,7 +43,7 @@ set -eu
 #   QWEN_SEARXNG_OFFLINE    1 requires the wheelhouse rather than admitting the index
 
 usage() {
-    sed -n '37,42p' "$0" >&2
+    sed -n '38,43p' "$0" >&2
     exit 2
 }
 
@@ -182,9 +182,13 @@ if [ "$action" = wheelhouse ]; then
         exit 2
     }
     mkdir -p "$wheelhouse_directory"
+    # --only-binary :all: makes the population fail here on the networked
+    # machine where a distribution ships no wheel, rather than leaving an
+    # sdist the manifest hashes and the offline install then fails to build
+    # with no index to fetch a build backend from.
     PIP_CACHE_DIR=$qwen_home_cache/pip "$instance_python" -m pip download -q \
-        --disable-pip-version-check --no-deps -r "$requirements_lock" \
-        -d "$wheelhouse_directory"
+        --disable-pip-version-check --no-deps --only-binary :all: \
+        -r "$requirements_lock" -d "$wheelhouse_directory"
     wheelhouse_staging=$(mktemp "$wheelhouse_directory/.manifest.XXXXXX")
     {
         printf 'file\tbytes\tsha256\n'

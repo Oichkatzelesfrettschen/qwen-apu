@@ -52,8 +52,27 @@ add_row short short/short.gguf test-fixture-short.sh
 add_row other other/other.gguf test-fixture-other.sh
 add_row gone gone/gone.gguf test-fixture-absent.sh
 add_row loose unpinned/loose.gguf test-fixture-unpinned.sh
+# A row whose id the pin ledger also carries and which requires a projector:
+# the model file takes the ledger pin and the projector takes its own script's,
+# so the projector is never measured against the model's bytes.
+printf 'vision\trole\tvision/vision.gguf\ttest-fixture-unpinned.sh\t4096\t4096\t4096\tf16\tf16\ton\trequired\ttest-fixture-projector.sh\t-\t-\t-\tproduction\t128\t32\t-\t-\t-\trefused\n' >>"$registry"
+mkdir -p "$models/vision"
+printf 'vision-model-bytes\n' >"$models/vision/vision.gguf"
+printf 'projector-bytes\n' >"$models/vision/projector.gguf"
+vision_bytes=$(wc -c <"$models/vision/vision.gguf" | tr -d ' ')
+vision_sha256=$(sha256sum "$models/vision/vision.gguf" | cut -d ' ' -f 1)
+projector_bytes=$(wc -c <"$models/vision/projector.gguf" | tr -d ' ')
+projector_sha256=$(sha256sum "$models/vision/projector.gguf" | cut -d ' ' -f 1)
+{
+    printf '#!/bin/sh\n'
+    printf 'destination_directory=${1:-"$qwen_home_models/vision"}\n'
+    printf 'artifact_name=projector.gguf\n'
+    printf 'expected_bytes=%s\n' "$projector_bytes"
+    printf 'expected_sha256=%s\n' "$projector_sha256"
+} >"$fetch_directory/test-fixture-projector.sh"
 
-printf '# fixture pin ledger\nstranger\tstranger/stranger.gguf\t1\t%s\trepo\trev\n' "$good_sha256" >"$ledger"
+printf '# fixture pin ledger\nstranger\tstranger/stranger.gguf\t1\t%s\trepo\trev\nvision\tvision/vision.gguf\t%s\t%s\trepo\trev\n' \
+    "$good_sha256" "$vision_bytes" "$vision_sha256" >"$ledger"
 
 run() {
     QWEN_MODEL_REGISTRY=$registry QWEN_MODEL_ARTIFACTS=$ledger QWEN_MODEL_ROOT=$models QWEN_MODEL_FETCH_DIR=$fetch_directory "$tool" "$@"
@@ -76,9 +95,13 @@ grep -q '^gone	model	gone/gone.gguf	absent	' "$work/report.tsv" \
     && report absent_row ok || report absent_row missing
 grep -q '^loose	model	unpinned/loose.gguf	unpinned	-	-	' "$work/report.tsv" \
     && report unpinned_row ok || report unpinned_row missing
+grep -q "^vision	model	vision/vision.gguf	verified	$vision_bytes	$vision_sha256	" "$work/report.tsv" \
+    && report ledger_pin_reads_the_model ok || report ledger_pin_reads_the_model missing
+grep -q "^vision	projector	vision/projector.gguf	verified	$projector_bytes	$projector_sha256	" "$work/report.tsv" \
+    && report projector_takes_its_own_pin ok || report projector_takes_its_own_pin "$(grep '	projector	' "$work/report.tsv")"
 grep -q '^stranger	ledger	-	orphan-pin	' "$work/report.tsv" \
     && report orphan_pin_row ok || report orphan_pin_row missing
-grep -q '^verify_models=failed verified=1 absent=1 unpinned=1 mismatched=2 orphan_pins=1 ' "$work/report.tsv" \
+grep -q '^verify_models=failed verified=3 absent=1 unpinned=1 mismatched=2 orphan_pins=1 ' "$work/report.tsv" \
     && report summary_line ok || report summary_line "$(tail -n 1 "$work/report.tsv")"
 
 # A selection reads the named rows alone, and a run over verified rows passes.

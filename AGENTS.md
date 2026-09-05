@@ -1897,7 +1897,7 @@ QWEN_IMAGE_MCP_SERVER=remote/image-mcp/server.py \
 QWEN_IMAGE_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
 QWEN_IMAGE_STATE_DIR=$HOME/qwen-webui-state/images \
 QWEN_IMAGE_SERVICE_SOCKET=$HOME/qwen-webui-state/images/image-service.sock \
-QWEN_IMAGE_PROFILES_JSON=$HOME/qwen-webui-state/image-parameters.json \
+QWEN_IMAGE_PROFILES_JSON=$QWEN_HOME/state/image-parameters.json \
     remote/build-router-presets.sh OUT.ini
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
 remote/build-feature-roster.sh [OUTPUT_JSON]   # webui/roster.json, from the feature claim ledger
