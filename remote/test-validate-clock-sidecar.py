@@ -415,6 +415,171 @@ def case_freshness_reads_zero_in_window():
     print("case=freshness_reads_zero_in_window verdict=accepted")
 
 
+# dpm_value_age: the third freshness authority. dpm_marker_cadence reads the
+# median marker gap, so a broker that skipped exactly one refresh mid-window
+# leaves that median at the declared cadence while the rows between the two
+# surviving markers repeat a value twice as old as the channel declares. The
+# age check counts rows since the most recent marker, so the skipped refresh
+# refuses and the hold-off the median rule was introduced for accepts: a
+# sampler held off the CPU stretches host time and leaves the refresh stride
+# in ticks where it was.
+def case_dpm_value_age():
+    period_ns = 5_000_000
+    declared = 50_000_000  # ten requested periods
+
+    def marked_record(samples, skip_marker_row=None, hold_off_row=None,
+                      hold_off_ns=0):
+        lines = [
+            f"# clock=CLOCK_MONOTONIC period_ns={period_ns}"
+            " drm_device=/fake hwmon=/fake/hwmon0",
+            f"# sample_rates: gpu_busy_percent_period_ns={period_ns}"
+            f" pp_dpm_period_ns={declared}",
+            "# interpretation: pp_dpm_sclk_selected_mhz is the selected"
+            " graphics clock step",
+            "# sampler_pid=4242 nice=10 cpu_affinity=1",
+            COLUMNS,
+        ]
+        start = 1_000_000_000
+        instant = start
+        instants = []
+        for index in range(samples):
+            if index == hold_off_row:
+                instant += hold_off_ns
+            if index % 10 == 0 and index != skip_marker_row:
+                lines.append(f"# dpm_read={instant}")
+            lines.append(f"{instant}\t400\t933\t1067\t37\t61000\t30000")
+            instants.append(instant)
+            instant += period_ns
+        last = instants[-1]
+        lines.append(
+            f"# samples={samples}"
+            f" achieved_period_ns={(last - start) // (samples - 1)}"
+            f" mean_sample_cost_ns=30000 max_sample_cost_ns=30000"
+            f" samples_with_unavailable_sensor=0"
+            f" first_sample_ns={start} last_sample_ns={last}")
+        return "\n".join(lines) + "\n", start, last
+
+    # Rows land at the declared period throughout and every tenth row carries
+    # a marker: the maximum age is nine rows against a bound of ten.
+    record, start, last = marked_record(120)
+    result = validate(record, period_ns=period_ns, window=(start, last))
+    assert "dpm_value_age=accepted max_age_rows=9 bound_rows=10" in result.stdout, result.stdout
+    assert "unmarked_window_rows=0" in result.stdout, result.stdout
+    assert "dpm_marker_cadence=accepted" in result.stdout, result.stdout
+    assert result.returncode == 0, result.stdout
+
+    # The same record with the refresh at row 60 skipped: rows continue at the
+    # declared period, eleven marker gaps still read 50 ms and one reads
+    # 100 ms, so the median holds the cadence claim while row 69 carries a
+    # value read nineteen rows earlier.
+    record, start, last = marked_record(120, skip_marker_row=60)
+    result = refused(record, "dpm_value_age",
+                     period_ns=period_ns, window=(start, last))
+    assert f"dpm_marker_cadence=accepted median_gap_ns={declared}" in result.stdout, result.stdout
+    assert "gaps=accepted" in result.stdout, result.stdout
+    assert "window_lost=accepted" in result.stdout, result.stdout
+    assert ("dpm_value_age=refused max_age_rows=19 bound_rows=10"
+            " row_index=69 max_age_ns=95000000") in result.stdout, result.stdout
+    assert "failures=dpm_value_age" in result.stdout, result.stdout
+
+    # The hold-off the median rule was introduced for: one marker gap of
+    # 110 ms against a 50 ms declaration, with every refresh present and the
+    # markers still ten rows apart. Age is measured over rows that exist, so
+    # this record accepts while the host time inside the gap is priced by the
+    # row-gap and lost-fraction rules alone.
+    hold_off_ns = 60_000_000
+    record, start, last = marked_record(120, hold_off_row=45,
+                                        hold_off_ns=hold_off_ns)
+    result = validate(record, period_ns=period_ns, window=(start, last),
+                      extra=["--max-gap-ns", str(hold_off_ns + period_ns),
+                             "--max-lost-fraction", "0.2"])
+    assert ("dpm_value_age=accepted max_age_rows=9 bound_rows=10") in result.stdout, result.stdout
+    assert f"max_gap_ns={declared + hold_off_ns}" in result.stdout, result.stdout
+    assert result.returncode == 0, result.stdout
+
+    # fresh_dpm_samples counts marker-backed rows alone on the marker path, so
+    # the repeats between two refreshes never enter the clock invariant as
+    # independent confirmations that the clock held: 120 window rows carry 12
+    # markers, and the invariant counts those 12.
+    result = validate(record, period_ns=period_ns, window=(start, last),
+                      extra=["--max-gap-ns", str(hold_off_ns + period_ns),
+                             "--max-lost-fraction", "0.2",
+                             "--required-sclk-mhz", "400"])
+    assert "dpm_freshness=marker dpm_period_multiple=10 fresh_dpm_samples=12" \
+        in result.stdout, result.stdout
+    assert "clock_invariant=held samples_at_required=12" in result.stdout, result.stdout
+    assert result.returncode == 0, result.stdout
+
+    # A record naming no marker is read through row position, where every age
+    # is under the multiple by construction, and a channel declaring no
+    # multiple above one makes no claim this check can fail.
+    record, start, last = sidecar_record(
+        samples=40, period_ns=period_ns,
+        sample_rates={"gpu_busy_percent_period_ns": period_ns,
+                      "pp_dpm_period_ns": declared})
+    result = validate(record, period_ns=period_ns, window=(start, last))
+    assert "dpm_value_age=not_run no dpm_read markers" in result.stdout, result.stdout
+
+    record, start, last = sidecar_record(samples=40, period_ns=period_ns,
+                                         dpm_read_stride=10)
+    result = validate(record, period_ns=period_ns, window=(start, last))
+    assert "dpm_value_age=not_run period_multiple=1" in result.stdout, result.stdout
+
+    record, start, last = marked_record(120)
+    result = validate(record, period_ns=period_ns)
+    assert "dpm_value_age=not_run no window supplied" in result.stdout, result.stdout
+
+    # The bound is the declared multiple exactly rather than the 1.5 jitter
+    # allowance the row-gap and cadence rules carry, and a multiple of two is
+    # where the difference decides the verdict: a skipped refresh reads three
+    # rows of age against a bound of two, which `2 x 3 // 2` would admit.
+    def small_multiple_record(skip_marker_row=None):
+        lines = [
+            f"# clock=CLOCK_MONOTONIC period_ns={period_ns}"
+            " drm_device=/fake hwmon=/fake/hwmon0",
+            f"# sample_rates: gpu_busy_percent_period_ns={period_ns}"
+            f" pp_dpm_period_ns={2 * period_ns}",
+            "# interpretation: pp_dpm_sclk_selected_mhz is the selected"
+            " graphics clock step",
+            "# sampler_pid=4242 nice=10 cpu_affinity=1",
+            COLUMNS,
+        ]
+        start = 1_000_000_000
+        for index in range(40):
+            instant = start + index * period_ns
+            if index % 2 == 0 and index != skip_marker_row:
+                lines.append(f"# dpm_read={instant}")
+            lines.append(f"{instant}\t400\t933\t1067\t37\t61000\t30000")
+        last = start + 39 * period_ns
+        lines.append(f"# samples=40 achieved_period_ns={period_ns}"
+                     f" mean_sample_cost_ns=30000 max_sample_cost_ns=30000"
+                     f" samples_with_unavailable_sensor=0"
+                     f" first_sample_ns={start} last_sample_ns={last}")
+        return "\n".join(lines) + "\n", start, last
+
+    record, start, last = small_multiple_record()
+    result = validate(record, period_ns=period_ns, window=(start, last))
+    assert "dpm_value_age=accepted max_age_rows=1 bound_rows=2" in result.stdout, result.stdout
+    assert result.returncode == 0, result.stdout
+
+    record, start, last = small_multiple_record(skip_marker_row=20)
+    result = refused(record, "dpm_value_age",
+                     period_ns=period_ns, window=(start, last))
+    assert "dpm_marker_cadence=accepted" in result.stdout, result.stdout
+    assert "dpm_value_age=refused max_age_rows=3 bound_rows=2 row_index=21" \
+        in result.stdout, result.stdout
+
+    # A window opening ahead of the record's own first marker: those rows
+    # carry a value of unknown age and enter no maximum, which the line states
+    # rather than folding them into a reading it cannot support.
+    record, start, last = marked_record(120, skip_marker_row=0)
+    result = validate(record, period_ns=period_ns, window=(start, last))
+    assert "dpm_value_age=accepted max_age_rows=9 bound_rows=10" in result.stdout, result.stdout
+    assert "unmarked_window_rows=10" in result.stdout, result.stdout
+    assert result.returncode == 0, result.stdout
+    print("case=dpm_value_age verdict=accepted")
+
+
 # Argument-level defects: checked where they are parsed, ahead of any read of
 # the record, the way the existing finite-range bounds already are.
 def case_argument_bounds():
@@ -465,5 +630,6 @@ case_dpm_marker_cadence()
 case_dpm_read_markers_malformed()
 case_temperature_freshness_reported()
 case_freshness_reads_zero_in_window()
+case_dpm_value_age()
 case_argument_bounds()
 print("validate_clock_sidecar=accepted")
