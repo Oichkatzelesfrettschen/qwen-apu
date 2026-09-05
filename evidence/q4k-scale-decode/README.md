@@ -348,7 +348,7 @@ different outcomes.
 | --- | --- | --- | --- |
 | component admission | does the change help at all, correctly | paired lower bound above zero, correctness held | **passed** |
 | target closure | does the production candidate clear the serving target | absolute lower bound above 10 tok/s | **closed once, unresolved on the repeat** (`target-closure-20260905/`) |
-| 4B promotion | does the composed candidate beat production on the 4B by the paired rule | paired lower bound above +5% | **promoted**, +6.63% [+6.17, +7.09] (`../raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/`) |
+| 4B promotion | does the composed candidate beat production on `qwen38-4b-distill` Q4_K_M by the paired rule | paired lower bound above +5% | **promoted**, +6.63% [+6.17, +7.09] (`../raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/`) |
 | platform promotion | is it worth a Raven2-wide default | one-sided 5% | **not passed** |
 
 **Component admission passed.** The 2B distill's paired interval is +1.63% to +2.04%, whose
@@ -374,9 +374,17 @@ composition run of the production candidate against `main`, read on its own abso
 bound in a single sweep.
 
 **Platform promotion is not passed.** The whole interval lies below +5% on the primary class,
-the 4B measures -0.02% on the same binary and the same shader, and a default that helps one
+the 4B measured -0.02% on the two-patch binary and the same shader, and a default that helps one
 checkpoint and not another of the same quantization recipe is a profile setting rather than a
-platform default.
+platform default. The composed five-patch stack later read +6.63% [+6.17, +7.09] on
+`qwen38-4b-distill` Q4_K_M
+(`../raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/`),
+which promotes that one artifact at its own tuple and shader selection and leaves the
+platform verdict where the class disagreement puts it. The candidate mean in that window
+is 3.2885 tok/s against the production mean 3.084: +6.63% removes about 6.22% of the time
+per token, and the 5.25 tok/s interactive target of `evidence/decode-bound-analysis.md`
+sits about 59.6% of rate above 3.2885, so both figures describe that window rather than a
+replacement baseline.
 
 Reading these apart is what the numbers support. One arm answering all three would have to be
 promoted on a bound it does not clear or discarded despite a gain it does carry, and the 2B
@@ -698,6 +706,86 @@ QWEN_CENSUS_ARMS=I1 QWEN_Q4K_VARIANT=e4-scale-licm/4 \
 The 0.8B and the 4B follow the 2B in class order on every comparison arm, and the 0.8B stays
 the null: its file holds no Q4_K bytes, so every key returns the same rate on it and a nonzero
 result there says the key reached something outside the shader it names.
+
+## A tenth key and a per-row route: `llama-vulkan-q4k-row-select.patch`
+
+The sealed key seals an experiment inside one process, and a release is a different claim: the
+row that carries the measured result runs the composed formulation and every other row runs
+the kernel the appliance already serves. `Q4K_VARIANT` 0 does not state that second half.
+It is the post-E4 control, so its module carries the activation group-sum hoist the E4 member
+already applied, and its SPIR-V is `d59fcb95...` against the `a9ac07dd...` the census decode
+ledger records the pinned build executing. A build whose unkeyed default answered with 0
+would move every unnamed row's shader.
+
+`Q4K_VARIANT` 3 is the fourth formulation and it compiles from the pinned commit's own text:
+the packed16 scale decode, the top-tested superblock loop, and the sixteen-fma minimum term
+the group-sum member replaced with four hoisted sums. `Q4K_PINNED_SMIN` is the one new
+selector, since the two halves of the post-E4 control are separately reachable and only their
+conjunction is the pinned kernel. `ggml_vk_load_shaders` selects 3 whenever
+`GGML_VK_Q4K_VARIANT` is absent, at whatever row count the device's own branch chose, which is
+4 on `AMD_GCN` and is the `constants=64,4,1` the ledger records. `production` is the name the
+key admits it under and it admits `/4` alone, because the retained receipts reproduce the
+four-row ISA of every arm and no receipt measures the pinned formulation at two or eight rows.
+
+**The identity is a compile equality rather than a claim.** `glslc` 2026.3 (SPIR-V 1.4.357.0)
+compiles the pinned commit's `mul_mat_vec_q4_k.comp` and the row-select member's shader at
+`Q4K_VARIANT=3` under the flags `vulkan-shaders-gen` passes -- `-fshader-stage=compute
+--target-env=vulkan1.2 -O`, no `-g` -- and the two SPIR-V files are byte-identical across all
+six modules the pipeline creation can reach:
+
+| module | SPIR-V head, both routes |
+| --- | --- |
+| `f32_f32` | `ab0d087f463e87e2` |
+| `f32_f32_subgroup` | `625771c9f05548d7` |
+| `f32_f32_subgroup_no_shmem` | `85bf7a2555dfb356` |
+| `f16_f32` | `443d7505e3e7f3d7` |
+| `f16_f32_subgroup` | `cb97b9c153fb199e` |
+| `f16_f32_subgroup_no_shmem` | `b1a8d18fda9c5d9c` |
+
+Those digests are this workstation's `glslc` rather than the appliance's, so they establish
+the equality and not the appliance's own `a9ac07dd`; the equality is what transfers, since
+both sides of each row compile from the same text under one compiler. The same comparison run
+against the pre-member shader leaves `Q4K_VARIANT` 0, 1, 2 and the sideplane module
+byte-identical, so the fourth formulation is added rather than the three edited.
+
+**The route is the argument, because neither the environment nor the router argv can be
+per-row.** `common_preset::merge` overwrites a section key with the router argv's value of the
+same name, so a router-level flag serves one arm to the whole roster; `server-models.cpp`
+spawns each child from the router's `environ` snapshot, so a process environment variable does
+the same thing one link later. `--vk-q4k-variant KEY` carries `set_env` for
+`LLAMA_ARG_VK_Q4K_VARIANT`, which is what makes it a preset section key beside the six tuple
+keys, and `tools/server/server.cpp` calls `setenv` from the parsed value in its non-router
+branch alone, ahead of `common_params_print_info` and therefore ahead of the first
+`ggml_vk_get_device` call -- `ggml_vk_load_shaders` runs inside that function, reached by the
+first Vulkan buffer-type or device request, which is the device enumeration below the setenv
+and the model load after it. `setenv` overwrites, so the section's key wins over an ambient
+one the snapshot carried, and a router that names no such flag leaves every section's own key
+standing.
+
+The shader's own `#ifndef Q4K_VARIANT` fallback stays 2 while the host reader's default is 3,
+because the sideplane module compiles with `Q4K_SIDEPLANE` and no variant define and keeps the
+composed formulation it was measured under. That fallback reaches no dense mat-vec pipeline,
+since `vulkan-shaders-gen` states the value for every module the selection can hand to
+`ggml_vk_create_pipeline`.
+
+What the repository still owes is the section's own authority. `qwen-capacity-policy.sh` reads
+a router preset key by key and counts the seven tuple keys, the checkpoint count, the tags, the
+MCP configuration, and the nine draft keys, so a section carrying `LLAMA_ARG_VK_Q4K_VARIANT`
+passes that reader untouched: the key is admitted and nothing binds it to a ledger row, and
+nothing yet keeps `--vk-q4k-variant` off a router argv, where `common_preset::merge` would push
+one arm onto every section the way `--ctx-size` once did. A row-scoped release therefore needs
+the policy to join the key to an authority the way it joins the checkpoint count, and
+`build-router-presets.sh` to write it from that authority rather than an operator writing it by
+hand.
+
+`build-llama-preset.sh` states the capability the way it states the keys. The `q4k_variants`
+manifest value is a comma-separated set whose elements are the admitted `ALGORITHM/ROWS` keys
+with `route=arg:LLAMA_ARG_VK_Q4K_VARIANT` beside them, and `run-served-binary-ab.sh` matches an
+arm's key against one whole element, so the route token names a capability without ever
+matching a key. A pinned tree reads `-`, a tree carrying the multiplexed shader and the
+`getenv` reader alone reads the nine keys, and a tree carrying the production module, the
+`arr_dmmv_q4_k_prod_*` selection, the argument, and the server's `setenv` reads
+`production/4` ahead of those nine with the route token after them.
 
 ## The appliance arms, and the preimage chain that orders them
 

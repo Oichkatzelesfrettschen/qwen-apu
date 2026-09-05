@@ -187,7 +187,25 @@ if [ "$variant_status" -ne 2 ]; then
     exit 1
 fi
 printf '%s\n' "$variant_error" | grep -Fx \
-    'QWEN_Q4K_VARIANT is e4, e4-scale, or e4-scale-licm over /2, /4, or /8: e5-scale/4' >/dev/null
+    'QWEN_Q4K_VARIANT is production/4, or e4, e4-scale, or e4-scale-licm over /2, /4, or /8: e5-scale/4' >/dev/null
+# production names the pinned commit's own formulation, the reader's default once
+# the row-select member lands, and its four-row shape is the one the retained
+# receipts reproduce, so the wrapper carries production/4 and refuses the two
+# shapes no receipt measures.
+# shellcheck disable=SC2016
+variant_production_output=$(QWEN_Q4K_VARIANT=production/4 QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" sh -c 'printf "variant=%s\n" "${GGML_VK_Q4K_VARIANT-unset}"')
+printf '%s\n' "$variant_production_output" | grep -Fx 'variant=production/4' >/dev/null
+for unadmitted_production in production/2 production/8 production; do
+    variant_status=0
+    QWEN_Q4K_VARIANT=$unadmitted_production QWEN_VULKAN_PROFILE=low-async "$wrapper" true \
+        >/dev/null 2>/dev/null || variant_status=$?
+    if [ "$variant_status" -ne 2 ]; then
+        printf 'RADV environment wrapper accepted QWEN_Q4K_VARIANT=%s\n' \
+            "$unadmitted_production" >&2
+        exit 1
+    fi
+done
 variant_status=0
 QWEN_Q4K_VARIANT=e4-scale-licm/16 QWEN_VULKAN_PROFILE=low-async "$wrapper" true \
     >/dev/null 2>/dev/null || variant_status=$?

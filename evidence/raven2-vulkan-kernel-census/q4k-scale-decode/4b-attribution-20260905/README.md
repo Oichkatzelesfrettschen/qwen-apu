@@ -84,17 +84,30 @@ the composed module shortens nothing on the 4B's shapes; it named the
 kernel-delta bracket as the confirmation and predicted the Q4_K exclusive
 delta inside [-0.2%, +0.2%]. The bracket ran the same day
 (`../4b-kernel-delta-20260905/`) and refuted that prediction: the composed
-module's exclusive time is 10.4% shorter over the three clean pairs, its
-median dispatch 744 us against 820 us, the Q6_K null holds, and the graph
-span shortens 6.8%. The retained null belongs to a different candidate --
+module's aggregate Q4_K exclusive time reads 12.16% shorter [-17.56, -6.76]
+over the whole four-pair acquisition and 10.5% shorter over the three clean
+pairs, with the median dispatch at 744 us against 820 us on those clean arms,
+-9.3%, and the graph span 6.8% shorter on the same pairs. The bracket's Q6_K control reads
+`state-changed` over the whole four-pair acquisition, CI [-11.03%, +5.96%],
+so that null is unresolved rather than held, and the three-pair reading is a
+sensitivity analysis excluding the degraded slot 8 post hoc rather than a
+preregistered exclusion. The retained null belongs to a different candidate --
 its `inputs.tsv` names `scale-word-select` and `superblock-loop-licm` alone,
 without the two activation patches -- so the composed stack had never been
 served on the 4B, and the reading here that rested on that null is
 withdrawn. The supported answer to the frontier's question is the third of
 its four: **improved locally, with a graph effect**. The ownership figures
 above stand, and they now say the opposite of what this record first drew
-from them: a 10% shorter dispatch on a 57% owner is worth about 6% of the
-token, which is what the bracket's graph span reads.
+from them: a dispatch about a tenth shorter on a 57% owner is worth about 6%
+of the token, which is what the bracket's graph span reads.
+
+The bracket explains the mechanism under its stated instrument contamination
+and prices no promotion; the uninstrumented served campaign
+`../served-ab-4b-composed-20260905/` carries the performance-admission claim
+at +6.63% [+6.17, +7.09] over four clean pairs. Both readings belong to the
+measured artifact -- `qwen38-4b-distill` Q4_K_M at this receipt's tuple under
+the composed stack's shader selection -- rather than to every 4B checkpoint,
+quantization, depth, or projector configuration.
 
 What the record still does not name is why the 4B's Q4_K family streams at
 10.0 GB/s against the same class's Q6_K at 13.1; the composed module moves

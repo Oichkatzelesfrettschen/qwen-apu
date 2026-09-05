@@ -7,7 +7,11 @@ bytes per token, at a 63 to 66 ms observed token time. That is the class
 4B do not carry at the same relative weight, and this file states the
 mechanism account, the census fields that would prove or refute it, and the
 attribution arm that reads them, before any I1 ledger on this checkpoint
-exists.
+exists. `device-20260905/README.md` retains that arm and answers all five
+questions: the account below is refuted, Q5's additive sum double-counts the
+memory service that happens inside the mat-vec bracket it adds a DRAM floor
+to, and this file stands as the pre-registration rather than as a standing
+claim.
 
 ## The account: what does not scale with streamed bytes
 
