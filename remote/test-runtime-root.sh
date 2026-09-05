@@ -148,6 +148,34 @@ unmarked=$work/unmarked; mkdir -p "$unmarked/models"; : >"$unmarked/models/preci
 if QWEN_HOME=$unmarked "$tool" uninstall >/dev/null 2>&1; then report unmarked_root_refused accepted; else report unmarked_root_refused ok; fi
 [ -f "$unmarked/models/precious" ] && report unmarked_root_untouched ok || report unmarked_root_untouched removed
 
+# ---- a root bound to a production checkout takes the confirm on uninstall ----
+production_tree=$work/production-checkout
+mkdir -p "$production_tree/remote" "$production_tree/.git"
+cp "$script_directory/qwen-home.sh" "$script_directory/runtime-root.sh" "$production_tree/remote/"
+production_root=$work/production-root
+QWEN_HOME=$production_root "$production_tree/remote/runtime-root.sh" init >/dev/null
+: >"$production_root/models/keep.gguf"; : >"$production_root/cache/drop"
+if QWEN_HOME=$production_root "$production_tree/remote/runtime-root.sh" uninstall >/dev/null 2>&1; then
+    report production_uninstall_needs_confirm accepted
+else
+    report production_uninstall_needs_confirm ok
+fi
+[ -e "$production_root/cache" ] && report refused_production_uninstall_touches_nothing ok \
+    || report refused_production_uninstall_touches_nothing removed
+if QWEN_HOME=$production_root QWEN_RUNTIME_ROOT_CONFIRM=/wrong \
+    "$production_tree/remote/runtime-root.sh" uninstall >/dev/null 2>&1; then
+    report production_uninstall_needs_exact_confirm accepted
+else
+    report production_uninstall_needs_exact_confirm ok
+fi
+QWEN_HOME=$production_root QWEN_RUNTIME_ROOT_CONFIRM=$production_root \
+    "$production_tree/remote/runtime-root.sh" uninstall >/dev/null
+[ -f "$production_root/models/keep.gguf" ] && [ ! -e "$production_root/cache" ] \
+    && report production_uninstall_with_confirm ok || report production_uninstall_with_confirm "$(ls -A "$production_root")"
+rm -rf "$production_tree/.git"
+QWEN_HOME=$production_root "$production_tree/remote/runtime-root.sh" uninstall >/dev/null \
+    && report worktree_uninstall_needs_no_confirm ok || report worktree_uninstall_needs_no_confirm refused
+
 # ---- purge requires the confirm to equal the root ----
 if QWEN_RUNTIME_ROOT_CONFIRM=/wrong "$tool" purge >/dev/null 2>&1; then report purge_needs_exact_confirm accepted; else report purge_needs_exact_confirm ok; fi
 QWEN_RUNTIME_ROOT_CONFIRM=$QWEN_HOME "$tool" purge >/dev/null

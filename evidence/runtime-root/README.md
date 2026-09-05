@@ -122,7 +122,14 @@ under the root, removes the account only after proving nothing runs as it and
 no file outside the enumerated paths belongs to it, and wildcards nothing.
 `make uninstall` keeps `state/` and `models/`; `make purge` removes the root
 whole under `QWEN_RUNTIME_ROOT_CONFIRM` naming that exact path; both refuse a
-directory carrying no marker.
+directory carrying no marker and a directory whose marker names another
+checkout. A root the marker binds to a production checkout takes that same
+confirm on `make uninstall`, since such a root holds the served deployments
+and the session state and its reproducible products cost hours to rebuild.
+The discriminator is git's own: a production checkout carries `.git` as a
+directory, a linked worktree carries it as a `gitdir:` file, and a fixture
+tree carries neither, so the rule names the tree the appliance serves from
+while naming no path the ratchet would refuse.
 
 ## The ratchet
 

@@ -303,6 +303,20 @@ case $action in
                 "$qwen_home" >&2
             exit 2
         fi
+        # A production checkout is the one git tree with its own object
+        # store: a linked worktree carries .git as a gitdir file and a
+        # fixture tree carries none, so the discriminator names the tree
+        # the appliance serves from without naming any path. The root the
+        # marker bound to such a tree holds the served deployments and the
+        # session state, so uninstall takes the confirm purge already takes
+        # rather than removing 74 GB of reproducible products on a bare
+        # command.
+        if [ "$action" = uninstall ] && [ -d "$qwen_tree_root/.git" ] && \
+            [ "${QWEN_RUNTIME_ROOT_CONFIRM:-}" != "$qwen_home" ]; then
+            printf 'the marker binds %s to the production checkout %s; set QWEN_RUNTIME_ROOT_CONFIRM to that exact root to uninstall it\n' \
+                "$qwen_home" "$qwen_tree_root" >&2
+            exit 2
+        fi
         for entry in "$qwen_home"/* "$qwen_home"/.[!.]*; do
             [ -e "$entry" ] || [ -L "$entry" ] || continue
             entry_name=${entry##*/}
