@@ -593,6 +593,7 @@ def validate_server_process(
     execution_surface: str,
     host_shortname: str,
     ssh_session: str,
+    staged_page_source: str | None = None,
 ) -> int:
     document = load_json_object(path)
     expected_keys = {
@@ -678,6 +679,25 @@ def validate_server_process(
         model,
         campaign_output_directory,
     )
+    # The session serves a staged copy of the page from <state>/webui-served
+    # (remote/stage-webui-page.sh) and records the source it copied on its
+    # served_page status line, so the argv's --path names the copy while the
+    # canonical launch names the source: the copy is admitted exactly where
+    # the status line names the canonical source and nothing else differs.
+    if (
+        argv != expected_argv
+        and len(argv) == len(expected_argv)
+        and "--path" in expected_argv
+        and staged_page_source is not None
+    ):
+        path_index = expected_argv.index("--path") + 1
+        if (
+            argv[:path_index] == expected_argv[:path_index]
+            and argv[path_index + 1 :] == expected_argv[path_index + 1 :]
+            and Path(argv[path_index]).name == "webui-served"
+            and staged_page_source == expected_argv[path_index]
+        ):
+            expected_argv = list(argv)
     if argv != expected_argv:
         mismatch_index = next(
             (
@@ -726,6 +746,20 @@ def parse_status_fields(line: str, prefix: str, path: Path) -> dict[str, str]:
             )
         fields[key] = value
     return fields
+
+
+def served_page_source(path: Path) -> str | None:
+    """The page directory the session staged its served copy from, or None
+    where the status carries no served_page line."""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("served_page "):
+            continue
+        fields = parse_status_fields(line, "served_page", path)
+        source = fields.get("source")
+        if source is None or source == "-":
+            return None
+        return source
+    return None
 
 
 def validate_session_status(path: Path, model: dict[str, str]) -> int:
@@ -865,6 +899,7 @@ def validate_arm_server_identity(
         execution_surface,
         host_shortname,
         ssh_session,
+        served_page_source(session_status_path),
     )
     if captured_server_pid != canonical_server_pid:
         raise CampaignError(
