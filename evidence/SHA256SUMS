@@ -1922,7 +1922,7 @@ b5c7eae0387c359641f27a89bfbd1fb5ec963648d6fc284371fab7a45462204c  evidence/q4k-i
 f0f0e9e60961ca4404789a65d9b017226249fc5a8a4a046225df71c963b41fc6  evidence/q4k-isa-attribution/receipts/receipt-diff-float-packed-f16.tsv
 e885b81d5c08e7e9d9b67dcaa0f4448d840e77020c739967a97015d087b1cb5c  evidence/q4k-isa-attribution/salu-attribution.tsv
 f638889924957da856fe81d8ac44e4f545368d1ad356a87e4b7e4387bc4acf01  evidence/q4k-isa-attribution/shape-sweep.tsv
-1594a84ba97eb9cf9f57a9357aed7990986df6d66d937bd2b95b84026af420be  evidence/q4k-scale-decode/README.md
+dea6fbfb2646647fe545ab1959c7094c67672d49e2f4c69b66f03a9d97a67157  evidence/q4k-scale-decode/README.md
 3c9887d967515158ae8fe79f0d3343c25ae6eae976e04545af8a72ab02538dd6  evidence/q4k-scale-decode/arm-receipts-num-rows-4.tsv
 7ec0c201e58b74a35abd700e134549633284bb0539989b46ea225d17c7bcb1cd  evidence/q4k-scale-decode/arm-receipts-num-rows-8.tsv
 5913b20a2f01ea7b7d5800f3196b9ec8588e2b50f186df7c772797853bb9430b  evidence/q4k-scale-decode/phase-attribution.tsv
@@ -2194,7 +2194,7 @@ a6fdb09203552ad8c2c0ee43415519887f584e1581ceb7830e89f6c64a3eb844  evidence/q4k-s
 1551ae587274d72cb17ac7b7a63f6da51634d6a995d21b918114c845748fb46b  evidence/q4k-scale-decode/target-closure-preregistration.md
 095c22702273b4f87446be6ff7551995f29b12ba2fe327ce6e7a1ad8eb320869  evidence/q4k-scale-decode/variant-select-receipts.tsv
 1db0feaa9cb43c93c6932d4ef23a2d398d8d37e2843090da5c28981195e5fe32  evidence/q8-attribution/README.md
-910edc748062bf8941c77804008539015df750c052a6d814e3112443c94ccec1  evidence/q8-attribution/device-20260905/README.md
+4543cb532a65e74a8cc97f86c846b077bd2f612f41f73545e950badc1d826a62  evidence/q8-attribution/device-20260905/README.md
 2ac5b62de24e87ac5833a77c804272a3154c7547fe080f21aa9f62f186660636  evidence/q8-attribution/device-20260905/calibration/acquisition-contract.tsv
 ff1e5f7408a6f0b6b9a939956e819ddd398e92941f15a160db9fce5f6e667ffd  evidence/q8-attribution/device-20260905/calibration/analysis-contract.tsv
 12ecddda6087e260226827c7677b5bf4ab8b2a4c049d96144cdf03cc56d606da  evidence/q8-attribution/device-20260905/calibration/arms.tsv
@@ -2565,7 +2565,7 @@ d1fc18a6d26b7d4644c346dabbf49e6a3f40639b83c1687177087c1e9efe2f18  evidence/q8-at
 d63431ae155648711e4d7cb69e4f6f88f5cefd20a8481b9f4ddc9d34f2e78390  evidence/q8-attribution/device-20260905/power-envelope-status.txt
 2012adf8c7d21a0b043d80f7187c0cfd5c5793b6c745e90bebe8f067f38ef012  evidence/q8-attribution/device-20260905/shape-selection.md
 60d4198ff602567785237d31717d9059eca95d2408baa4e376c17f6aede7a5fe  evidence/q8-attribution/device-commands.md
-230c0096c53ca159488f9fa1f5724d366e416bb808b8b3f26c8d3b6b50f19192  evidence/q8-attribution/fixed-cost-decomposition.md
+404816eff1668cad0f89d51ce1225f8c1a3e7a8cbdfe99dfc7e3e99ebaad6f22  evidence/q8-attribution/fixed-cost-decomposition.md
 6706cc19cadf14b3b16f61d1422d97d003667de75fd68f9266289f4c6345608e  evidence/q8-attribution/pipeline-selection.md
 17d8a669ed1a8c96898a41ec9b0d115060b02ef2b8d8786dfdd301a49cf5626a  evidence/q8-attribution/q8-kernel-delta-design.md
 462e9a31a2e868b6440d8ebd10bd68435b9c630bcc00eec1052c0603275fcce4  evidence/q8-attribution/served-0.8b-q8_0-census.txt
@@ -4109,7 +4109,7 @@ b38cb775b9c1b4b4ece09fdf3634955b609044cecce603502fbe0af1455523c7  evidence/raven
 25b74021e348dc0e721f4966c982cd9efe925f09c8eb943fb43fe387960e039c  evidence/raven2-vulkan-kernel-census/e5/spirv/mul_mat_vec_q4_k_q8_1_f32-subgroup_no_shmem-int24.spvasm
 8687a10c4c5b29d06714d69c2ab3c67ba27a2fb743f9017c32e0ba2dfe6dd9e9  evidence/raven2-vulkan-kernel-census/e5/spirv/spirv-summary.tsv
 d95a4d15874190794587541921a7cdef77ed430f914a4cfe07004c8519e3323d  evidence/raven2-vulkan-kernel-census/fclk-command-research.md
-ed98ac7bd05d58908381c58c7cbae9a91bb31c9890ad32299b7458fd07f26dab  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/README.md
+3b3efecd752067ae35e386ac58b9639f33ce62452ce1647dbd91d780807e2773  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/README.md
 f20a9aa8352f24e57f218ba9620802f21179c92ac358060412c00386f8f751c1  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/acquisition-contract.tsv
 ff1e5f7408a6f0b6b9a939956e819ddd398e92941f15a160db9fce5f6e667ffd  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/analysis-contract.tsv
 ae8da579acd0027d91a11a6d8a6baade399433c48e259774bd969fbeb7fa5bfd  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/arms.tsv
@@ -4319,7 +4319,7 @@ df9bbcedd0a103835df6e8d76c2f3634ea9dd3f203a5db6e4a19e759dcd13106  evidence/raven
 2a7b3e3c7e88fda078238fdce2d02b16f61b3a14a10568cfec64e10cc10a5375  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/denominator/identity-check.tsv
 32bfc13da08680b5462b9baafb3a146232b29e0690412d97576c69b6141c9df6  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/denominator/models-resolved.tsv
 b364c296443eb6683a77f65a0145698c50894659e2fefa3b9ecd2b8d8d31e947  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/denominator/summary.tsv
-a3f617546a3a6c371bb77b27f10aba74cb9dd9410a5c08c9e1cbe3cc3f2c3a97  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-kernel-delta-20260905/README.md
+e434188d82fbd03f0006c1c699cba65017a8ccfc26ede562467ac37dd16c2121  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-kernel-delta-20260905/README.md
 7c2b9515295ee8ce5f26418d335979845f2cdb6bf1ce5483e52f2dc3d9ef14bb  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-kernel-delta-20260905/arms.tsv
 567dbd5e39dd5c70d5d1f1b3c59f396c480f327dbd52821cbdbf7dd430de6ec4  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-kernel-delta-20260905/arms/01-C/arm-environment.tsv
 ae48b706fa1510070c508644c859ad7c18483c740a58e2e0df558709eef518b3  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-kernel-delta-20260905/arms/01-C/clock-sidecar-verdict.txt
@@ -4408,7 +4408,7 @@ c2df883202070cdb8ba366877051dbfe760825d1e3a21849d04c2ec421a12e95  evidence/raven
 669c85444fcda1cae1ce9d1c163fdf5766c5e8d488793410454bd13ec3b41c36  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-kernel-delta-20260905/summary.tsv
 e0cf52dfc01701ca6fe346fc22a9e95a01f0615684b26149e8321c75891c1554  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-kernel-delta-20260905/terminal-state.tsv
 9698689b0be5deb9f409c1a156fde8c141003c916cee885abb65f48b23780c4b  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-kernel-delta-20260905/wall-clock.tsv
-a60a3db3b99064c677b0c5d9a6c1aedda8d9e9b5cac6cc6add3547a0c56bddb1  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/README.md
+132bd8908018afbef23674d98808b0769a34dac12d363d529e7835b288b888e9  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/README.md
 395c109bbfe24c7327da54742bdc8cefd41afe258ee7650d01ccb4ecba53f710  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/kernel-delta-witness-08b-20260903T2004Z/arms/1-C/accumulator/prompt.txt
 e3447f27d47636ce370bab8d27330aa4f748233a6d278d6ee574c2e700b4a898  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/kernel-delta-witness-08b-20260903T2004Z/arms/1-C/accumulator/request.json
 4541bfc6cad0e177b60a28fda98c8877549bbd74179fb0b76d0bb6ff2f8f8c08  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/kernel-delta-witness-08b-20260903T2004Z/arms/1-C/accumulator/response-run-1.json
@@ -6635,7 +6635,7 @@ f690a45032afb755850d9580a4ac7bb58a3a793b08db7f9fd671cf6e1a391ade  evidence/raven
 68431385b3ddfd6ce3339b5084f63522451fbe62ed2ceccf316337f5e309ca6e  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-20260903T2020Z/summary.tsv
 1adb6df4de53255a92bffffeae6f29fcffb8f79b970026a78d8ac433fc4c9b82  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-20260903T2020Z/terminal-state.tsv
 2ad790daeeb4dc7b43d1bdff284940c206feef8be59cd97d39972ed598d31f4d  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-20260903T2020Z/wall-clock.tsv
-766242cf86d9f8ce8bcc4f47d947fd7c6a4b112e7ac718ce278766fb4484bc20  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/README.md
+bae9704b5d0790c4ac3477b4f09430a051318c2b77b75652a111402b84e024f9  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/README.md
 6411e239d98c3960e3344528830524fc15a5d397dfaaf205cfdc4f377234bd7b  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/arms.tsv
 aef67cf915c30244ad05f527d3dee03d148c5ae558eacba593ae74bc23267c27  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/arms/01-C/arm-environment.tsv
 4bfb8dac8663b8d1fc6e0adfc800f8729618203b37c4fc265c741d5115273725  evidence/raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/arms/01-C/clock-sidecar-verdict.txt

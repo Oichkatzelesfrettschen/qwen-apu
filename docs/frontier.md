@@ -63,16 +63,36 @@ outside it.
   and `4b-kernel-delta-20260905/`. Run 2026-09-05: three I1 arms at 1100/933
   name the composed shader as the executed Q4_K module, owning 57% of the 4B
   token beside Q6_K at 27%. The kernel-delta bracket then read the composed
-  module 10.4% shorter per dispatch than production's over three clean pairs
-  (744 against 820 us median), the Q6_K null held, and the graph span 6.8%
-  shorter. The retained null of 2026-09-03 belongs to a two-patch candidate
-  without the activation patches; the composed stack had never been served
-  on the 4B. The supported conclusion is **improved locally, with a graph
-  effect**. The served `W C K K C C K K C` of the uninstrumented builds on
-  the 4B (`served-ab-4b-composed-20260905/`) reads **promoted**, +6.63%
-  [+6.17, +7.09] over four pairs with zero arm failures, so under the class
-  rule the composition is a 4B-class profile result; moving it into serving
-  is the operator's decision, since it changes the production series.
+  module's median dispatch 9.3% shorter than production's (744 against 820
+  us on the clean arms) and its aggregate Q4_K exclusive time 12.16% shorter
+  [-17.56, -6.76] over the whole four-pair acquisition and 10.5% over the
+  three clean pairs, with the graph span 6.8% shorter on those pairs. Its Q6_K control
+  reads `state-changed` over the whole four-pair acquisition, CI [-11.03%,
+  +5.96%], so that null is unresolved rather than held, and the three-pair
+  figures are a sensitivity analysis excluding the degraded slot 8 post hoc
+  rather than a preregistered exclusion. The retained null of 2026-09-03
+  belongs to a two-patch candidate without the activation patches; the
+  composed stack had never been served on the 4B. The supported conclusion is
+  **improved locally, with a graph effect**. The bracket explains that
+  mechanism under its own instrument contamination and prices no promotion;
+  the served `W C K K C C K K C` of the uninstrumented builds
+  (`served-ab-4b-composed-20260905/`) carries the performance-admission claim
+  and reads **promoted**, +6.63% [+6.17, +7.09] over four pairs with zero arm
+  failures, production mean 3.084 tok/s against the candidate's 3.2885. Under
+  the class rule the composition is a 4B-class profile result measured on one
+  artifact, `qwen38-4b-distill` Q4_K_M at that receipt's tuple under the
+  composed stack's shader selection, so another checkpoint, quantization,
+  depth, or projector configuration stays unmeasured. Against the 5.25 tok/s
+  interactive target of `evidence/decode-bound-analysis.md`, +6.63% removes
+  about 6.22% of the time per token and leaves about 59.6% of rate to find
+  from 3.2885; both figures describe that window rather than a replacement
+  baseline. Moving the composition into serving is the operator's decision,
+  since it changes the production series, and it waits on a correctness
+  witness: the bracket's `token_identity` and `margin_contract` rows read
+  `unavailable` with `no --witness directory`, which establishes nothing about
+  either executable, and the one retained 4B witness,
+  `kernel-delta-witness-4b-20260903T2020Z/`, names the older two-patch build
+  `2955d6dd...`, so neither `4844d0dc...` nor `83684f3c...` carries one.
 - Remaining: none for the question. The larger 4B program returns to temporal
   amortization as experiments.
 
@@ -93,13 +113,20 @@ outside it.
 - Result: `evidence/q8-attribution/device-20260905/`. Run 2026-09-05: a
   canary and a 25-arm calibration at 1100/933 on the production server and
   its census twin; four I1 arms put `mul_mat_vec_q8_0_f32_f32` at 66.7% of
-  the 0.8B token (38.4 of 57.5 ms per graph, 187 dispatches at 186 us),
-  streaming at 20.9 GB/s inside its own dispatches, with every other
-  pipeline under 4% and 17% of the token outside every dispatch. The
-  fixed-cost account is refuted on four of its five registered predictions.
-  The controls read unresolved and incomplete and license no instrument
-  bound. The ending condition is met; the first Q8-specific experiment is a
-  kernel-delta bracket inside the Q8_0 mat-vec body.
+  the 0.8B token (38.4 of 57.5 ms per graph over 187 dispatches, above the
+  2B's Q4_K family alone at 49.5% and below the 2B's and 4B's two K-quant
+  families together at 85.0% and 84.4%), with every other pipeline under 4%
+  and 33% of the token outside the mat-vec family. Logical streamed bytes
+  over that family's own interval give 20.9 GB/s, a comparison figure rather
+  than a memory-controller read. A per-arm bridge closes the token from
+  exclusive bracket through ambiguous overlap, queue span, retirement span,
+  and served time. The registered fixed-cost account is refuted on four of
+  its five predictions. The controls read unresolved and incomplete and
+  license no instrument bound, so the record is diagnostic attribution with
+  unbounded instrument perturbation. The ending condition is met; the first
+  Q8-specific experiment is a kernel-delta bracket inside the Q8_0 mat-vec
+  body, where reaching a 50 ms token asks a 19.6% local reduction of that
+  family.
 - Next action: `evidence/q8-attribution/q8-kernel-delta-design.md` registers
   that bracket. The shape split in
   `evidence/q8-attribution/device-20260905/shape-selection.md` re-keys the
