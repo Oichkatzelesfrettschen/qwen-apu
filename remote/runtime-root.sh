@@ -138,6 +138,15 @@ status_rows() {
         [ -x "$candidate" ] && shaderc_glslc=$(sha256_of "$candidate")
     done
     tsv_row shaderc toolchain "$qwen_home_shaderc_root" remote/fetch-shaderc-toolchain.sh - - "$shaderc_glslc" no 'make install-shaderc'
+    # The image parameter file is the geometry and the ceilings the service
+    # runs a job under, so it is a component the root owns rather than a path
+    # a caller names: qwen-image-launch.sh validates it against the ledger row
+    # and image-launch-lib.sh refuses one resolving outside the root. It is
+    # written per launch from the ledger, so its digest states which parameter
+    # set the running service enforces.
+    tsv_row image-parameters parameters "$qwen_home_image_parameters" remote/image-profiles.tsv - \
+        "$(file_or_absent "$qwen_tree_root/remote/image-profiles.tsv")" \
+        "$(file_or_absent "$qwen_home_image_parameters")" yes 'remote/qwen-image-launch.sh'
     tsv_row models artifacts "$qwen_home_models" remote/model-artifacts.tsv - \
         "$(file_or_absent "$qwen_tree_root/remote/model-artifacts.tsv")" "$(listing_digest_or_absent "$qwen_home_models")" no 'make install-models'
     deployment_current=absent

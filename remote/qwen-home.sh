@@ -34,7 +34,7 @@ qwen_home_image_source qwen_home_image_runtime
 qwen_home_ryzenadj_source qwen_home_ryzenadj
 qwen_home_shaderc_root qwen_home_searxng_root qwen_home_searxng_source
 qwen_home_searxng_python qwen_home_yacy qwen_home_rocm
-qwen_home_web_token_key'
+qwen_home_web_token_key qwen_home_image_parameters'
 qwen_home_names=$(printf '%s' "$qwen_home_names" | tr '\n' ' ')
 
 # shellcheck disable=SC2034  # each name is read by the script that sources this library
@@ -85,6 +85,7 @@ qwen_home_resolve() {
     qwen_home_yacy=$qwen_home_opt/yacy
     qwen_home_rocm=$qwen_home_opt/rocm
     qwen_home_web_token_key=$qwen_home_state/web-token.key
+    qwen_home_image_parameters=$qwen_home_state/image-parameters.json
     return 0
 }
 

@@ -31,6 +31,7 @@ _DECLARED = {
     "searxng_source": "opt/searxng/src",
     "searxng_python": "opt/searxng/venv/bin/python",
     "web_token_key": "state/web-token.key",
+    "image_parameters": "state/image-parameters.json",
     "manifest": "manifest.tsv",
     "marker": ".qwen-runtime-root",
 }
