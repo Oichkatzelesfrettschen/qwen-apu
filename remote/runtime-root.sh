@@ -320,12 +320,30 @@ case $action in
         done
         legacy_list=$(mktemp "${TMPDIR:-/tmp}/legacy-rows.XXXXXX")
         legacy_rows >"$legacy_list"
+        purge_residue=0
         while IFS="$(printf '\t')" read -r legacy_kind legacy_path; do
             case $legacy_kind in
                 user)
+                    # A user path can hold entries a privileged build wrote
+                    # inside it (a kernel-module tree's __pycache__ owned by
+                    # root), which the unprivileged removal leaves behind.
+                    # The same enumerated path is then removed under sudo -n
+                    # on the appliance; the fixture prefix has no privilege
+                    # to spend, so residue there is reported and the loop
+                    # continues to the remaining rows, and the run ends
+                    # non-zero once every row has been attempted.
                     if [ -e "$legacy_path" ] || [ -L "$legacy_path" ]; then
-                        rm -rf -- "$legacy_path"
-                        printf 'removed %s\n' "$legacy_path"
+                        rm -rf -- "$legacy_path" 2>/dev/null || true
+                        if { [ -e "$legacy_path" ] || [ -L "$legacy_path" ]; } \
+                            && [ -z "${QWEN_DOCTOR_SYSTEM_PREFIX:-}" ]; then
+                            sudo -n rm -rf -- "$legacy_path" 2>/dev/null || true
+                        fi
+                        if [ -e "$legacy_path" ] || [ -L "$legacy_path" ]; then
+                            printf 'residue %s (entries the serving user cannot remove)\n' "$legacy_path"
+                            purge_residue=$((purge_residue + 1))
+                        else
+                            printf 'removed %s\n' "$legacy_path"
+                        fi
                     fi
                     ;;
                 system)
@@ -360,6 +378,10 @@ case $action in
             esac
         done <"$legacy_list"
         rm -f "$legacy_list"
+        if [ "$purge_residue" -ne 0 ]; then
+            printf 'purge-legacy left %s enumerated path(s) with residue\n' "$purge_residue" >&2
+            exit 1
+        fi
         ;;
     *) usage ;;
 esac

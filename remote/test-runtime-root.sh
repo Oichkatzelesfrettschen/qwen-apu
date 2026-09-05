@@ -71,9 +71,24 @@ else
 fi
 [ -d "$fake_home/qwen-webui-state" ] && report refused_purge_touches_nothing ok || report refused_purge_touches_nothing removed
 
-# ---- purge-legacy removes exactly the enumerated paths ----
+# ---- purge-legacy reports residue it cannot remove and continues to the remaining rows ----
 mkdir -p "$QWEN_HOME/opt/searxng/venv/bin"; printf '#!/bin/sh\n' >"$QWEN_HOME/opt/searxng/venv/bin/python"; chmod +x "$QWEN_HOME/opt/searxng/venv/bin/python"
 mkdir -p "$fake_home/unrelated"; : >"$fake_system/tmp/other.db"
+mkdir -p "$fake_home/src/ryzen_smu/locked"; : >"$fake_home/src/ryzen_smu/locked/entry"; chmod 555 "$fake_home/src/ryzen_smu/locked"
+if QWEN_PURGE_LEGACY_CONFIRM=yes QWEN_DOCTOR_HOME=$fake_home QWEN_DOCTOR_SYSTEM_PREFIX=$fake_system \
+    QWEN_DOCTOR_ACCOUNT_LOOKUP='false' "$tool" purge-legacy >"$work/purge-residue.log" 2>&1; then
+    report purge_legacy_residue_exits_nonzero accepted
+else
+    report purge_legacy_residue_exits_nonzero ok
+fi
+grep -q "^residue $fake_home/src/ryzen_smu " "$work/purge-residue.log" \
+    && report purge_legacy_names_residue ok || report purge_legacy_names_residue "$(cat "$work/purge-residue.log")"
+[ ! -e "$fake_home/qwen-webui-state" ] && [ ! -e "$fake_system/usr/local/searxng" ] \
+    && report purge_legacy_continues_past_residue ok || report purge_legacy_continues_past_residue stopped
+chmod 755 "$fake_home/src/ryzen_smu/locked"
+
+# ---- purge-legacy removes exactly the enumerated paths ----
+mkdir -p "$fake_home/qwen-webui-state" "$fake_system/usr/local/searxng"; : >"$fake_home/qwen-web-token.key"; : >"$fake_system/tmp/sxng_cache_x.db"
 QWEN_PURGE_LEGACY_CONFIRM=yes QWEN_DOCTOR_HOME=$fake_home QWEN_DOCTOR_SYSTEM_PREFIX=$fake_system \
     QWEN_DOCTOR_ACCOUNT_LOOKUP='false' "$tool" purge-legacy >"$work/purge.log"
 [ ! -e "$fake_home/qwen-webui-state" ] && [ ! -e "$fake_home/models" ] && [ ! -e "$fake_home/qwen-web-token.key" ] \
