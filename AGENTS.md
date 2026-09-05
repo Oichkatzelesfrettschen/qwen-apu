@@ -1918,6 +1918,12 @@ remote/image-review.py --router-origin URL --artifact-origin URL --model ID \
 remote/run-vision-review-control.sh ROUTER_ORIGIN ARTIFACT_ORIGIN MODEL \
     SHA256_A SHA256_B PROMPT_HASH OUTPUT_DIR --constraint NAME=DESCRIPTION
                                                 # real, withheld, swapped, and a closing real arm
+remote/build-llama-e5.sh SOURCE [PREFIX_ROOT]   # the census-instrumented int24
+                                                # binary under the pinned shaderc
+remote/run-e5-module-proof.sh OUT SERVER MODEL RADV_PREFIX
+                                                # the executed OpSDotKHR module
+                                                # and the isolated driver, before
+                                                # any rate
 remote/run-graph-alias-ab.sh OUTPUT_DIR [MODEL_ID...]
                                                 # token identity across the graph optimizer
 remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
@@ -2163,6 +2169,8 @@ remote/test-gguf-tokenizer-identity.py
 remote/test-admit-candidate-static.py
 remote/test-one-token-admission.sh
 remote/test-fetch-candidate-artifact.sh
+remote/test-build-llama-e5.sh
+remote/test-run-e5-module-proof.sh
 remote/test-run-graph-alias-ab.sh
 remote/test-run-ctx-checkpoint-sweep.sh
 python3 remote/test-summarize-kernel-census.py

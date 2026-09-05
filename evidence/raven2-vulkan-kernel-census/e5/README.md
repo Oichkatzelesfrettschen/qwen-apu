@@ -323,6 +323,100 @@ the file that carries it, and the first three have run on the workstation.
    mode with `QWEN_AB_CANDIDATE_FORCE_INTEGER_DOT=1` under the scoreboard tuple.
    Falsifiers 3 and 4 are decided here.
 
+## The next rung: the module-and-driver proof
+
+Steps 4 and 5 are one appliance arm and `remote/run-e5-module-proof.sh` is the
+runbook that executes it. Every E5-S receipt above was measured on a
+drm-shimmed RAVEN2 node on the workstation, so what the appliance has proven
+about this lane is the SPIR-V the pinned producer writes and nothing about what
+its own device compiles or executes. The rung closes that gap before any rate
+is taken, because a decode difference measured against a module the device did
+not execute attributes the difference to the wrong cause.
+
+Two claims are separated, since they fail for different reasons.
+`llama-vulkan-pipeline-census.patch` hashes the embedded module at pipeline
+creation as `census_spirv_source_sha256` and the bytes handed to
+`vkCreateShaderModule` after the FP16 float-control rewrite as
+`census_spirv_executed_sha256`; `E5-S0/shader-pack/shader-pack.tsv` states the
+digest the pinned glslc wrote for the same source and defines. Equality on the
+source digest is `module_identity=proven`. What ACO then made of that module is
+read by `remote/raven2-shader-lab/recount-isa.sh` over the RADV disassembly and
+reported as `aco_lowering` over `mr2115`, `generic`, and `other`, from the
+`v_add3_u32` counts `instruction-census.tsv` already carries for E5-S1 and
+E5-S0.
+
+```text
+prediction   The armed binary creates a mul_mat_vec_q4_k_q8_1 pipeline whose
+             embedded module digest equals the pack's own, and the appliance's
+             ACO expands it to 224 v_mul_i32_i24 products with no v_mul_lo_u32
+             beside them and 140 v_add3_u32 under the isolated driver.
+falsifier    The pipeline is absent, its module digest or byte count differs
+             from the pack, or the expansion carries no 224-product form. Each
+             ends the rung as a completed negative with exit 3 and a
+             terminal-state.tsv naming the field that moved.
+recorded     A lowering that reads generic or other is a result rather than a
+             refusal: the module is the same either way, and which sequence the
+             appliance's own ACO chose is what falsifier 2 of the ladder above
+             is open against.
+```
+
+The census runner is the wrong instrument for this rung. Its attribution mode
+requires `QWEN_CENSUS_CALIBRATION_RECEIPT` to name an accepted calibration that
+bound the same two server digests, and an E5 binary is a new pair, so the
+thirteen-arm calibration would consume the window before the proof started.
+`remote/dump-radv-shader-isa.sh` already owns exactly the launch this rung
+needs -- one standalone server through `radv-low-priority-env.sh` under
+`low-async`, `RADV_DEBUG=shaders,shaderstats` reintroduced past the scrub, one
+eight-token completion at temperature 0, and the disassembly split per shader
+-- so the proof composes over it. `GGML_VK_FORCE_INTEGER_DOT` is read by that
+collector directly and `QWEN_PIPELINE_CENSUS` crosses the profile scrub on its
+own name, so both arm the run from the proof's exported environment and neither
+collector changes.
+
+The laptop window is two commands, in a teardown window with the appliance
+down:
+
+```sh
+remote/build-llama-e5.sh ~/src/llama.cpp-e5
+remote/run-e5-module-proof.sh $PWD/e5-module-proof \
+    ~/src/llama.cpp-e5/build-raven2-vulkan-census/bin/llama-server \
+    MODEL_PATH RADV_PREFIX
+```
+
+`build-llama-e5.sh` is the whole recipe: the `raven2-vulkan-census` preset, the
+candidate series `llama-vulkan-pipeline-census.patch` then
+`llama-vulkan-q4k-int24-mmvq.patch`, and the pinned shaderc prefix on `PATH`.
+The compiler is what the recipe exists to pin.
+`ggml/src/ggml-vulkan/CMakeLists.txt` runs `test_shader_extension_support` at
+configure time and `find_package(Vulkan COMPONENTS glslc REQUIRED)` caches
+`Vulkan_GLSLC_EXECUTABLE`, so a distribution glslc leaves
+`GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT` off and the build emits no q8_1 variant
+at all, without an error. The recipe compiles the extension probe before
+configuring, refuses a build directory whose cache names another compiler with
+the removal stated, compares the cached value again after the build, and
+requires the built server to name `mul_mat_vec_q4_k_q8_1_f32`.
+
+The output directory is absolute because the census patch throws out of Vulkan
+initialization on a relative `GGML_VK_PIPELINE_CENSUS`, which takes the server
+down before `/health` rather than producing a record; the proof refuses one
+while the argument is still readable. It reads `QWEN_RADV_ICD` and
+`LD_LIBRARY_PATH` out of the driver's environment fragment by name rather than
+sourcing it, since the fragment's third name reaches the shim environment as an
+`LD_PRELOAD` that fakes a RAVEN2 node and a proof run against a faked device
+would read proven while measuring nothing about this silicon. It accepts where
+any created pipeline of the `mul_mat_vec_q4_k_q8_1` family carries the pack's
+digest and byte count, because `ggml_vk_load_shaders` creates several variants
+of the one declared module and reading the first row alone would close the
+candidate on a creation order.
+
+The stop rule is that a refuted identity ends the rung. The proof writes
+`terminal-state.tsv`, prints `module_identity=refuted`, and exits 3, and no
+kernel-delta bracket, envelope, witness, or served comparison follows. A
+missing or malformed input exits 2 and writes no terminal state, since filing a
+setup error as a completed negative would retire the rung on a mistake.
+`remote/test-build-llama-e5.sh` and `remote/test-run-e5-module-proof.sh` drive
+every exit class against fixtures with no compiler, no driver, and no device.
+
 ## Stage status
 
 | stage | state | where |
@@ -340,8 +434,10 @@ the file that carries it, and the first three have run on the workstation.
 | producer pinned and fetched | measured | `E5-S0/shader-pack/`, workstation |
 | pack generated from the real shaders | measured | `E5-S0/shader-pack/`, module digest matches every E5-S receipt |
 | isolated driver build and its handoff | designed, tested against fake tools | `remote/build-isolated-radv.sh` |
-| isolated ICD on the appliance | unrun | step 4 above |
-| executed ACO ISA on the appliance | unrun | step 5, falsifier 1 |
+| E5 build recipe, one command | measured | `test-build-llama-e5.sh`, fake compiler and builder |
+| module-and-driver proof, every exit class | measured | `test-run-e5-module-proof.sh`, fixtures, no device |
+| isolated ICD on the appliance | unrun | `remote/run-e5-module-proof.sh`, step 4 |
+| executed ACO ISA on the appliance | unrun | `remote/run-e5-module-proof.sh`, step 5, falsifier 1 |
 | kernel-delta bracket | unrun | step 6 |
 | combined envelope | unrun | step 7, falsifier 2 |
 | margin witness and served rate | unrun | step 8, falsifiers 3 and 4 |
