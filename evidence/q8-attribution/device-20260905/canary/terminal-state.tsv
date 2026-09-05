@@ -1,0 +1,13 @@
+census=canary_accepted
+census_mode=canary
+arm_failures=0
+control_incomplete=-
+control_refutations=-
+control_unresolved=-
+control_state_changed=-
+control_unclassified=-
+control_accepted=-
+control_required=-
+canary_structure_failures=0
+cooldown_timeouts=0
+calibration_root_sha256=-

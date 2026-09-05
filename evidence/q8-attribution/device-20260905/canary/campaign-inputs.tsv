@@ -1,0 +1,25 @@
+key	value
+schema	fixed64-served-campaign-v2
+campaign_kind	pipeline-census
+execution_surface	qwen-laptop-ssh
+host_shortname	qwen-laptop
+ssh_session	present
+server_nice	19
+server_io_class	idle
+vulkan_profile	low-async
+inference_cpu	0
+latency_mode	observe
+router	0
+speculation	off
+backend_sampling	0
+web_broker	0
+image_service	0
+runtime_tree_git_head	b60ffa867afc73d7b9553a0372ecb80b8bb06c6b
+model_id	qwen35-08b
+census_mode	canary
+arms	P I0 I1 S
+production_server	$HOME/Github/qwen-apu/.runtime/opt/llama.cpp/build-raven2-vulkan-production/bin/llama-server
+production_server_sha256	70aa78bc0eed708ce8d06b690467affce3bb222014714af4dbd92e00fa5ff010
+instrumented_server	$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-prod-census/build-raven2-vulkan-census/bin/llama-server
+instrumented_server_sha256	522e6367f49d5bdabf4d0cfc786b640b6766aad99b27d4f00a1c7d7d799ec8b5
+generate_tokens	8
