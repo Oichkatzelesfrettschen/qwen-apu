@@ -1,0 +1,12 @@
+# check	status	detail
+initial-page-get	pass	http=200 bytes=197863
+initial-health	pass	http=200
+initial-models	pass	count=16 ids=lfm25-vl-16b,qwen35-08b,qwen35-08b-f16,qwen35-08b-unsloth-unc,qwen35-2b,qwen35-2b-hauhau,qwen35-2b-heretic,qwen35-2b-unredacted,qwen35-4b-base,qwen38-2b-distill,qwen38-2b-distill+qwen35-08b-draft,qwen38-2b-uncensored,qwen38-4b-distill,qwen38-4b-distill+qwen35-08b-draft,qwenseer-2b,web-open
+initial-props	pass	model=lfm25-vl-16b
+initial-broker-health	pass	origin=http://qwen-laptop.local:42070 source=explicit-or-query
+initial-artifacts-health	pass	origin=http://qwen-laptop.local:42071 source=explicit-or-query
+web_search_turn	pass	dialog_heading=Authorize one web search grant_requests=1
+image_generation_turn	fail	driver_status=0 error= states=["Image failed: Cannot read properties of undefined (reading 'digest')"]
+conversation_restoration	pass	id=cmtnmwlwje3u1f6
+tool_prefix_checkpoint	fail	model=lfm25-vl-16b first_status=200 first_prompt_n=114 second_status=200 second_prompt_n=114 ratio<=0.5
+relaunch	skip	pass --with-relaunch as an operator on the laptop to run it

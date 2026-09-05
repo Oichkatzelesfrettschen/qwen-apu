@@ -1,0 +1,10 @@
+# check	status	detail
+initial-page-get	pass	http=200 bytes=201544
+initial-health	pass	http=200
+initial-models	pass	count=16 ids=lfm25-vl-16b,qwen35-08b,qwen35-08b-f16,qwen35-08b-unsloth-unc,qwen35-2b,qwen35-2b-hauhau,qwen35-2b-heretic,qwen35-2b-unredacted,qwen35-4b-base,qwen38-2b-distill,qwen38-2b-distill+qwen35-08b-draft,qwen38-2b-uncensored,qwen38-4b-distill,qwen38-4b-distill+qwen35-08b-draft,qwenseer-2b,web-open
+initial-props	pass	model=qwen38-2b-distill
+initial-broker-health	pass	origin=http://qwen-laptop.local:42070 source=explicit-or-query
+initial-artifacts-health	pass	origin=http://qwen-laptop.local:42071 source=explicit-or-query
+web_search_turn	pass	dialog_heading=Authorize one web search grant_requests=1
+image_generation_turn	pass	caption=sha256 2636d7dfcdb03b9c83686b64b1017af919df2ad17ee48b4d21684b487102960e | seed 1234567890 | 512x512 | 1 steps | image-sd
+conversation_restoration	pass	id=cmtnq9n33205z86
