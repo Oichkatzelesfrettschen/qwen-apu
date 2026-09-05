@@ -9,6 +9,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 temporary_directory=$(mktemp -d)
 active_fixture=initialization
 diagnostic_file=
+port_lease_holder_pid=''
 cleanup() {
     cleanup_status=$?
     if [ "$cleanup_status" -ne 0 ]; then
@@ -20,10 +21,30 @@ cleanup() {
             sed -n '1,160p' "$diagnostic_file" >&2
         fi
     fi
+    if [ -n "$port_lease_holder_pid" ]; then
+        "$script_directory/test-port-lease.sh" release \
+            "$port_lease_holder_pid" || true
+        port_lease_holder_pid=''
+    fi
     rm -rf -- "$temporary_directory"
     exit "$cleanup_status"
 }
 trap cleanup EXIT HUP INT TERM
+
+# Five leased loopback ports carry the served-decode arms. Each fake server
+# binds its own port, so the reservation is a lease over the number rather than
+# an inherited socket: binding port zero and closing it reported a number this
+# script released before the arm bound it, and a gate cell running beside this
+# one received the same number from the kernel. A holder process keeps an
+# exclusive flock on each lease file for this script's whole run.
+port_lease_ports_file=$temporary_directory/leased-ports
+port_lease_holder_pid=$("$script_directory/test-port-lease.sh" claim 5 \
+    "$port_lease_ports_file")
+served_success_port=$(sed -n 1p "$port_lease_ports_file")
+served_model_replace_port=$(sed -n 2p "$port_lease_ports_file")
+served_executable_replace_port=$(sed -n 3p "$port_lease_ports_file")
+served_late_hazard_port=$(sed -n 4p "$port_lease_ports_file")
+served_timing_port=$(sed -n 5p "$port_lease_ports_file")
 
 process_start_time_ticks() {
     identity_pid=$1
@@ -505,8 +526,6 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
         "$server_pid" "$supervisor_pid"' >"$served_success_teardown"
 chmod +x "$served_success_teardown"
 
-served_success_port=$(python3 -c \
-    'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
 served_artifact_ledger=$temporary_directory/served-model-artifacts.tsv
 printf 'fixture-model\tmodel.gguf\t%s\t%s\tfixture/source\tfixture-revision\n' \
     "$(stat -c %s "$model_path")" \
@@ -680,8 +699,6 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
     'exec "${QWEN_TEST_BASE_LAUNCH:?}" "$@"' \
     >"$served_model_replace_launch"
 chmod +x "$served_model_replace_launch"
-served_model_replace_port=$(python3 -c \
-    'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
 rm -f -- "$served_success_state/server.pid" \
     "$served_success_state/supervisor.pid" "$served_success_state/server.reaped"
 active_fixture=served-decode-model-pathname-replacement
@@ -772,8 +789,6 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
     'exec "${QWEN_TEST_BASE_LAUNCH:?}" "$@"' \
     >"$served_executable_replace_launch"
 chmod +x "$served_executable_replace_launch"
-served_executable_replace_port=$(python3 -c \
-    'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
 rm -f -- "$served_success_state/server.pid" \
     "$served_success_state/supervisor.pid" "$served_success_state/server.reaped"
 active_fixture=served-decode-executable-pathname-replacement
@@ -819,8 +834,6 @@ grep -F 'served_decode=failed label=served-executable-replace' \
 # copies logs only after teardown quiesces and rejects the late row even when
 # the watcher also publishes its terminal marker.
 served_late_hazard_result=$execution_campaign/arms/served-late-hazard-result
-served_late_hazard_port=$(python3 -c \
-    'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
 rm -f -- "$served_success_state/server.pid" \
     "$served_success_state/supervisor.pid" "$served_success_state/server.reaped"
 active_fixture=served-decode-late-kernel-hazard
@@ -964,8 +977,6 @@ run_served_timing_rejection() {
     served_timing_stdout=$temporary_directory/served-timing-$served_timing_case.stdout
     served_timing_stderr=$temporary_directory/served-timing-$served_timing_case.stderr
     mkdir -p "$served_timing_state"
-    served_timing_port=$(python3 -c \
-        'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
     active_fixture=served-decode-timing-$served_timing_case
     diagnostic_file=$served_timing_stderr
     if PATH="$served_timing_bin:$PATH" \

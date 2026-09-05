@@ -16,7 +16,15 @@ fi
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(git -C "$script_directory" rev-parse --show-toplevel)
 work=$(mktemp -d "$repository_root/.test-measure-draft-pair.XXXXXX")
-trap 'rm -rf "$work"' EXIT INT TERM
+port_lease_holder_pid=''
+release_port_lease() {
+    if [ -n "$port_lease_holder_pid" ]; then
+        "$script_directory/test-port-lease.sh" release \
+            "$port_lease_holder_pid" || true
+        port_lease_holder_pid=''
+    fi
+}
+trap 'release_port_lease; rm -rf "$work"' EXIT INT TERM
 failures=0
 
 # The production runner binds its parser and registry to sibling programs. The
@@ -109,23 +117,19 @@ network_fixture_lock=${TMPDIR:-/tmp}/qwen-apu-test-measure-draft-pair-network.lo
 exec 7>"$network_fixture_lock"
 flock 7
 
-# The kernel selects both loopback ports while two sockets remain bound. The
-# distinct values then become the measurement and alternate appliance ports.
-allocate_loopback_ports() {
-    python3 - <<'PY'
-import socket
-
-with socket.socket() as measurement_listener, socket.socket() as appliance_listener:
-    measurement_listener.bind(("127.0.0.1", 0))
-    appliance_listener.bind(("127.0.0.1", 0))
-    print(measurement_listener.getsockname()[1], appliance_listener.getsockname()[1])
-PY
-}
-allocated_ports=$(allocate_loopback_ports)
-server_port=${allocated_ports%% *}
-unused_appliance_port=${allocated_ports#* }
+# Two leased loopback ports carry the measurement listener and the alternate
+# appliance listener. Binding port zero and closing the socket reported numbers
+# this fixture owned for an instant and released before the fake servers bound
+# them; the lease is an exclusive flock a holder process keeps for this
+# script's whole run, and the fake servers bind the ports themselves, so the
+# lease rather than an inherited socket is what reserves them.
+port_lease_ports_file=$work/leased-ports
+port_lease_holder_pid=$("$script_directory/test-port-lease.sh" claim 2 \
+    "$port_lease_ports_file")
+server_port=$(sed -n 1p "$port_lease_ports_file")
+unused_appliance_port=$(sed -n 2p "$port_lease_ports_file")
 if [ "$server_port" = "$unused_appliance_port" ]; then
-    printf 'fake network fixture selected one port twice: %s\n' "$server_port" >&2
+    printf 'fake network fixture leased one port twice: %s\n' "$server_port" >&2
     exit 1
 fi
 run_harness() {

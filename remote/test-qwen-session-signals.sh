@@ -16,7 +16,13 @@ fixture_remote=$temporary_directory/remote
 session_pid=''
 server_pid=''
 
+port_lease_holder_pid=''
 cleanup_fixture() {
+    if [ -n "$port_lease_holder_pid" ]; then
+        "$script_directory/test-port-lease.sh" release \
+            "$port_lease_holder_pid" || true
+        port_lease_holder_pid=''
+    fi
     if [ -n "$session_pid" ]; then
         kill -TERM "$session_pid" 2>/dev/null || true
         wait "$session_pid" 2>/dev/null || true
@@ -27,6 +33,16 @@ cleanup_fixture() {
     rm -rf "$temporary_directory"
 }
 trap cleanup_fixture EXIT HUP INT TERM
+
+# One leased loopback port carries every arm's broker and server, since the
+# arms run in turn and each child binds the port itself. The fixed 18571 this
+# test once named is a number another repository's gate cell holds while this
+# cell runs, so the number comes from a lease a holder process keeps for this
+# script's whole run.
+port_lease_ports_file=$temporary_directory/leased-ports
+port_lease_holder_pid=$("$script_directory/test-port-lease.sh" claim 1 \
+    "$port_lease_ports_file")
+session_fixture_port=$(sed -n 1p "$port_lease_ports_file")
 
 mkdir -p "$fixture_remote"
 cp "$script_directory/qwen-webui-session.sh" "$script_directory/qwen-home.sh" \
@@ -366,7 +382,7 @@ start_session() {
         QWEN_VULKAN_LATENCY_PROBE=$fixture_remote/latency-probe.sh \
         QWEN_WEB_BROKER=$ready_marker \
         QWEN_WEB_BROKER_PROGRAM=$fixture_remote/fake-broker.py \
-        QWEN_WEB_BROKER_PORT=18571 \
+        QWEN_WEB_BROKER_PORT="$session_fixture_port" \
         QWEN_REQUIRE_API_KEY=$ready_marker \
         QWEN_WEB_PROFILE=web-fixture \
         QWEN_WEB_TOKEN_KEY_FILE=$temporary_directory/token.key \
@@ -554,7 +570,7 @@ QWEN_TEST_SERVER_PID_MARKER=$mismatch_state_directory/server.marker \
     QWEN_VULKAN_LATENCY_PROBE=$fixture_remote/latency-probe.sh \
     QWEN_WEB_BROKER=1 \
     QWEN_WEB_BROKER_PROGRAM=$fixture_remote/fake-broker.py \
-    QWEN_WEB_BROKER_PORT=18571 \
+    QWEN_WEB_BROKER_PORT="$session_fixture_port" \
     QWEN_WEB_PROFILE=web-fixture \
     QWEN_WEB_TOKEN_KEY_FILE=$temporary_directory/token.key \
     QWEN_WEB_STATE_DIR=$mismatch_state_directory/web-mcp \
@@ -606,7 +622,7 @@ run_teardown_arm() {
     mkdir -p "$teardown_state_directory/web-mcp"
     QWEN_WEB_STATE_DIR=$teardown_state_directory/web-mcp \
         QWEN_TEST_BROKER_IGNORES_TERM=$teardown_ignores_term \
-        "$fixture_remote/fake-broker.py" --port 18571 \
+        "$fixture_remote/fake-broker.py" --port "$session_fixture_port" \
         >"$teardown_state_directory/broker.log" 2>&1 &
     teardown_broker_pid=$!
     if [ "$teardown_start_time" = live ]; then
@@ -630,7 +646,7 @@ run_teardown_arm() {
     set +e
     QWEN_WEBUI_STATE_DIRECTORY=$teardown_state_directory \
         QWEN_WEB_STATE_DIR=$teardown_state_directory/web-mcp \
-        QWEN_SERVER_PORT=18571 \
+        QWEN_SERVER_PORT="$session_fixture_port" \
         "$fixture_remote/qwen-teardown.sh" \
         >"$teardown_state_directory/teardown.stdout" \
         2>"$teardown_state_directory/teardown.stderr"
@@ -707,7 +723,7 @@ printf 'stale\n' >"$orphan_state_directory/web-mcp/authorize-session.secret"
     printf 'broker secret_file=%s\n' "$orphan_state_directory/web-mcp/authorize-session.secret"
 } >"$orphan_state_directory/session.status"
 set +e
-QWEN_WEBUI_STATE_DIRECTORY=$orphan_state_directory QWEN_SERVER_PORT=18571 \
+QWEN_WEBUI_STATE_DIRECTORY=$orphan_state_directory QWEN_SERVER_PORT="$session_fixture_port" \
     "$fixture_remote/qwen-teardown.sh" >/dev/null 2>"$orphan_state_directory/teardown.stderr"
 orphan_status=$?
 set -e
