@@ -2443,6 +2443,12 @@ and publication gate. A performance document states unresolved direction where
 its uncertainty still crosses zero; equivalence requires a declared margin and
 two one-sided bounds inside it.
 
+`docs/frontier.md` states the remaining milestones as a finite set of
+questions, each with its evidence, its one remaining action, the device access
+it needs, the condition that ends it in either direction, and the record that
+carries the answer; a milestone leaves that file when its record holds the
+answer.
+
 `README.md` states the selected operating configuration. This file governs
 repository work, and `evidence/` retains the measurements that put each default
 where it is.

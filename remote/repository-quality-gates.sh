@@ -269,6 +269,15 @@ gate_cell test-qwen-lan-launch derive remote/test-qwen-lan-launch.sh \
 gate_cell test-prefix-checkpoint-key derive \
     'remote/test-prefix-checkpoint-key.sh remote/test-fixtures/prefix-checkpoint-key-probe.cpp patches/llama-server-prefix-checkpoint.patch' \
     remote/test-prefix-checkpoint-key.sh
+# The router lifecycle test drives a real llama-server; the gate runs it where
+# QWEN_ROUTER_TEST_SERVER and QWEN_ROUTER_TEST_MODEL name one and the fixture
+# model, and the cell records not_run by name otherwise.
+gate_cell test-router-cancelled-load derive \
+    'remote/test-router-cancelled-load.sh remote/test-fixtures/router-child-bind-barrier.c patches/llama-router-cancelled-load-idle.patch' \
+    remote/test-router-cancelled-load.sh
+gate_cell test-verify-lan-site derive \
+    'remote/test-verify-lan-site.sh remote/verify-lan-site.sh remote/test-fixtures/fake-verify-lan-site-server.py remote/test-fixtures/fake-page-driver-verify-lan-site.py remote/test-fixtures/fake-conversation-driver-verify-lan-site.py webui/index.html' \
+    remote/test-verify-lan-site.sh
 gate_cell test-sync-runtime-tree derive remote/test-sync-runtime-tree.sh \
     remote/test-sync-runtime-tree.sh
 gate_cell test-web-search-live derive \

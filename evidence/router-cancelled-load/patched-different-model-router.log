@@ -1,0 +1,115 @@
+0.00.119.274 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.621.259 I srv   load_models: Loaded 3 cached model presets
+0.00.680.894 I srv   load_models: Loaded 2 custom model presets from $SCRATCH/patched2/different-model/router-presets.ini
+0.00.751.391 I srv    operator(): Available models (5) (*: custom preset)
+0.00.751.393 I srv    operator():   * model-a
+0.00.751.393 I srv    operator():   * model-b
+0.00.751.393 I srv    operator():     unsloth/Qwen3.8-27B-GGUF:IQ3_XXS
+0.00.751.394 I srv    operator():     unsloth/Qwen3.8-27B-GGUF:Q2_K_XL
+0.00.751.394 I srv    operator():     unsloth/Qwen3.8-27B-GGUF:Q4_K_M
+0.00.751.439 W srv  llama_server: -----------------
+0.00.751.440 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.751.440 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.751.440 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.751.440 W srv  llama_server: -----------------
+0.00.751.447 W srv  llama_server: -----------------
+0.00.751.447 W srv  llama_server: the following feature(s) are enabled:
+0.00.751.447 W srv  llama_server:     router mode
+0.00.751.447 W srv  llama_server: do not expose the server to untrusted environments
+0.00.751.448 W srv  llama_server: -----------------
+0.00.751.449 I srv  llama_server: starting server in router mode. models will be automatically loaded on-demand
+0.00.752.566 I srv  llama_server: listening on http://127.0.0.1:47999
+0.00.872.183 I srv  ensure_model: model name=model-a is not loaded, loading...
+0.00.872.212 I srv          load: spawning server instance with name=model-a on port 47009
+0.00.872.233 I srv          load: spawning server instance with args:
+0.00.872.234 I srv          load:   $HOME/src/llama.cpp-router-fix/build-cpu/bin/llama-server
+0.00.872.235 I srv          load:   --host
+0.00.872.235 I srv          load:   127.0.0.1
+0.00.872.235 I srv          load:   --port
+0.00.872.235 I srv          load:   47009
+0.00.872.235 I srv          load:   --alias
+0.00.872.235 I srv          load:   model-a
+0.00.872.235 I srv          load:   --ctx-size
+0.00.872.235 I srv          load:   256
+0.00.872.236 I srv          load:   --model
+0.00.872.236 I srv          load:   .runtime/cache/test-models/stories260K.gguf
+0.00.872.236 I srv          load:   --n-gpu-layers
+0.00.872.236 I srv          load:   0
+0.00.872.236 I srv          load:   --threads
+0.00.872.237 I srv          load:   1
+0.00.872.372 I srv  ensure_model: waiting until model name=model-a is fully loaded...
+[47009] warning: no usable GPU found, --gpu-layers option will be ignored
+[47009] warning: one possible reason is that llama.cpp was compiled without GPU support
+[47009] warning: consult docs/build.md for compilation instructions
+[47009] 0.00.001.368 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+[47009] 0.00.001.603 W srv  llama_server: -----------------
+[47009] 0.00.001.604 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+[47009] 0.00.001.604 W srv  llama_server: this can be a security risk (cross-origin attacks)
+[47009] 0.00.001.604 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+[47009] 0.00.001.605 W srv  llama_server: -----------------
+0.01.072.516 W srv    operator(): got exception: {"error":{"code":500,"message":"request cancelled while waiting for model name=model-a","type":"server_error"}}
+0.01.093.021 I srv          join: models_max reached, request for name=model-b queued at position 1
+0.01.093.023 I srv  ensure_model: waiting until model name=model-b is fully loaded...
+[47009] 0.00.274.420 I srv    load_model: loading model '.runtime/cache/test-models/stories260K.gguf'
+[47009] 0.00.691.116 W load: bad special token: 'tokenizer.ggml.seperator_token_id' = 4294967295, using default id -1
+[47009] 0.00.691.123 W load: bad special token: 'tokenizer.ggml.padding_token_id' = 4294967295, using default id -1
+[47009] 0.00.735.111 I cmn          init: llama threadpool init, n_threads = 1
+[47009] 0.00.776.793 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 256, kv_unified = 'true'
+[47009] 0.00.910.282 I srv  llama_server: model loaded
+[47009] 0.00.910.288 I srv  llama_server: listening on http://127.0.0.1:47009
+[47009] 0.00.910.333 I srv    operator(): child server monitoring thread started, waiting for EOF on stdin...
+0.01.785.799 I srv  on_model_idl: model name=model-a went idle, giving up its slot to a queued request
+0.01.785.811 I srv        unload: stopping model instance name=model-a
+0.01.785.823 I srv    operator(): stopping model instance name=model-a
+[47009] 0.00.910.467 I srv    operator(): exit command received, exiting...
+[47009] 0.00.910.492 I srv    operator(): operator(): cleaning up before exit...
+0.01.794.039 I srv    operator(): instance name=model-a exited with status 0
+0.01.794.046 I srv  ensure_model: slot available, loading queued model name=model-b
+0.01.794.073 I srv          load: spawning server instance with name=model-b on port 47689
+0.01.794.092 I srv          load: spawning server instance with args:
+0.01.794.093 I srv          load:   $HOME/src/llama.cpp-router-fix/build-cpu/bin/llama-server
+0.01.794.093 I srv          load:   --host
+0.01.794.093 I srv          load:   127.0.0.1
+0.01.794.093 I srv          load:   --port
+0.01.794.093 I srv          load:   47689
+0.01.794.093 I srv          load:   --alias
+0.01.794.093 I srv          load:   model-b
+0.01.794.093 I srv          load:   --ctx-size
+0.01.794.094 I srv          load:   256
+0.01.794.094 I srv          load:   --model
+0.01.794.094 I srv          load:   .runtime/cache/test-models/stories260K.gguf
+0.01.794.094 I srv          load:   --n-gpu-layers
+0.01.794.094 I srv          load:   0
+0.01.794.094 I srv          load:   --threads
+0.01.794.094 I srv          load:   1
+[47689] warning: no usable GPU found, --gpu-layers option will be ignored
+[47689] warning: one possible reason is that llama.cpp was compiled without GPU support
+[47689] warning: consult docs/build.md for compilation instructions
+[47689] 0.00.001.377 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+[47689] 0.00.001.608 W srv  llama_server: -----------------
+[47689] 0.00.001.609 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+[47689] 0.00.001.610 W srv  llama_server: this can be a security risk (cross-origin attacks)
+[47689] 0.00.001.610 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+[47689] 0.00.001.610 W srv  llama_server: -----------------
+[47689] 0.00.022.982 I srv    load_model: loading model '.runtime/cache/test-models/stories260K.gguf'
+[47689] 0.00.025.201 W load: bad special token: 'tokenizer.ggml.seperator_token_id' = 4294967295, using default id -1
+[47689] 0.00.025.203 W load: bad special token: 'tokenizer.ggml.padding_token_id' = 4294967295, using default id -1
+[47689] 0.00.026.510 I cmn          init: llama threadpool init, n_threads = 1
+[47689] 0.00.026.966 I srv    load_model: initializing, n_slots = 4, n_ctx_slot = 256, kv_unified = 'true'
+[47689] 0.00.028.393 I srv  llama_server: model loaded
+[47689] 0.00.028.396 I srv  llama_server: listening on http://127.0.0.1:47689
+[47689] 0.00.028.430 I srv    operator(): child server monitoring thread started, waiting for EOF on stdin...
+0.01.826.079 I srv  proxy_reques: proxying request to model model-b on port 47689
+[47689] 0.00.105.977 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1
+[47689] 0.00.106.024 I slot launch_slot_: id  3 | task 0 | processing task, is_child = 0
+[47689] 0.00.109.867 I slot print_timing: id  3 | task 0 | prompt eval time =       3.17 ms /    46 tokens (    0.07 ms per token, 14533.97 tokens per second)
+[47689] 0.00.109.868 I slot print_timing: id  3 | task 0 |        eval time =       0.66 ms /     4 tokens (    0.22 ms per token,  4559.27 tokens per second)
+[47689] 0.00.109.869 I slot print_timing: id  3 | task 0 |       total time =       3.82 ms /    50 tokens
+[47689] 0.00.109.870 I slot print_timing: id  3 | task 0 |    graphs reused =          3
+[47689] 0.00.109.883 I slot      release: id  3 | task 0 | stop processing: n_tokens = 49, truncated = 0
+0.01.926.570 I srv    operator(): operator(): cleaning up before exit...
+0.01.926.599 I srv    unload_all: stopping model instance name=model-b
+0.01.926.612 I srv    operator(): stopping model instance name=model-b
+[47689] 0.00.129.042 I srv    operator(): exit command received, exiting...
+[47689] 0.00.129.063 I srv    operator(): operator(): cleaning up before exit...
+0.01.927.896 I srv    operator(): instance name=model-b exited with status 0

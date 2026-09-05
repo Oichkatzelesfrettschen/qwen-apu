@@ -1,0 +1,105 @@
+diff --git a/tools/server/server-models.cpp b/tools/server/server-models.cpp
+index db0fac995..5b7f0a270 100644
+--- a/tools/server/server-models.cpp
++++ b/tools/server/server-models.cpp
+@@ -88,8 +88,9 @@ struct server_lru_sched {
+             if (m.first == exclude) {
+                 continue;
+             }
+-            // a busy model is mid-request, one still coming up has no request to finish
+-            if (m.second.req_count != 0 || !m.second.meta.is_ready_or_sleep()) {
++            // a busy model is mid-request, one still coming up has no request to finish,
++            // and one with a waiter is about to be used by the request that waited for it
++            if (m.second.req_count != 0 || models.has_waiters(m.first) || !m.second.meta.is_ready_or_sleep()) {
+                 continue;
+             }
+             if (victim.empty() || m.second.meta.last_used < victim_last_used) {
+@@ -200,7 +201,7 @@ struct server_lru_sched {
+                 }
+             }
+             auto it = models.mapping.find(model_id);
+-            if (it == models.mapping.end() || it->second.req_count != 0 || !it->second.meta.is_ready_or_sleep()) {
++            if (it == models.mapping.end() || it->second.req_count != 0 || models.has_waiters(model_id) || !it->second.meta.is_ready_or_sleep()) {
+                 return;
+             }
+             for (auto & e : queue) {
+@@ -1413,11 +1414,15 @@ bool server_models::ensure_model_ready(const std::string & name, const std::func
+     // while queued, this is also where the load happens: the head of the queue does it
+     SRV_INF("waiting until model name=%s is fully loaded...\n", name.c_str());
+     std::unique_lock<std::mutex> lk(mutex);
++    n_waiting[name]++;
+     auto leave_queue = [this, &queued, &lk, &name]() {
+         if (queued) {
+             sched->leave(lk, name);
+             queued = false;
+         }
++        if (--n_waiting[name] <= 0) {
++            n_waiting.erase(name);
++        }
+     };
+ 
+     try {
+@@ -1479,7 +1484,11 @@ bool server_models::ensure_model_ready(const std::string & name, const std::func
+             cv.wait_for(lk, std::chrono::milliseconds(200));
+         }
+     } catch (...) {
++        // the request that asked for this load is gone: a child that comes up
++        // for nobody, or already came up, must not keep the slot from the queue
+         leave_queue();
++        lk.unlock();
++        release_if_idle(name);
+         throw;
+     }
+     leave_queue();
+@@ -1487,6 +1496,17 @@ bool server_models::ensure_model_ready(const std::string & name, const std::func
+     return true;
+ }
+ 
++void server_models::release_if_idle(const std::string & name) {
++    {
++        std::unique_lock<std::mutex> lk(mutex);
++        auto it = mapping.find(name);
++        if (it == mapping.end() || it->second.req_count != 0 || has_waiters(name) || !it->second.meta.is_ready_or_sleep()) {
++            return;
++        }
++    }
++    sched->on_model_idle(name);
++}
++
+ server_http_res_ptr server_models::proxy_request(const server_http_req & req, const std::string & method, const std::string & name, bool update_last_used, bool detached) {
+     auto meta = get_meta(name);
+     if (!meta.has_value()) {
+@@ -1603,6 +1623,10 @@ void server_models::handle_child_state(const std::string & name, const std::stri
+                     payload.size() > 0 ? payload : nullptr,
+                     {}, // reset progress info
+                 });
++                // the request that started this load may have been cancelled
++                // while the child was still coming up; a queued request for
++                // another model then waits on a slot nobody is about to use
++                release_if_idle(name);
+             } break;
+         case SERVER_STATE_SLEEPING:
+             {
+diff --git a/tools/server/server-models.h b/tools/server/server-models.h
+index 5cbb6a801..b484184af 100644
+--- a/tools/server/server-models.h
++++ b/tools/server/server-models.h
+@@ -126,6 +126,18 @@ private:
+     std::condition_variable cv;
+     std::map<std::string, instance_t> mapping;
+ 
++    // requests inside ensure_model_ready() waiting for a model to come up; kept
++    // beside mapping because load() replaces the instance it would live in.
++    // a model with a waiter is about to be used, so it is never given up.
++    std::map<std::string, int> n_waiting;
++    bool has_waiters(const std::string & name) const {
++        auto it = n_waiting.find(name);
++        return it != n_waiting.end() && it->second > 0;
++    }
++    // a model that is up with no request on it and no waiter for it holds
++    // a slot nobody is about to use; hand it to the queue if one is wanted
++    void release_if_idle(const std::string & name);
++
+     // for stopping models
+     std::condition_variable cv_stop;
+     std::set<std::string> stopping_models;
