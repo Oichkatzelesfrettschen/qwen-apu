@@ -220,7 +220,11 @@ doctor_report() {
             esac
         done
     fi
-    for cache_file in "${QWEN_DOCTOR_SYSTEM_PREFIX:-}"/tmp/sxng_cache_*.db; do
+    # SQLite in WAL mode keeps a -wal journal and a -shm index beside each
+    # cache, owned by the same account, so the three names are one cache.
+    for cache_file in "${QWEN_DOCTOR_SYSTEM_PREFIX:-}"/tmp/sxng_cache_*.db \
+        "${QWEN_DOCTOR_SYSTEM_PREFIX:-}"/tmp/sxng_cache_*.db-wal \
+        "${QWEN_DOCTOR_SYSTEM_PREFIX:-}"/tmp/sxng_cache_*.db-shm; do
         [ -e "$cache_file" ] || continue
         printf 'legacy-known\t%s\tengine cache of the retired service-account instance\n' "$cache_file"
     done
@@ -309,7 +313,9 @@ case $action in
                 "$qwen_home_searxng_root" >&2
             exit 2
         fi
-        for cache_file in "${QWEN_DOCTOR_SYSTEM_PREFIX:-}"/tmp/sxng_cache_*.db; do
+        for cache_file in "${QWEN_DOCTOR_SYSTEM_PREFIX:-}"/tmp/sxng_cache_*.db \
+            "${QWEN_DOCTOR_SYSTEM_PREFIX:-}"/tmp/sxng_cache_*.db-wal \
+            "${QWEN_DOCTOR_SYSTEM_PREFIX:-}"/tmp/sxng_cache_*.db-shm; do
             [ -e "$cache_file" ] || continue
             if [ -n "${QWEN_DOCTOR_SYSTEM_PREFIX:-}" ] || [ "$(stat -c %U "$cache_file")" = "$(id -un)" ]; then
                 rm -f -- "$cache_file"

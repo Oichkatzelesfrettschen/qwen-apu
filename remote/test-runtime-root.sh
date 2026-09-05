@@ -42,7 +42,7 @@ case $status_out in *runtime_manifest_sha256=*) report status_prints_manifest_di
 # ---- doctor over seeded legacy and foreign paths ----
 fake_home=$work/home; fake_system=$work/system
 mkdir -p "$fake_home/qwen-webui-state" "$fake_home/models" "$fake_system/usr/local/searxng" "$fake_system/etc/searxng" "$fake_system/tmp"
-: >"$fake_system/tmp/sxng_cache_x.db"
+: >"$fake_system/tmp/sxng_cache_x.db"; : >"$fake_system/tmp/sxng_cache_x.db-wal"; : >"$fake_system/tmp/sxng_cache_x.db-shm"
 : >"$fake_home/qwen-web-token.key"
 mkdir -p "$QWEN_HOME/stray-directory"
 doctor_out=$(QWEN_DOCTOR_HOME=$fake_home QWEN_DOCTOR_SYSTEM_PREFIX=$fake_system \
@@ -50,10 +50,10 @@ doctor_out=$(QWEN_DOCTOR_HOME=$fake_home QWEN_DOCTOR_SYSTEM_PREFIX=$fake_system 
 printf '%s\n' "$doctor_out" | grep -q "^legacy-known	$fake_home/qwen-webui-state	" && report doctor_reports_legacy_user_path ok || report doctor_reports_legacy_user_path missing
 printf '%s\n' "$doctor_out" | grep -q "^legacy-known	$fake_system/usr/local/searxng	" && report doctor_reports_legacy_system_path ok || report doctor_reports_legacy_system_path missing
 printf '%s\n' "$doctor_out" | grep -q "^legacy-known	account:searxng	" && report doctor_reports_legacy_account ok || report doctor_reports_legacy_account missing
-printf '%s\n' "$doctor_out" | grep -q "^legacy-known	$fake_system/tmp/sxng_cache_x.db	" && report doctor_reports_cache ok || report doctor_reports_cache missing
+printf '%s\n' "$doctor_out" | grep -q "^legacy-known	$fake_system/tmp/sxng_cache_x.db	" && printf '%s\n' "$doctor_out" | grep -q "^legacy-known	$fake_system/tmp/sxng_cache_x.db-wal	" && report doctor_reports_cache ok || report doctor_reports_cache missing
 printf '%s\n' "$doctor_out" | grep -q "^foreign	$QWEN_HOME/stray-directory	" && report doctor_reports_foreign ok || report doctor_reports_foreign missing
 printf '%s\n' "$doctor_out" | grep -q "^declared	$QWEN_HOME/models	present" && report doctor_reports_declared ok || report doctor_reports_declared missing
-printf '%s\n' "$doctor_out" | grep -q '^legacy_paths_present=yes legacy_paths=7 foreign_owned_paths=1$' \
+printf '%s\n' "$doctor_out" | grep -q '^legacy_paths_present=yes legacy_paths=9 foreign_owned_paths=1$' \
     && report doctor_summary_counts ok || report doctor_summary_counts "$(printf '%s\n' "$doctor_out" | tail -n 1)"
 [ -d "$fake_home/qwen-webui-state" ] && [ -d "$fake_system/usr/local/searxng" ] && [ -d "$QWEN_HOME/stray-directory" ] \
     && report doctor_touches_nothing ok || report doctor_touches_nothing removed
@@ -88,11 +88,11 @@ grep -q "^residue $fake_home/src/ryzen_smu " "$work/purge-residue.log" \
 chmod 755 "$fake_home/src/ryzen_smu/locked"
 
 # ---- purge-legacy removes exactly the enumerated paths ----
-mkdir -p "$fake_home/qwen-webui-state" "$fake_system/usr/local/searxng"; : >"$fake_home/qwen-web-token.key"; : >"$fake_system/tmp/sxng_cache_x.db"
+mkdir -p "$fake_home/qwen-webui-state" "$fake_system/usr/local/searxng"; : >"$fake_home/qwen-web-token.key"; : >"$fake_system/tmp/sxng_cache_x.db"; : >"$fake_system/tmp/sxng_cache_x.db-wal"; : >"$fake_system/tmp/sxng_cache_x.db-shm"
 QWEN_PURGE_LEGACY_CONFIRM=yes QWEN_DOCTOR_HOME=$fake_home QWEN_DOCTOR_SYSTEM_PREFIX=$fake_system \
     QWEN_DOCTOR_ACCOUNT_LOOKUP='false' "$tool" purge-legacy >"$work/purge.log"
 [ ! -e "$fake_home/qwen-webui-state" ] && [ ! -e "$fake_home/models" ] && [ ! -e "$fake_home/qwen-web-token.key" ] \
-    && [ ! -e "$fake_system/usr/local/searxng" ] && [ ! -e "$fake_system/etc/searxng" ] && [ ! -e "$fake_system/tmp/sxng_cache_x.db" ] \
+    && [ ! -e "$fake_system/usr/local/searxng" ] && [ ! -e "$fake_system/etc/searxng" ] && [ ! -e "$fake_system/tmp/sxng_cache_x.db" ] && [ ! -e "$fake_system/tmp/sxng_cache_x.db-wal" ] && [ ! -e "$fake_system/tmp/sxng_cache_x.db-shm" ] \
     && report purge_legacy_removes_enumerated ok || report purge_legacy_removes_enumerated "$(cat "$work/purge.log")"
 [ -d "$fake_home/unrelated" ] && [ -e "$fake_system/tmp/other.db" ] && [ -d "$QWEN_HOME/stray-directory" ] \
     && report purge_legacy_leaves_the_rest ok || report purge_legacy_leaves_the_rest removed
