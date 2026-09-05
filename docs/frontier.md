@@ -46,7 +46,14 @@ outside it.
 - Evidence: the E4 series under `evidence/raven2-vulkan-kernel-census/e4/`
   and the served comparisons there.
 - Remaining: one attribution census arm on the 4B carrying executed modules
-  and specializations, Q4_K and Q6_K ownership, and whole-graph timing.
+  and specializations, Q4_K and Q6_K ownership, and whole-graph timing. The
+  arm runs inside a calibration whose P is the composed candidate serving
+  build and whose I is the same source instrumented beneath the census patch
+  (the census runner admits an instrumented candidate series equal to P's
+  with the census patch appended), since an attribution-mode run requires an
+  accepted calibration and the standing controls read recorded-unresolved;
+  the calibration's own I1 arms are the record whatever its controls read,
+  with the C2 collection term stated beside them.
 - Device: one window, after the 2B composition.
 - Ends when: exactly one conclusion is supported: the modified path was not
   selected; selected with no local improvement on this shape; improved locally
