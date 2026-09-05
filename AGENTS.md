@@ -2193,7 +2193,13 @@ candidate below the kernel's own ephemeral range so the number stays off the
 set a bind to port zero returns, proves the port unbound before publishing it,
 and holds every descriptor until the fixture's own EXIT trap calls `release`.
 Each fixture's children bind their ports themselves, so the lease over the
-number rather than an inherited socket is what reserves them. Every claim
+number rather than an inherited socket is what reserves them. `claim-run` leases
+consecutive numbers for a caller whose own children derive one port from
+another: `webui/index.html` derives the broker at the router port plus one and
+the artifact listener at plus two on a bare LAN URL, and `qwen-web-launch.sh`
+refuses a broker port that URL does not derive, so
+`test-admit-image-router.sh` takes a run of nine and gives each of its three
+launches a consecutive triple. Every claim
 resolves `QWEN_TEST_PORT_LEASE_DIR`, defaulting to `port-leases` under the gate
 scratch root `qwen-home.sh` names as `qwen_home_gate_cache`: two gate runs that
 name one directory serialize against each other and two that name different
