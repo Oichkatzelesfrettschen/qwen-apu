@@ -1857,10 +1857,16 @@ engine_clock_mclk_readback=-
 if [ "$engine_clock_policy" != auto ]; then
     census_engine_clock_require_sudo
     engine_clock_snapshot=$(census_engine_clock_snapshot "$drm_device") || exit 2
-    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; remove_workload_lease_proof' EXIT
-    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; remove_workload_lease_proof; trap - EXIT; exit 143' TERM
-    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; remove_workload_lease_proof; trap - EXIT; exit 130' INT
-    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; remove_workload_lease_proof; trap - EXIT; exit 129' HUP
+    # The readback the restore prints belongs on the campaign's own stdout. A
+    # signal can arrive while an arm's ledger append holds a redirection of
+    # this shell's stdout, and a trap running then would write the readback
+    # into that ledger and hide it from the caller, so the original stdout is
+    # kept on descriptor 9 and every trap prints there.
+    exec 9>&1
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot" >&9; remove_workload_lease_proof' EXIT
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot" >&9; remove_workload_lease_proof; trap - EXIT; exit 143' TERM
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot" >&9; remove_workload_lease_proof; trap - EXIT; exit 130' INT
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot" >&9; remove_workload_lease_proof; trap - EXIT; exit 129' HUP
     census_engine_clock_write_level "$engine_clock_policy" "$drm_device"
     if [ "$engine_clock_policy" = manual ]; then
         # The selection is captured rather than redirected: a refusal inside
