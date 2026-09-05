@@ -1,8 +1,9 @@
 #!/bin/sh
-# Prove preparation of the eight-patch production series: recognized four-,
-# five-, and seven-patch prefixes upgrade through the missing patches, the
-# upgraded tree is then reported already verified, and a tree carrying an
-# unrelated edit refuses. The script pins commit f280b269 of llama.cpp, so the
+# Prove preparation of the production series remote/llama-patch-series.tsv
+# states: recognized four-, five-, and seven-patch prefixes upgrade through
+# the missing patches and every member the ledger added after them, the
+# upgraded tree is then reported already verified at the ledger's own count,
+# and a tree carrying an unrelated edit refuses. The script pins commit f280b269 of llama.cpp, so the
 # fixture is a local clone of a checkout holding that commit; a workstation
 # without one reports the test as not run rather than as passed.
 set -eu
@@ -13,6 +14,10 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 base_source=${QWEN_LLAMA_BASE_SOURCE:-"$qwen_home_llama_upstream"}
 pinned_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
+production_patch_count=$(awk -F'\t' '
+    /^#/ || NF == 0 { next }
+    $1 == "production" { count++ }
+    END { print count + 0 }' "$script_directory/llama-patch-series.tsv")
 
 if [ ! -d "$base_source/.git" ] || \
    ! git -C "$base_source" cat-file -e "$pinned_commit^{commit}" 2>/dev/null; then
@@ -57,7 +62,7 @@ expect_output 'patched_source=upgraded' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 expect_output 'patched_source=already_verified' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
-expect_output 'patch_count=8' \
+expect_output "patch_count=$production_patch_count" \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 
 # An unrelated edit beside an otherwise verified series refuses rather than
@@ -108,7 +113,7 @@ for patch_name in \
 done
 expect_output 'patched_source=upgraded' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
-expect_output 'patch_count=8' \
+expect_output "patch_count=$production_patch_count" \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 
 # A seven-patch prefix, the shape the tree carried before the natural-boundary
@@ -128,7 +133,7 @@ for patch_name in \
 done
 expect_output 'patched_source=upgraded' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
-expect_output 'patch_count=8' \
+expect_output "patch_count=$production_patch_count" \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 
 # A clean pinned checkout receives the whole production series.
@@ -138,4 +143,4 @@ git -C "$patched_source" checkout --quiet --detach "$pinned_commit"
 expect_output 'patched_source=prepared' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 
-printf 'prepare_llama_vulkan_source=accepted transitions=four-prefix,five-prefix,seven-prefix,already_verified,refused,prepared build_extra_path=refused patch_count=8\n'
+printf 'prepare_llama_vulkan_source=accepted transitions=four-prefix,five-prefix,seven-prefix,already_verified,refused,prepared build_extra_path=refused patch_count=%s\n' "$production_patch_count"

@@ -46,35 +46,51 @@ source_matches() {
     [ "$actual_sha256" = "$expected_sha256" ]
 }
 
-production_series_status=' M ggml/src/ggml-vulkan/ggml-vulkan.cpp
- M src/llama-context.cpp
- M src/llama-model-loader.cpp
- M tools/server/server-context.cpp
- M tools/server/server.cpp
-?? ggml/src/ggml-vulkan/ggml-vulkan-pacing.h
-?? ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h
-?? ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h'
+# remote/llama-patch-series.tsv states the production series and
+# remote/llama-patched-sources.tsv states the digest of every file its replay
+# rewrites, so both the count this script reports and the tree it accepts
+# come from those two ledgers rather than from a list kept here: a member
+# added to the series reaches this script's verification the way it reaches
+# verify-llama-patch-series.sh and build-llama-preset.sh.
+patch_series_ledger=$script_directory/llama-patch-series.tsv
+patched_sources_ledger=$script_directory/llama-patched-sources.tsv
+production_patch_names=$(awk -F'\t' '
+    /^#/ || NF == 0 { next }
+    $1 == "production" { print $2 }
+' "$patch_series_ledger")
+production_patch_count=$(printf '%s\n' "$production_patch_names" | grep -c .)
+# The production members that follow NAME in ledger order, which is what a
+# tree recorded at an earlier shape still has to receive.
+production_members_after() {
+    printf '%s\n' "$production_patch_names" | awk -v name="$1" '
+        found { print }
+        $0 == name { found = 1 }'
+}
+# The porcelain status the replayed series leaves: a path the pinned commit
+# tracks reads modified and a path the series adds reads untracked.
+production_series_status=$(awk -F'\t' '
+    /^#/ || NF == 0 { next }
+    { print $1 }
+' "$patched_sources_ledger" | while IFS= read -r ledger_path; do
+    if git -C "$patched_source" cat-file -e "$expected_commit:$ledger_path" 2>/dev/null; then
+        printf ' M %s\n' "$ledger_path"
+    else
+        printf '?? %s\n' "$ledger_path"
+    fi
+done | LC_ALL=C sort)
+ledger_sources_match() {
+    awk -F'\t' '
+        /^#/ || NF == 0 { next }
+        { print $2 "\t" $1 }
+    ' "$patched_sources_ledger" | while IFS="$(printf '\t')" read -r ledger_sha256 ledger_path; do
+        source_matches "$ledger_sha256" "$ledger_path" || exit 1
+    done
+}
 current_status=$(git -C "$patched_source" status --porcelain | LC_ALL=C sort)
 
-if [ "$current_status" = "$production_series_status" ] && \
-   source_matches dfac33fe7fd487fc136e2915de7d5c146a3921b231ffef55877c6dd9e4f2c164 \
-        ggml/src/ggml-vulkan/ggml-vulkan.cpp && \
-   source_matches 16abd2face079cad962bb722026d7418e65de67c18c1e1f954df733c1598a70a \
-        ggml/src/ggml-vulkan/ggml-vulkan-pacing.h && \
-   source_matches 4b8befd927e9b0c83cfc7cfe843d2f853a9a9db7f6a55c147ffcd4129afd95f8 \
-        ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h && \
-   source_matches ac957254c09afda811983801e7dd59d7e4829d40e572804ea7e23dadba521867 \
-        ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h && \
-   source_matches ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
-        src/llama-context.cpp && \
-   source_matches d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
-        src/llama-model-loader.cpp && \
-   source_matches d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3 \
-        tools/server/server.cpp && \
-   source_matches 3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a \
-        tools/server/server-context.cpp; then
-    printf 'patched_source=already_verified path=%s commit=%s patch_count=8\n' \
-        "$patched_source" "$actual_commit"
+if [ "$current_status" = "$production_series_status" ] && ledger_sources_match; then
+    printf 'patched_source=already_verified path=%s commit=%s patch_count=%s\n' \
+        "$patched_source" "$actual_commit" "$production_patch_count"
     exit 0
 fi
 
@@ -125,8 +141,10 @@ if [ "$current_status" = "$seven_patch_status" ] && \
         src/llama-model-loader.cpp && \
    source_matches d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3 \
         tools/server/server.cpp; then
+    # shellcheck disable=SC2046
     apply_patches \
-        llama-server-natural-checkpoint-boundary.patch
+        llama-server-natural-checkpoint-boundary.patch \
+        $(production_members_after llama-server-natural-checkpoint-boundary.patch)
     prepared_state=upgraded
 elif [ "$current_status" = "$four_patch_status" ] && \
    source_matches db34fbfc5ee5368ccc5999dc5a37c90dd3198ae0aff8138440cd7f5f0532eca4 \
@@ -141,11 +159,13 @@ elif [ "$current_status" = "$four_patch_status" ] && \
         src/llama-model-loader.cpp && \
    source_matches 2833d9d237e77a70a75736426f11432b964bc66f8e85c5751451f77444338703 \
         tools/server/server.cpp; then
+    # shellcheck disable=SC2046
     apply_patches \
         llama-vulkan-submit-trace.patch \
         llama-router-tools-proxy.patch \
         llama-vulkan-view-alias-deps.patch \
-        llama-server-natural-checkpoint-boundary.patch
+        llama-server-natural-checkpoint-boundary.patch \
+        $(production_members_after llama-server-natural-checkpoint-boundary.patch)
     prepared_state=upgraded
 elif [ "$current_status" = "$five_patch_status" ] && \
    source_matches db34fbfc5ee5368ccc5999dc5a37c90dd3198ae0aff8138440cd7f5f0532eca4 \
@@ -160,10 +180,12 @@ elif [ "$current_status" = "$five_patch_status" ] && \
         src/llama-model-loader.cpp && \
    source_matches d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3 \
         tools/server/server.cpp; then
+    # shellcheck disable=SC2046
     apply_patches \
         llama-vulkan-submit-trace.patch \
         llama-vulkan-view-alias-deps.patch \
-        llama-server-natural-checkpoint-boundary.patch
+        llama-server-natural-checkpoint-boundary.patch \
+        $(production_members_after llama-server-natural-checkpoint-boundary.patch)
     prepared_state=upgraded
 elif [ -n "$current_status" ]; then
     printf 'patched source has unrecognized changes; refusing to overwrite %s\n' \
@@ -177,34 +199,15 @@ else
     # own recorded shape is missing, which is a property of that shape rather
     # than of the ledger.
     # shellcheck disable=SC2046
-    apply_patches $(awk -F'\t' '
-        /^#/ || NF == 0 { next }
-        $1 == "production" { print $2 }
-    ' "$script_directory/llama-patch-series.tsv")
+    apply_patches $production_patch_names
     prepared_state=prepared
 fi
 
 current_status=$(git -C "$patched_source" status --porcelain | LC_ALL=C sort)
-if [ "$current_status" != "$production_series_status" ] || \
-   ! source_matches dfac33fe7fd487fc136e2915de7d5c146a3921b231ffef55877c6dd9e4f2c164 \
-        ggml/src/ggml-vulkan/ggml-vulkan.cpp || \
-   ! source_matches 16abd2face079cad962bb722026d7418e65de67c18c1e1f954df733c1598a70a \
-        ggml/src/ggml-vulkan/ggml-vulkan-pacing.h || \
-   ! source_matches 4b8befd927e9b0c83cfc7cfe843d2f853a9a9db7f6a55c147ffcd4129afd95f8 \
-        ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h || \
-   ! source_matches ac957254c09afda811983801e7dd59d7e4829d40e572804ea7e23dadba521867 \
-        ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h || \
-   ! source_matches ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
-        src/llama-context.cpp || \
-   ! source_matches d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
-        src/llama-model-loader.cpp || \
-   ! source_matches d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3 \
-        tools/server/server.cpp || \
-   ! source_matches 3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a \
-        tools/server/server-context.cpp; then
+if [ "$current_status" != "$production_series_status" ] || ! ledger_sources_match; then
     printf 'patched source does not match the replayed source hashes\n' >&2
     exit 1
 fi
 
-printf 'patched_source=%s path=%s commit=%s patch_count=8\n' \
-    "$prepared_state" "$patched_source" "$actual_commit"
+printf 'patched_source=%s path=%s commit=%s patch_count=%s\n' \
+    "$prepared_state" "$patched_source" "$actual_commit" "$production_patch_count"
