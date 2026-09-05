@@ -136,9 +136,13 @@ outside it.
   (manual int24, the negative control), E5-S0 (stock ACO), and E5-S1
   (target-aware ACO) and withholds a performance conclusion against the
   floating baseline.
-- Remaining: workstation input closure first, then on the device in registered
-  order: pipeline selection and executed ISA, integer-lowering arithmetic,
-  activation-quantization numerics, timing of quantizer plus consumer together.
+- Remaining: `remote/run-e5-module-proof.sh`, after `remote/build-llama-e5.sh`
+  builds the census-instrumented int24 binary under the pinned shaderc prefix.
+  It proves that the executed Q4_K mat-vec module digest equals the OpSDotKHR
+  module the pack compiled and reports the appliance's own ACO lowering; a
+  refuted identity closes the rung as a completed negative and the
+  integer-lowering arithmetic, activation-quantization numerics, and combined
+  quantizer-plus-consumer timing follow only past it.
 - Device: one window, after the attributions, only where the workstation
   closure holds.
 - Ends when: a rung is admitted or rejected; the first decisive falsifier
