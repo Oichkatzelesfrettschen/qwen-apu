@@ -1,0 +1,12 @@
+{
+  "label": "04-S",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 40.46306786721299,
+  "prefill_ms": 469.564,
+  "decode_tok_per_second": 3.986679932818748,
+  "decode_ms": 1755.847,
+  "prompt_tokens": 19,
+  "decode_tokens": 8,
+  "valid": true
+}

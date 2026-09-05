@@ -1,0 +1,8 @@
+runtime_tree=verified git_head=b60ffa867afc73d7b9553a0372ecb80b8bb06c6b payload=291049d52dfdaee3e2b02d7d8a74020904b8396e1be36e7d71e9705be98fde4e files=505
+runtime_tree=verified git_head=b60ffa867afc73d7b9553a0372ecb80b8bb06c6b payload=291049d52dfdaee3e2b02d7d8a74020904b8396e1be36e7d71e9705be98fde4e files=505
+started tmux_socket=qwen-runtime tmux_session=qwen-webui profile=diagnostic host=127.0.0.1 port=8080 context=8192 latency_mode=observe model=/proc/930752/fd/7 server=$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-prod-census/build-raven2-vulkan-census/bin/llama-server
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=q8_0 cache_type_v=q4_0 flash_attention=on override_context_ceiling=registry
+state=running server_pid=936148 monitor_pid=936553 latency_watchdog_pid=936539 kernel_hazard_watchdog_pid=936548 lan_exposure=0 lan_address=- lan_name=- lan_open=0 lan_boundary=lan-authenticated profile=diagnostic host=127.0.0.1 port=8080 context=8192 latency_mode=observe utc=2026-09-05T18:28:02Z
+reachable at http://127.0.0.1:8080 (loopback only)
+stop it with $HOME/Github/qwen-apu/remote/qwen-teardown.sh

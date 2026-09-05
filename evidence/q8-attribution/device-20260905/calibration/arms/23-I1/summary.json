@@ -1,0 +1,12 @@
+{
+  "label": "23-I1",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 82.97921589008311,
+  "prefill_ms": 228.973,
+  "decode_tok_per_second": 17.425828895509476,
+  "decode_ms": 3615.323,
+  "prompt_tokens": 19,
+  "decode_tokens": 64,
+  "valid": true
+}

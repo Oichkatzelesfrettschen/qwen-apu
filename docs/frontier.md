@@ -90,7 +90,16 @@ outside it.
 - Ends when: the executed-path and time-ownership record is retained with its
   coverage limits. The Q4_K program's priorities do not transfer; the first
   Q8-specific experiment is chosen from this record.
-- Result: `evidence/q8-attribution/`.
+- Result: `evidence/q8-attribution/device-20260905/`. Run 2026-09-05: a
+  canary and a 25-arm calibration at 1100/933 on the production server and
+  its census twin; four I1 arms put `mul_mat_vec_q8_0_f32_f32` at 66.7% of
+  the 0.8B token (38.4 of 57.5 ms per graph, 187 dispatches at 186 us),
+  streaming at 20.9 GB/s inside its own dispatches, with every other
+  pipeline under 4% and 17% of the token outside every dispatch. The
+  fixed-cost account is refuted on four of its five registered predictions.
+  The controls read unresolved and incomplete and license no instrument
+  bound. The ending condition is met; the first Q8-specific experiment is a
+  kernel-delta bracket inside the Q8_0 mat-vec body.
 
 ## E5: the standard packed dot through OpSDotKHR and ACO
 

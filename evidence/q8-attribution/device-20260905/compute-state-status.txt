@@ -1,0 +1,3 @@
+compute_state=live dpm_level=auto sclk_level=1 sclk_mhz=400 mclk_level=2 mclk_mhz=933 gfxclk_delivered_mhz=400 ksm_run=1 lease=free caller_nice=0
+power_envelope=live stapm_limit_mw=15000 fast_limit_mw=25000 slow_limit_mw=20000 vrm_current_ma=35000 vrmmax_current_ma=45000 tctl_limit_c=90.000 snapshot=absent
+cpu_frequency_cap=live cpu0_max_khz=2300000 cpu0_governor=schedutil cpu1_max_khz=2300000 cpu1_governor=schedutil boost=1 snapshot=absent
