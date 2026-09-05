@@ -1,4 +1,4 @@
-# The 4B null, attributed: the composed Q4_K path executes, owns 57% of the token, and is unchanged on this shape
+# The 4B attribution: the composed Q4_K path executes and owns 57% of the token
 
 ```text
 measurement_status=attribution
@@ -75,31 +75,30 @@ GB of Q4_K over 51.2 ms per graph, 12.5 GB/s, and 0.657 GB of Q6_K over 36.6 ms,
 Q6_K family on the same die at the same clock, so neither class's Q4_K
 dispatches sit at a streaming ceiling the Q6_K dispatches already reach.
 
-## The conclusion
+## The conclusion, and its correction
 
-Ownership is large, the modified path executes, and the served rate did not
-move. With the Q4_K family at 57% of the token, a local shortening of the size
-the 2B measured (`../../e4/kernel-delta-20260902T2312Z/`: `-3.93%` exclusive,
-interval [-3.95, -3.90]) would move the 4B token by about -2.2%, and the served
-interval [-0.10%, +0.06%] excludes that by more than twenty half-widths. Read
-the other way, the served bound holds the composed shader's per-dispatch time on
-the 4B's shapes within about 0.2% of the production shader's, given the
-remaining 43% of the graph held. The supported conclusion is therefore
-**selected with no local improvement on this shape**: the instruction-count
-saving the composition carries does not shorten a 744 us dispatch over the 4B's
-2560-wide rows the way it shortens a 207 us dispatch over the 2B's 2048-wide
-rows.
+Ownership is large and the modified path executes. This record first read the
+retained served null (`../served-ab-4b-r2-20260903T2115Z/`, -0.02%) as the
+composed stack's, and with the Q4_K family at 57% of the token concluded that
+the composed module shortens nothing on the 4B's shapes; it named the
+kernel-delta bracket as the confirmation and predicted the Q4_K exclusive
+delta inside [-0.2%, +0.2%]. The bracket ran the same day
+(`../4b-kernel-delta-20260905/`) and refuted that prediction: the composed
+module's exclusive time is 10.4% shorter over the three clean pairs, its
+median dispatch 744 us against 820 us, the Q6_K null holds, and the graph
+span shortens 6.8%. The retained null belongs to a different candidate --
+its `inputs.tsv` names `scale-word-select` and `superblock-loop-licm` alone,
+without the two activation patches -- so the composed stack had never been
+served on the 4B, and the reading here that rested on that null is
+withdrawn. The supported answer to the frontier's question is the third of
+its four: **improved locally, with a graph effect**. The ownership figures
+above stand, and they now say the opposite of what this record first drew
+from them: a 10% shorter dispatch on a 57% owner is worth about 6% of the
+token, which is what the bracket's graph span reads.
 
-What the record does not name is the mechanism. The 4B's Q4_K family streams at
-10.0 GB/s against the same class's Q6_K at 13.1, so its dispatches are bounded
-by something other than DRAM streaming, and the composed formulation's saving is
-not that something. The direct measurement is a kernel-delta bracket on the 4B
--- the production source beneath the census patch against this I build,
-`run-served-binary-ab.sh` in kernel-delta mode -- predicted to read the Q4_K
-exclusive delta inside [-0.2%, +0.2%] and the Q6_K null held; a reading outside
-that band would move this conclusion to the third answer and reopen the 4B for
-the composition. The larger 4B program returns to temporal amortization as
-experiments, as the frontier states.
+What the record still does not name is why the 4B's Q4_K family streams at
+10.0 GB/s against the same class's Q6_K at 13.1; the composed module moves
+that figure to about 11.1 GB/s and leaves the gap to Q6_K open.
 
 ## Files
 

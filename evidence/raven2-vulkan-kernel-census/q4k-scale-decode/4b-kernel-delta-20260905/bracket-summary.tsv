@@ -1,0 +1,12 @@
+role	pipeline	column	replicates	comparable_pairs	mean_delta	sd_delta	ci_low	ci_high	deltas	control_values	candidate_values	bound	verdict	detail
+subject	mul_mat_vec_q4_k_f32_f32	exclusive_bracket_ms	4	4	-0.1216	0.0339	-0.1756	-0.0676	-0.1026 -0.1049 -0.1065 -0.1725	11933.6090 11948.7480 11971.0010 12909.7460	10708.9350 10695.3820 10696.1470 10683.0920	0.02	shortened	ci=[-0.1756,-0.0676] below -bound=0.02
+subject-union	mul_mat_vec_q4_k_f32_f32	pipeline_bracket_union_ms	4	4	-0.1203	0.0342	-0.1746	-0.0659	-0.1011 -0.1035 -0.1050 -0.1715	12045.6950 12061.0820 12083.4510 13036.2070	10827.4590 10813.2970 10814.1720 10801.0440	0.02	shortened	ci=[-0.1746,-0.0659] below -bound=0.02
+null	mul_mat_vec_q6_k_f32_f32	exclusive_bracket_ms	4	4	-0.0253	0.0534	-0.1103	+0.0596	+0.0067 -0.0015 -0.0012 -0.1052	5103.7930 5124.5750 5128.2800 5701.6780	5137.8440 5116.6780 5122.3180 5101.8800	0.02	state-changed	ci=[-0.1103,+0.0596] outside bound=0.02
+null-union	mul_mat_vec_q6_k_f32_f32	pipeline_bracket_union_ms	4	4	-0.0253	0.0536	-0.1105	+0.0599	+0.0068 -0.0015 -0.0011 -0.1054	5114.0100 5134.8280 5138.5650 5715.1070	5148.5690 5127.2960 5132.9770 5112.5110	0.02	state-changed	ci=[-0.1105,+0.0599] outside bound=0.02
+graph-span	-	queue_completion_span_ms_per_graph	4	4	-0.0854	0.0331	-0.1381	-0.0328	-0.0688 -0.0651 -0.0730 -0.1348	298.8990 298.4580 299.9470 321.1250	278.3290 279.0300 278.0600 277.8310	0.02	reported	ci=[-0.1381,-0.0328] secondary
+ratio	mul_mat_vec_q4_k_f32_f32/mul_mat_vec_q6_k_f32_f32	exclusive_bracket_ms	4	4	-0.0982	0.0155	-0.1228	-0.0736	-0.1086 -0.1035 -0.1055 -0.0752	2.3382 2.3317 2.3343 2.2642	2.0843 2.0903 2.0881 2.0940	0.02	reported	ci=[-0.1228,-0.0736] secondary
+module_identity	mul_mat_vec_q4_k_f32_f32	spirv_executed_sha256	4	4	-	-	-	-	-	a9ac07dd4063e0903662cd5f1be68a5c2fbf06b0de924acd223525c7e4519d0d	78a576ff12fd97f008e4dd8252992d330c745f003baff34355eb8889499564ce	-	held	- null_module=d584d6b41c26085ac1bef3236b4c24e71f0e98ddcf63ff12da46381b0c12c779
+response_identity	-	content,predicted_n	4	4	-	-	-	-	-	-	-	-	held	pair1=equal pair2=equal pair3=equal pair4=equal
+clock_state	-	sclk_mode_mhz/sclk_share/mclk_mode_mhz	4	4	-	-	-	-	-	1100/1.0000/933 1100/1.0000/933 1100/1.0000/933 1100/1.0000/933	1100/1.0000/933 1100/1.0000/933 1100/1.0000/933 1100/1.0000/933	-	measured	min_sclk_share=1.0000 mclk_modes=933 arms=8
+token_identity	-	id_identity	-	-	-	-	-	-	-	-	-	-	unavailable	no --witness directory
+margin_contract	-	verdict	-	-	-	-	-	-	-	-	-	-	unavailable	no --witness directory

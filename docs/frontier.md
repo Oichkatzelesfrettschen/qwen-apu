@@ -59,17 +59,22 @@ outside it.
   selected; selected with no local improvement on this shape; improved locally
   with no graph effect; or its graph ownership is too small to matter. The
   larger 4B program then returns to temporal amortization as experiments.
-- Result: `evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/`.
-  Run 2026-09-05: three I1 arms at 1100/933 name the composed shader as the
-  executed Q4_K module, owning 57% of the 4B token (170 ms of 294 per graph)
-  beside Q6_K at 27%; with that ownership the served null [-0.10%, +0.06%]
-  excludes the 2B's measured -3.9% local shortening by more than twenty
-  half-widths, so the supported conclusion is **selected with no local
-  improvement on this shape**. The Q4_K family streams at 10.0 GB/s against
-  the same class's Q6_K at 13.1, so what bounds it is not DRAM and not the
-  saving the composition carries. Remaining as a confirmation rather than an
-  open question: one kernel-delta bracket on the 4B, predicted inside
-  [-0.2%, +0.2%] on the Q4_K exclusive time.
+- Result: `evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/`
+  and `4b-kernel-delta-20260905/`. Run 2026-09-05: three I1 arms at 1100/933
+  name the composed shader as the executed Q4_K module, owning 57% of the 4B
+  token beside Q6_K at 27%. The kernel-delta bracket then read the composed
+  module 10.4% shorter per dispatch than production's over three clean pairs
+  (744 against 820 us median), the Q6_K null held, and the graph span 6.8%
+  shorter. The retained null of 2026-09-03 belongs to a two-patch candidate
+  without the activation patches; the composed stack had never been served
+  on the 4B. The supported conclusion is **improved locally, with a graph
+  effect**. The served `W C K K C C K K C` of the uninstrumented builds on
+  the 4B (`served-ab-4b-composed-20260905/`) reads **promoted**, +6.63%
+  [+6.17, +7.09] over four pairs with zero arm failures, so under the class
+  rule the composition is a 4B-class profile result; moving it into serving
+  is the operator's decision, since it changes the production series.
+- Remaining: none for the question. The larger 4B program returns to temporal
+  amortization as experiments.
 
 ## The 0.8B attribution
 

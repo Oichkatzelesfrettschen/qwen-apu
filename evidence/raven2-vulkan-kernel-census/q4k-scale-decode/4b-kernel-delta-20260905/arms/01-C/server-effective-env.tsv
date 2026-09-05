@@ -1,0 +1,10 @@
+# The effective environment of the served process, read from
+# /proc/PID/environ while its identity is pinned, over the GGML_VK_,
+# RADV_, VK_, and QWEN_PERF_LOGGER names alone. A refused read writes
+# one environ=unreadable line and the arm continues.
+name	value
+GGML_VK_LOW_PRIORITY	1
+GGML_VK_MAX_NODES_PER_SUBMIT	16
+GGML_VK_PIPELINE_CENSUS	$HOME/Github/qwen-apu/.runtime/results/4b-kernel-delta-20260905T1720Z/served-ab/arms/01-C/pipeline-census.tsv
+VK_DRIVER_FILES	/usr/share/vulkan/icd.d/radeon_icd.x86_64.json
+VK_ICD_FILENAMES	/usr/share/vulkan/icd.d/radeon_icd.x86_64.json

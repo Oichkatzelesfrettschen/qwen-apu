@@ -1,0 +1,26 @@
+key	value
+schema	fixed64-served-campaign-v2
+campaign_kind	served-binary-ab
+execution_surface	qwen-laptop-ssh
+host_shortname	qwen-laptop
+ssh_session	present
+server_nice	19
+server_io_class	idle
+vulkan_profile	low-async
+inference_cpu	0
+latency_mode	observe
+router	0
+speculation	off
+backend_sampling	0
+web_broker	0
+image_service	0
+runtime_tree_git_head	12082933e9f8014795e6952feae999c88ec5ff76
+model_id	qwen38-4b-distill
+arms	W C K K C C K K C
+control_force_integer_dot	-
+candidate_force_integer_dot	-
+control_server	$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-prod-census/build-raven2-vulkan-census/bin/llama-server
+control_server_sha256	522e6367f49d5bdabf4d0cfc786b640b6766aad99b27d4f00a1c7d7d799ec8b5
+candidate_server	$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-q4k-census/build-raven2-vulkan-census/bin/llama-server
+candidate_server_sha256	4844d0dcaa9e12c9a701c6fdf81d955be7ec254b39d074928108cde7bbe25e8d
+generate_tokens	64
