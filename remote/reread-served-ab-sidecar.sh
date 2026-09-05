@@ -77,7 +77,6 @@ head -n 1 "$campaign_directory/arms.tsv" >"$ledger"
     printf 'original_validator_sha256\t%s\n' "$original_validator_sha256"
     printf 'summarizer_sha256\t%s\n' "$(sha256sum "$summarizer" | cut -d ' ' -f 1)"
 } >"$provenance"
-moved=''
 awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
     { printf "%s\t%s\t%s\t%s\t%s\n", $(column["slot"]), $(column["arm"]),
         $(column["sidecar"]), $(column["status"]), $(column["clock_invariant"]) }' \
