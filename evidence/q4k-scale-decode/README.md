@@ -787,6 +787,57 @@ matching a key. A pinned tree reads `-`, a tree carrying the multiplexed shader 
 `arr_dmmv_q4_k_prod_*` selection, the argument, and the server's `setenv` reads
 `production/4` ahead of those nine with the route token after them.
 
+## The release: `qwen38-4b-distill` at `e4-scale-licm/4`
+
+The release is one registry row and one build. `remote/models.tsv` carries `q4k_variant`
+`e4-scale-licm/4` on `qwen38-4b-distill` and `-` on every other row, so
+`qwen-capacity-policy.sh` selects the composed formulation for that checkpoint and every
+other row executes the production module the pinned build creates unkeyed. The release build
+carries the nine-member production series beside the five Q4_K stack members the composed
+served comparison measured -- `llama-vulkan-q4k-activation-group-sums.patch`,
+`llama-vulkan-q4k-activation-sideplane.patch`, `llama-vulkan-q4k-scale-word-select.patch`,
+`llama-vulkan-q4k-superblock-loop-licm.patch`, and
+`llama-vulkan-q4k-variant-select.patch` -- and `llama-vulkan-q4k-row-select.patch`, the
+member that adds the fourth formulation, the `production` name over it, and the
+`--vk-q4k-variant` argument the preset section carries. All six sit at `candidate` in
+`remote/llama-patch-series.tsv`; moving them to `production` changes the series digest every
+retained receipt binds, so this release names them from the candidate stage and every
+receipt written before it stays bound to the series it was measured under.
+
+`build-llama-preset.sh` writes `q4k_variants` from that source, so the release build's
+artifact manifest declares `production/4` ahead of the nine experiment keys with
+`route=arg:LLAMA_ARG_VK_Q4K_VARIANT` after them. A build declaring `-` admits no key, and
+`qwen-capacity-policy.sh` refuses the 4B launch against one rather than serving the
+production module under a row claiming a formulation: the bytes the active bundle serves
+declare `-`, so this row flip and the release build land together or the 4B row launches
+under neither.
+
+The measured result the release rests on is
+`../raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/`: +6.63%
+[+6.17, +7.09] over four mirrored pairs against the production control, one selected clock
+pair on every arm and zero arm failures. It is artifact-scoped. The 2B reads unresolved
+twice at +5.3% and +5.5% against the same bound and the 0.8B dispatches this shader never,
+so the class rule leaves the platform default where it is and gives this one checkpoint the
+release.
+
+**The witness is what activation waits on.** Neither serving executable in that comparison
+carries a correctness witness: its `summary.tsv` reads `token_identity` and
+`margin_contract` `unavailable`, and the one retained 4B witness names the earlier two-patch
+build. The release executable is witnessed by a keyed run over one binary, the control
+naming the production module through the multiplexer rather than an empty key that a
+released row would answer with its own formulation:
+
+```sh
+QWEN_WITNESS_CONTROL_EXPERIMENT_KEY=production/4 \
+QWEN_WITNESS_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4 \
+    remote/run-kernel-delta-witness.sh RELEASE RELEASE qwen38-4b-distill OUT
+```
+
+witness: pending
+
+That line carries the retained evidence path once the run lands, and the row stays unserved
+until it does.
+
 ## The appliance arms, and the preimage chain that orders them
 
 The three patches sit at `candidate` in `remote/llama-patch-series.tsv`. The scale-word-select's
