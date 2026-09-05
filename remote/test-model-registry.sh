@@ -804,12 +804,15 @@ else
     report q4k_variant_vocabulary rejected
 fi
 
-# Every shipped row releases the production module, so an enumeration reads the
-# whole registry and a key would be a release this tree has not made.
-if [ -z "$(awk -F'\t' '/^#/ { next } NF && $23 != "-" { print $1 }' "$registry")" ]; then
-    report q4k_variant_rows_unreleased accepted
+# The release is per row, so the enumeration names exactly the rows that carry a
+# key. qwen38-4b-distill serves the composed formulation and every other row
+# serves the production module the pinned build creates unkeyed.
+released_q4k_rows=$(awk -F'\t' '/^#/ { next } NF && $23 != "-" { printf "%s=%s ", $1, $23 }' \
+    "$registry")
+if [ "$released_q4k_rows" = 'qwen38-4b-distill=e4-scale-licm/4 ' ]; then
+    report q4k_variant_row_releases accepted
 else
-    report q4k_variant_rows_unreleased rejected
+    report q4k_variant_row_releases rejected
 fi
 
 # A row outside the vocabulary makes the whole registry unreadable rather than
