@@ -82,10 +82,17 @@ awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
     { printf "%s\t%s\t%s\t%s\t%s\n", $(column["slot"]), $(column["arm"]),
         $(column["sidecar"]), $(column["status"]), $(column["clock_invariant"]) }' \
     "$campaign_directory/arms.tsv" | while IFS="$(printf '\t')" read -r slot arm sidecar status invariant; do
-    arm_directory=$campaign_directory/arms/$slot-$arm
+    # run-served-binary-ab.sh names an arm directory by a two-digit slot
+    # where the ledger's slot column carries the bare number, and the warmup
+    # slot 0a stays as written.
+    case $slot in
+        [0-9]) slot_name=0$slot ;;
+        *) slot_name=$slot ;;
+    esac
+    arm_directory=$campaign_directory/arms/$slot_name-$arm
     record=$arm_directory/clock-sidecar.tsv
     window=$arm_directory/request-window.tsv
-    reread_directory=$output_directory/arms/$slot-$arm
+    reread_directory=$output_directory/arms/$slot_name-$arm
     mkdir -p "$reread_directory"
     new_sidecar=$sidecar
     new_status=$status
