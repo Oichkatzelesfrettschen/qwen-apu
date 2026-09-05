@@ -8,6 +8,7 @@
     { "feature": "long-context", "scope": "model" },
     { "feature": "context-checkpoints", "scope": "model" },
     { "feature": "quarantine", "scope": "model" },
+    { "feature": "q4k-formulation", "scope": "model" },
     { "feature": "draft-pair-speculation", "scope": "draft-pair" },
     { "feature": "web-search", "scope": "web-profile" },
     { "feature": "image-generation", "scope": "image-profile" },
@@ -27,7 +28,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "production", "evidence": "evidence/depth-validation-32k/qwen38-2b-distill/", "note": "32768 filled and decoded at batch 128 ubatch 32 with zero resets and a passing control" },
         { "feature": "context-checkpoints", "status": "production", "evidence": "evidence/ctx-checkpoint-natural-boundary/2b", "note": "count 2 holds token and log-probability identity across the setting on the natural-boundary build" },
-        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -43,7 +45,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "llama-bench allocates no projector, so probe-depth-wedge.sh leaves a vision row at - and remote/probe-depth-projector.sh measures the tuple this row needs" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
-        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -59,7 +62,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "production", "evidence": "evidence/depth-validation-32k/qwen38-4b-distill/", "note": "32768 filled and decoded at batch 128 ubatch 32 with zero resets and a passing control" },
         { "feature": "context-checkpoints", "status": "production", "evidence": "evidence/ctx-checkpoint-natural-boundary/4b", "note": "count 2 holds token and log-probability identity across the setting on the natural-boundary build" },
-        { "feature": "quarantine", "status": "unstable", "evidence": "evidence/quarantine/qwen38-4b-distill-d16384-b2048-ub512.md", "note": "profile scope removes depth 16384 at batch 2048 ubatch 512, which wedged the compute ring; the served 128/32 tuple stands" }
+        { "feature": "quarantine", "status": "unstable", "evidence": "evidence/quarantine/qwen38-4b-distill-d16384-b2048-ub512.md", "note": "profile scope removes depth 16384 at batch 2048 ubatch 512, which wedged the compute ring; the served 128/32 tuple stands" },
+        { "feature": "q4k-formulation", "status": "candidate", "evidence": "evidence/raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/", "note": "the row releases e4-scale-licm/4; the composed stack read +6.63% [+6.17, +7.09] served, artifact-scoped to this checkpoint at its own tuple" }
       ]
     },
     {
@@ -75,7 +79,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "llama-bench allocates no projector, so probe-depth-wedge.sh leaves a vision row at - and remote/probe-depth-projector.sh measures the tuple this row needs" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
-        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -91,7 +96,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
-        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -107,7 +113,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
-        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -123,7 +130,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
-        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -139,7 +147,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
-        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -155,7 +164,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
-        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -171,7 +181,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "candidate", "evidence": "evidence/depth-validation-32k/qwen35-08b/", "note": "32768 filled and decoded at batch 128 ubatch 32" },
         { "feature": "context-checkpoints", "status": "production", "evidence": "evidence/ctx-checkpoint-natural-boundary", "note": "count 2 holds token identity on the natural-boundary build, which removed the index 25 divergence the forced tail partition produced" },
-        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -187,7 +198,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "candidate", "evidence": "evidence/depth-validation-32k/qwen35-08b-f16/", "note": "32768 filled and decoded at batch 128 ubatch 32" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
-        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -203,7 +215,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
-        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -219,7 +232,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "llama-bench allocates no projector, so probe-depth-wedge.sh leaves a vision row at - and remote/probe-depth-projector.sh measures the tuple this row needs" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
-        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -235,7 +249,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "every registry row reads refused, and model scope quarantine removes this one from the router path besides" },
         { "feature": "long-context", "status": "unsupported", "evidence": "evidence/quarantine/ministral3-3b.md", "note": "the graph assert abort ends the load before a depth arm reaches a filled cache" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0" },
-        { "feature": "quarantine", "status": "unstable", "evidence": "evidence/quarantine/ministral3-3b.md", "note": "model scope, runtime mode router-child, reason graph-assert-abort" }
+        { "feature": "quarantine", "status": "unstable", "evidence": "evidence/quarantine/ministral3-3b.md", "note": "model scope, runtime mode router-child, reason graph-assert-abort" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     },
     {
@@ -251,7 +266,8 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "every registry row reads refused, and model scope quarantine removes this one from the launch path besides" },
         { "feature": "long-context", "status": "unsupported", "evidence": "evidence/quarantine/nanbeige42-3b.md", "note": "the row carries no validated safe tuple, which is the quarantine reason itself" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0" },
-        { "feature": "quarantine", "status": "unstable", "evidence": "evidence/quarantine/nanbeige42-3b.md", "note": "model scope, runtime mode any, reason no-validated-safe-tuple" }
+        { "feature": "quarantine", "status": "unstable", "evidence": "evidence/quarantine/nanbeige42-3b.md", "note": "model scope, runtime mode any, reason no-validated-safe-tuple" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]
     }
   ],
