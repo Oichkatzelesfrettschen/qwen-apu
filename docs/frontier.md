@@ -6,55 +6,15 @@ condition that ends it in either direction, and where the answer lands. The
 records this file cites carry the content; this file carries the boundaries.
 A milestone leaves this file when its result location holds the answer.
 
-The order is availability first, then the registered measurements, then the
+Availability is qualified: `evidence/deployment-epochs/main-7f8f2ed-r1/`
+holds the router recovery, the whole LAN matrix, and the rollback proof on
+one bundle, and `evidence/raven2-vulkan-kernel-census/README.md` and
+`replay-corpus/reuse-acceptance.md` close the instrument's controls and the
+Mission 1 baseline. The order is now the registered measurements, then the
 attributions those measurements need, then the candidate they select.
 Workstation work that needs no device runs beside that order. ROCm, new model
 admissions, further power-policy experiments, and resident-server designs are
 outside it.
-
-## Router recovery after a cancelled load
-
-- Question: does a request that arrives while a cancelled child load is in
-  flight terminate correctly once that child is up?
-- Evidence: `evidence/deployment-epochs/main-e909cfc-r1/README.md` records
-  the 700 s wait on the appliance; `evidence/router-cancelled-load/` retains
-  the deterministic workstation reproduction, the trace locating the slot
-  hand-off that had no sender, and the repaired run under
-  `patches/llama-router-cancelled-load-idle.patch`.
-- Remaining: one bounded appliance confirmation on the exact patched
-  executable, then promotion of the row to `production`.
-- Device: one window, shaders unchanged.
-- Ends when: the two-request sequence recovers with no third request, router
-  restart, device reset, or model-stack change; or the patched build fails the
-  sequence, which returns the diagnosis to the trace.
-- Result: `evidence/router-cancelled-load/`.
-
-## Verification with every row
-
-- Question: does `remote/verify-lan-site.sh` write a terminal row for every
-  check, name its checkpoint subject, and measure a cold prefix?
-- Evidence: `remote/test-verify-lan-site.sh` proves the subject rule, the
-  per-run nonce against a warm fixture, the terminal row against a router that
-  never answers, and the rows an interrupted run leaves.
-- Remaining: none on the workstation; the appliance run is the qualification
-  below.
-- Result: the verifier's own test in the repository gate.
-
-## Qualified baseline
-
-- Question: is the deployed baseline available, verified in every row, and
-  recoverable?
-- Evidence: `evidence/deployment-epochs/main-e909cfc-r1/` is the deployment
-  epoch; its rollback target `main-f50d631-r1` names predecessor paths the
-  migration removed and is historical evidence rather than a recovery target.
-- Remaining: the LAN matrix with every row on the confirmed router build, a
-  root-compatible rollback bundle proven by one activation and one rollback,
-  and the qualified-epoch record.
-- Device: the same window as the router confirmation.
-- Ends when: every verifier row passes and rollback resolves and launches; or
-  a row fails, which names the next repair.
-- Result: `evidence/deployment-epochs/<bundle>/` with a `qualified_epoch`
-  receipt.
 
 ## The registered 2B composition
 
@@ -104,35 +64,6 @@ outside it.
   coverage limits. The Q4_K program's priorities do not transfer; the first
   Q8-specific experiment is chosen from this record.
 - Result: `evidence/q8-attribution/`.
-
-## The census instrument's unresolved controls
-
-- Question: which calibration controls remain statistically unresolved?
-- Evidence: `evidence/raven2-vulkan-kernel-census/README.md` and the retained
-  calibration directories; the E4 comparison used the instrument on both sides
-  and establishes a local effect, and no universal overhead bound.
-- Remaining: enumerate each unaccepted control with its claim and interval and
-  close it as accepted or recorded-unresolved.
-- Device: none.
-- Ends when: the enumeration is retained. An unresolved bound erases no valid
-  local comparison.
-- Result: `evidence/raven2-vulkan-kernel-census/README.md`.
-
-## Mission 1 reuse
-
-- Question: does the calibration machinery reuse unchanged artifacts and
-  invalidate changed ones?
-- Evidence: `evidence/raven2-vulkan-kernel-census/state-preserving-campaign.md`
-  and `evidence/raven2-vulkan-kernel-census/replay-corpus/`.
-- Remaining: one acceptance check on a disposable state root: an unchanged
-  input closure reuses admitted artifacts, a reader-only change reprocesses
-  retained data with no device work, and a changed executable, shader pack, or
-  execution setting invalidates the corresponding receipt. Production state,
-  the deployment selector, and authorization state stay untouched.
-- Device: none.
-- Ends when: the three outcomes are retained. Dual-resident servers, wider
-  cache sharing, and scheduling experiments are deferred extensions.
-- Result: `evidence/raven2-vulkan-kernel-census/replay-corpus/`.
 
 ## E5: the standard packed dot through OpSDotKHR and ACO
 

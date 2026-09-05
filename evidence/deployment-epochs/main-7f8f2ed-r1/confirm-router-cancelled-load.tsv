@@ -1,0 +1,6 @@
+# check	status	detail
+precondition	pass	model_a=lfm25-vl-16b:unloaded model_b=qwen38-2b-distill:unloaded
+request_a_cancelled_while_loading	pass	model=lfm25-vl-16b cancelled_after_ms=591
+request_b_answered	pass	model=qwen38-2b-distill http=200 elapsed_ms=7945 served=qwen38-2b-distill
+final_model_states	pass	model_a=unloaded model_b=loaded
+requests_sent	pass	two: one cancelled, one follow-up; no third request, restart, or reset

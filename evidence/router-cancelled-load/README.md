@@ -82,7 +82,18 @@ than repaired, since the retained defect is a different transition.
 patch replays under `QWEN_LLAMA_CANDIDATE_PATCHES=1
 QWEN_LLAMA_CANDIDATE_SELECT=llama-router-cancelled-load-idle.patch` and
 rewrites only `tools/server/server-models.cpp` and
-`tools/server/server-models.h`. The appliance confirmation on the exact
-patched executable, with no third request, router restart, device reset, or
-model-stack change, is the arm that moves the row to `production`, and it is
-recorded beside this file when it runs.
+`tools/server/server-models.h`.
+
+## The appliance confirmation
+
+`evidence/deployment-epochs/main-7f8f2ed-r1/confirm-router-cancelled-load.tsv`
+retains the run of `remote/confirm-router-cancelled-load.sh` against the
+live router serving the build that carried the patch: the `lfm25-vl-16b`
+request was cancelled 591 ms in, at the moment the router reported the child
+`loading`; the `qwen38-2b-distill` request sent at once answered with HTTP
+200 in 7.9 s; the vision child read `unloaded` and the 2B `loaded`
+afterward. Two requests, no third, no restart, no reset, no model-stack or
+shader change. That run moved the row to `production`:
+`remote/llama-patch-series.tsv` lists the patch as the ninth production
+member and `remote/llama-patched-sources.tsv` pins both rewritten files at
+the digests the replay reaches.

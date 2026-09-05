@@ -1,0 +1,12 @@
+23:11:23 before: current=deployment-state/current previous=deployment-state/previous
+23:11:25 teardown_exit=0
+23:11:25 rollback_exit=0 deployment_current=main-e909cfc-r1 deployment_previous=main-7f8f2ed-r1 transition=rollback
+23:11:25 resolve_exit=0 active_deployment_web_presets=-
+23:11:41 rollback_launch_exit=0
+23:11:41 rollback-target: health_http=000 roster_count=0 active=deployment-state/current
+23:11:42 teardown_exit=0
+23:11:43 reactivate_exit=0 deployment_current=main-7f8f2ed-r1 deployment_previous=main-e909cfc-r1 transition=activate
+23:11:59 current_launch_exit=0
+23:11:59 current: health_http=000 roster_count=0 active=deployment-state/current
+LAN BOUNDARY: lan-authenticated -- the Web UI bearer is required on every route
+23:11:59 rollback_proof=done

@@ -1703,7 +1703,17 @@ if [ -n "$reuse_directory" ]; then
         fi
         reuse_closure=$(awk -F'\t' '$1 == "input_closure_sha256" { count++; value = $2 }
             END { if (count == 1) print value; else print "-" }' "$reuse_receipt")
-        [ "$reuse_closure" = "$(brick_input_closure_sha256 "$brick_id")" ] || continue
+        # The closure names the acquisition contract, the brick's arm list, and,
+        # for the two bricks that execute the census build, that executable's
+        # digest, so a brick measured under another instrumented server is a
+        # genuine, bound receipt that still goes back to the device; the line
+        # says which input moved rather than leaving the rerun unexplained.
+        reuse_current_closure=$(brick_input_closure_sha256 "$brick_id")
+        if [ "$reuse_closure" != "$reuse_current_closure" ]; then
+            printf 'census_brick_reuse=closure_changed brick=%s recorded=%s current=%s\n' \
+                "$brick_id" "$reuse_closure" "$reuse_current_closure"
+            continue
+        fi
         # A receipt states rates the echoed ledger rows must carry, so the
         # prior arms.tsv is rejoined to it slot by slot: a directory whose
         # ledger and receipt disagree is not reused rather than reused on
