@@ -359,8 +359,10 @@ the same thing.
 **Target closure ran on 2026-09-05** (`target-closure-20260905/`): the registered `C K K C`
 composition closed in its first run, candidate interval [10.026, 10.240], and left the interval
 spanning 10 in the whole repeat, [9.768, 10.452]; the paired verdict was incomplete both times
-on a control arm the clock sidecar refused by 7 to 10 ms of marker cadence. The paragraph below
-is the provisional reading that run replaced.
+on a control arm the clock sidecar refused by 7 to 10 ms of marker cadence, and re-reading the
+retained records under the re-registered median rule gives it four pairs in both runs: +5.28%
+[+3.61, +6.94] and +5.47% [+1.92, +9.01], both unresolved against the +5% one-sided bound. The
+paragraph below is the provisional reading that run replaced.
 
 **Target closure was provisional.** The candidate arms decoded 10.028, 10.017, 10.011, and
 10.022 tok/s, all four above 10, against controls at 9.848, 9.845, 9.842, and 9.821. Those are

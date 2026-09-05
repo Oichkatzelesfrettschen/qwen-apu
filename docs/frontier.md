@@ -27,14 +27,18 @@ outside it.
   limits, standing guest, KSM as found, manual 1100/933), and both verdicts.
 - Result: `evidence/q4k-scale-decode/target-closure-20260905/`. Run as
   written twice on 2026-09-05: closed once ([10.026, 10.240]) and unresolved
-  on the repeat ([9.768, 10.452]); the paired verdict incomplete both times
-  on one control arm the clock sidecar refused by 7 to 10 ms of marker
-  cadence, with the surviving three pairs at +5.6% and +5.2% mean. No new
-  serving default.
-- Remaining: none for this registration. The paired question moves to the
-  instrument: the `dpm_marker_cadence` bound refuses an arm whose clock and
-  coverage held, which is a sidecar rule to re-register ahead of any further
-  paired run.
+  on the repeat ([9.768, 10.452]); the paired verdict was incomplete both
+  times on one control arm the clock sidecar refused by 7 to 10 ms of
+  marker cadence. That bound was a coverage double count -- the broker
+  refreshes DPM every tenth tick, so one wide marker gap is hold-off the
+  row-gap rules already price -- and is re-registered over the median gap;
+  the retained records re-read under it give four pairs in both runs, +5.28%
+  [+3.61, +6.94] and +5.47% [+1.92, +9.01], unresolved against +5% twice.
+  No new serving default.
+- Remaining: none for this registration. The gain on the 2B is near the
+  bound itself, and a third whole run at four replicates would resolve it
+  only if the paired scatter halved; the composition's next reading is the
+  4B attribution below.
 
 ## The 4B null
 
