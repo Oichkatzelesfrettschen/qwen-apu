@@ -286,6 +286,82 @@ def main() -> int:
             "state keys differ: missing=['server_pid'] extra=[]",
         )
 
+        # The LAN lane's five keys are admitted as a set on a loopback
+        # session, a partial set refuses, and an exposed session refuses.
+        def write_lan_status(exposure: str, open_flag: str, partial: bool) -> None:
+            write_session_status(session_status_path)
+            state_line, *policy_lines = session_status_path.read_text(
+                encoding="utf-8"
+            ).splitlines()
+            lan_fields = (
+                f"lan_exposure={exposure} lan_address=- lan_name=- "
+                f"lan_open={open_flag} lan_boundary=lan-authenticated"
+            )
+            if partial:
+                lan_fields = f"lan_exposure={exposure}"
+            state_line = state_line.replace(
+                "kernel_hazard_watchdog_pid=1237 ",
+                f"kernel_hazard_watchdog_pid=1237 {lan_fields} ",
+            )
+            session_status_path.write_text(
+                "\n".join((state_line, *policy_lines)) + "\n", encoding="utf-8"
+            )
+
+        write_lan_status("0", "0", False)
+        write_server_process(
+            server_process_path,
+            server_path,
+            server_sha256,
+            model,
+            campaign_directory,
+            summarizer.expected_server_argv,
+        )
+        reseal_artifacts(
+            campaign_directory / "SHA256SUMS",
+            (session_status_path, server_process_path, runtime_inputs_path),
+        )
+        lan_pid = summarizer.validate_arm_server_identity(
+            session_status_path,
+            server_process_path,
+            runtime_inputs_path,
+            str(server_path),
+            server_sha256,
+            str(server_path.stat().st_size),
+            model,
+            str(campaign_directory),
+            "hp14-ssh",
+            "hp14-dk1xxx",
+            "present",
+        )
+        if lan_pid != 1234:
+            raise AssertionError(f"LAN-keyed loopback session refused: {lan_pid}")
+
+        write_lan_status("1", "0", False)
+        expect_resealed_refusal(
+            summarizer,
+            session_status_path,
+            server_process_path,
+            runtime_inputs_path,
+            server_path,
+            server_sha256,
+            model,
+            campaign_directory,
+            "names an exposed session: lan_exposure=1 lan_open=0",
+        )
+
+        write_lan_status("0", "0", True)
+        expect_resealed_refusal(
+            summarizer,
+            session_status_path,
+            server_process_path,
+            runtime_inputs_path,
+            server_path,
+            server_sha256,
+            model,
+            campaign_directory,
+            "carries a partial LAN key set: ['lan_exposure']",
+        )
+
         write_session_status(session_status_path)
         write_server_process(
             server_process_path,
