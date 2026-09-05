@@ -34,6 +34,13 @@ fi
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=remote/qwen-home.sh
 . "$script_directory/qwen-home.sh"
+# An explicit deployment root is the caller's own claim and is verified as
+# one; the derived root belongs to QWEN_HOME, so the marker binding decides
+# whether this checkout reads it. A root laid out beside another checkout
+# would otherwise serve that checkout's bundles under this tree's scripts.
+if [ "$#" -eq 0 ] && [ -z "${QWEN_DEPLOYMENT_ROOT:-}" ]; then
+    qwen_home_require_binding || exit 2
+fi
 deployment_root=${1:-${QWEN_DEPLOYMENT_ROOT:-"$qwen_home_deployments"}}
 current_link=$deployment_root/deployment-current
 

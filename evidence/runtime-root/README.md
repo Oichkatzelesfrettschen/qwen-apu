@@ -58,6 +58,30 @@ belong to the second class.
 `remote/qwen-home.sh paths` prints every declared name with its value, and
 `remote/qwen_home.py` resolves the same root for a python child.
 
+## The marker binds the root to one checkout
+
+`.qwen-runtime-root` carries `tree_root=` beside its schema version, and that
+field is the root's claim on a checkout. `qwen_home_binding_state` in
+`remote/qwen-home.sh` resolves both sides through `cd -P` and answers
+`unmarked` for a root `make bootstrap` has yet to lay out, `bound` where the
+marker names this tree, and `foreign:TREE` where it names another;
+`qwen_home_require_binding` turns the third into a refusal. `make status`,
+`make verify`, `make uninstall`, `make purge`, and
+`remote/resolve-active-deployment.sh` on its derived root all take that
+refusal, so a root moved beside a second checkout stops the read rather than
+serving one checkout's declaration through another checkout's scripts. `make
+doctor` reports the state on a `declared` row instead, since the doctor
+touches and refuses nothing.
+
+`make bootstrap` is the first remedy a refused reader reaches for, so `init`
+rewrites a foreign marker only where `QWEN_RUNTIME_ROOT_REBIND` names this
+exact tree; without that rule the remedy silently takes the root the refusal
+just reported. An explicit `QWEN_DEPLOYMENT_ROOT` or a deployment root named
+on the command line is the caller's own claim and is verified as a bundle
+root rather than through the binding. `remote/qwen_home.py` mirrors the same
+three states as `binding_state()` and `require_binding()` for a python child
+that resolves the root itself.
+
 ## The manifest
 
 `make status` runs `remote/runtime-root.sh status`, which writes

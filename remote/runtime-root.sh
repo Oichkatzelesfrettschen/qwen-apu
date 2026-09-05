@@ -79,6 +79,7 @@ write_marker() {
 }
 
 require_marker() {
+    qwen_home_require_binding || exit 2
     if [ ! -f "$qwen_home_marker" ]; then
         printf '%s carries no runtime-root marker (%s); this script removes only a root it laid out\n' \
             "$qwen_home" "$qwen_home_marker" >&2
@@ -187,6 +188,8 @@ account_exists() {
 doctor_report() {
     printf 'class\tpath\tdetail\n'
     printf 'declared\t%s\t%s\n' "$qwen_home" "runtime root"
+    printf 'declared\t%s\tmarker binding %s, this tree %s\n' \
+        "$qwen_home_marker" "$(qwen_home_binding_state)" "$qwen_tree_root"
     for relative in $layout_directories; do
         state=absent
         [ -d "$qwen_home/$relative" ] && state=present
@@ -240,6 +243,23 @@ case $action in
         "$script_directory/qwen-home.sh" paths
         ;;
     init)
+        # A marker naming another checkout is the case the binding exists to
+        # catch, and `make bootstrap` is the first remedy a refused reader
+        # reaches for, so init rewrites such a marker only where
+        # QWEN_RUNTIME_ROOT_REBIND names this tree. Without that rule the
+        # remedy silently steals the root the refusal reported.
+        init_binding=$(qwen_home_binding_state)
+        case $init_binding in
+            bound | unmarked) ;;
+            *)
+                if [ "${QWEN_RUNTIME_ROOT_REBIND:-}" != "$qwen_tree_root" ]; then
+                    printf '%s is bound to %s; rebinding it to %s discards that checkout'"'"'s claim, so set QWEN_RUNTIME_ROOT_REBIND to that exact tree\n' \
+                        "$qwen_home" "${init_binding#foreign:}" "$qwen_tree_root" >&2
+                    exit 2
+                fi
+                printf 'rebound %s from %s\n' "$qwen_home" "${init_binding#foreign:}"
+                ;;
+        esac
         mkdir -p "$qwen_home"
         for relative in $layout_directories; do
             mkdir -p "$qwen_home/$relative"
@@ -248,6 +268,7 @@ case $action in
         printf 'runtime_root=%s schema=%s\n' "$qwen_home" "$runtime_schema_version"
         ;;
     status)
+        qwen_home_require_binding || exit 2
         if [ ! -d "$qwen_home" ]; then
             printf 'runtime root absent: %s (run make bootstrap)\n' "$qwen_home" >&2
             exit 1

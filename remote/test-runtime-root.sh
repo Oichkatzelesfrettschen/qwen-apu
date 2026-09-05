@@ -39,6 +39,44 @@ rebuild=$(awk -F'\t' '$1 == "searxng-venv" { print $9 }' "$QWEN_HOME/manifest.ts
 [ "$rebuild" = 'make install-searxng' ] && report rebuild_command_named ok || report rebuild_command_named "$rebuild"
 case $status_out in *runtime_manifest_sha256=*) report status_prints_manifest_digest ok ;; *) report status_prints_manifest_digest missing ;; esac
 
+# ---- the marker binds the root to the checkout that laid it out ----
+tree_root_path=$(CDPATH='' cd -- "$script_directory/.." && pwd -P)
+marker_tree=$(sed -n 's/^tree_root=//p' "$QWEN_HOME/.qwen-runtime-root")
+[ "$marker_tree" = "$tree_root_path" ] \
+    && report marker_names_tree_root ok || report marker_names_tree_root "$marker_tree"
+foreign_tree=$work/other-checkout
+mkdir -p "$foreign_tree/remote"
+cp "$script_directory/qwen-home.sh" "$script_directory/runtime-root.sh" "$foreign_tree/remote/"
+if "$foreign_tree/remote/runtime-root.sh" status >"$work/foreign-status.log" 2>&1; then
+    report foreign_tree_status_refused accepted
+else
+    report foreign_tree_status_refused ok
+fi
+grep -q 'is bound to' "$work/foreign-status.log" \
+    && report foreign_refusal_names_binding ok || report foreign_refusal_names_binding "$(cat "$work/foreign-status.log")"
+if "$foreign_tree/remote/runtime-root.sh" init >/dev/null 2>&1; then
+    report foreign_tree_init_refused accepted
+else
+    report foreign_tree_init_refused ok
+fi
+[ "$(sed -n 's/^tree_root=//p' "$QWEN_HOME/.qwen-runtime-root")" = "$marker_tree" ] \
+    && report refused_init_keeps_binding ok || report refused_init_keeps_binding rebound
+if "$foreign_tree/remote/runtime-root.sh" uninstall >/dev/null 2>&1; then
+    report foreign_tree_uninstall_refused accepted
+else
+    report foreign_tree_uninstall_refused ok
+fi
+QWEN_RUNTIME_ROOT_REBIND=$foreign_tree "$foreign_tree/remote/runtime-root.sh" init >/dev/null
+[ "$(sed -n 's/^tree_root=//p' "$QWEN_HOME/.qwen-runtime-root")" = "$foreign_tree" ] \
+    && report explicit_rebind_moves_binding ok || report explicit_rebind_moves_binding rebind_failed
+QWEN_RUNTIME_ROOT_REBIND=$tree_root_path "$tool" init >/dev/null
+if python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import qwen_home; sys.exit(0 if qwen_home.binding_state() == "bound" else 1)' \
+    "$script_directory"; then
+    report python_binding_state ok
+else
+    report python_binding_state mismatch
+fi
+
 # ---- doctor over seeded legacy and foreign paths ----
 fake_home=$work/home; fake_system=$work/system
 mkdir -p "$fake_home/qwen-webui-state" "$fake_home/models" "$fake_system/usr/local/searxng" "$fake_system/etc/searxng" "$fake_system/tmp"
