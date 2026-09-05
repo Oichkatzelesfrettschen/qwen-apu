@@ -320,7 +320,7 @@ chmod +x "$stacked_instrumented_root/bin/llama-server"
     printf 'checkpoint_source_sha256\t%s\n' "$patch_series_sha256"
     printf 'compiler_flags\t-march=znver1 -mtune=znver1\n'
     printf 'cmake_flags\t-DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_VULKAN_PIPELINE_CENSUS=ON\n'
-    printf 'candidate_series\tllama-vulkan-q4k-variant-select.patch,llama-vulkan-pipeline-census.patch\n'
+    printf 'candidate_series\tllama-vulkan-pipeline-census.patch,llama-vulkan-q4k-variant-select.patch\n'
 } >"$stacked_instrumented_root/artifact-manifest.tsv"
 instrumented_forced_tail_root=$temporary_directory/inst-forced-tail
 mkdir -p "$instrumented_forced_tail_root/bin"
@@ -1160,10 +1160,10 @@ run_runner instrumented_executable_row 'the instrumented server is not the one e
 run_runner instrumented_forced_tail 'natural-boundary-v1 is required' \
     QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_forced_tail_root/bin/llama-server"
 
-run_runner instrumented_series_missing_stack 'appended .llama-vulkan-q4k-variant-select.patch,llama-vulkan-pipeline-census.patch.: llama-vulkan-pipeline-census.patch$' \
+run_runner instrumented_series_missing_stack 'ledger order .llama-vulkan-pipeline-census.patch,llama-vulkan-q4k-variant-select.patch.: llama-vulkan-pipeline-census.patch$' \
     QWEN_CENSUS_PRODUCTION_SERVER="$stacked_production_root/bin/llama-server"
 
-run_runner instrumented_series_foreign_stack 'appended .llama-vulkan-pipeline-census.patch.: llama-vulkan-q4k-variant-select.patch,llama-vulkan-pipeline-census.patch$' \
+run_runner instrumented_series_foreign_stack 'ledger order .llama-vulkan-pipeline-census.patch.: llama-vulkan-pipeline-census.patch,llama-vulkan-q4k-variant-select.patch$' \
     QWEN_CENSUS_INSTRUMENTED_SERVER="$stacked_instrumented_root/bin/llama-server"
 
 run_runner fclk_absent 'pp_dpm_fclk is absent' \
