@@ -371,6 +371,8 @@ gate_cell test-fallback-webui-conversations derive remote/test-fallback-webui-co
     'node remote/test-fallback-webui-conversations.mjs'
 gate_cell test-fallback-webui-fragment-key derive remote/test-fallback-webui-fragment-key.mjs \
     'node remote/test-fallback-webui-fragment-key.mjs'
+gate_cell test-fallback-webui-sha256 derive remote/test-fallback-webui-sha256.mjs \
+    'node remote/test-fallback-webui-sha256.mjs'
 gate_cell test-fallback-webui-ui-switch derive remote/test-fallback-webui-ui-switch.mjs \
     'node remote/test-fallback-webui-ui-switch.mjs'
 gate_cell test-fallback-webui-roster derive remote/test-fallback-webui-roster.mjs \
