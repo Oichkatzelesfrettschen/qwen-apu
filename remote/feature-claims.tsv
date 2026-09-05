@@ -8,9 +8,9 @@
 #
 # subject_id names a row of the ledger the feature belongs to, and the feature
 # decides which ledger that is. text-chat, vision, tool-selection,
-# guarded-tool-execution, long-context, context-checkpoints, and quarantine name
-# a remote/models.tsv id; draft-pair-speculation names a remote/draft-pairs.tsv
-# pair_id; web-search names a remote/web-profiles.tsv profile_id;
+# guarded-tool-execution, long-context, context-checkpoints, quarantine, and
+# q4k-formulation name a remote/models.tsv id; draft-pair-speculation names a
+# remote/draft-pairs.tsv pair_id; web-search names a remote/web-profiles.tsv profile_id;
 # image-generation and image-review name a remote/image-profiles.tsv
 # profile_id. One namespace per feature keeps the subject column free of a
 # scope field that a typo would put at odds with the id beside it.
@@ -47,6 +47,7 @@ qwen38-4b-distill	tool-selection	production	evidence/model-admission/vision-and-
 qwen38-4b-distill	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
 qwen38-4b-distill	long-context	production	evidence/depth-validation-32k/qwen38-4b-distill/	32768 filled and decoded at batch 128 ubatch 32 with zero resets and a passing control
 qwen38-4b-distill	context-checkpoints	production	evidence/ctx-checkpoint-natural-boundary/4b	count 2 holds token and log-probability identity across the setting on the natural-boundary build
+qwen38-4b-distill	q4k-formulation	candidate	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/	the row releases e4-scale-licm/4; the composed stack read +6.63% [+6.17, +7.09] served, artifact-scoped to this checkpoint at its own tuple
 qwen38-4b-distill	quarantine	unstable	evidence/quarantine/qwen38-4b-distill-d16384-b2048-ub512.md	profile scope removes depth 16384 at batch 2048 ubatch 512, which wedged the compute ring; the served 128/32 tuple stands
 qwen38-2b-distill	text-chat	production	evidence/model-admission/roster-quality-sweep.md	graded 40 of 55 with thinking off, and the appliance primary performance target
 qwen38-2b-distill	vision	unsupported	-	the checkpoint ships text-only, so select-projector.sh finds no projector beside it
