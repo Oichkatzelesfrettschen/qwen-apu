@@ -347,7 +347,7 @@ different outcomes.
 | verdict | the question | the bound | outcome |
 | --- | --- | --- | --- |
 | component admission | does the change help at all, correctly | paired lower bound above zero, correctness held | **passed** |
-| target closure | does the production candidate clear the serving target | absolute lower bound above 10 tok/s | **provisional** |
+| target closure | does the production candidate clear the serving target | absolute lower bound above 10 tok/s | **closed once, unresolved on the repeat** (`target-closure-20260905/`) |
 | platform promotion | is it worth a Raven2-wide default | one-sided 5% | **not passed** |
 
 **Component admission passed.** The 2B distill's paired interval is +1.63% to +2.04%, whose
@@ -356,7 +356,13 @@ floor, and the token ids are bit-identical over 508 to 512 positions per prompt 
 classes with `min_retention` 1 and `max_abs_logprob_delta` 0. The change helps and it computes
 the same thing.
 
-**Target closure is provisional.** The candidate arms decoded 10.028, 10.017, 10.011, and
+**Target closure ran on 2026-09-05** (`target-closure-20260905/`): the registered `C K K C`
+composition closed in its first run, candidate interval [10.026, 10.240], and left the interval
+spanning 10 in the whole repeat, [9.768, 10.452]; the paired verdict was incomplete both times
+on a control arm the clock sidecar refused by 7 to 10 ms of marker cadence. The paragraph below
+is the provisional reading that run replaced.
+
+**Target closure was provisional.** The candidate arms decoded 10.028, 10.017, 10.011, and
 10.022 tok/s, all four above 10, against controls at 9.848, 9.845, 9.842, and 9.821. Those are
 absolute rates rather than a paired difference, and this machine carries about 4% of
 uncontrolled spread on a repeated depth-0 rate and 30.6% between sweeps, so a set of four arms

@@ -1,0 +1,31 @@
+preset	raven2-vulkan-production
+commit	f280b26983ad0fdb705a0d9ebf0503e76f2899b0
+worktree	dirty
+build_role	serving
+serving_eligible	yes
+checkpoint_semantics	natural-boundary-v1
+checkpoint_patch	patches/llama-server-natural-checkpoint-boundary.patch
+checkpoint_patch_sha256	c9d4010594da1f632be009b934cd045f6625b8baba68d09b7ed6190b02f9ddfc
+checkpoint_source_sha256	3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a
+checkpoint_patch_series_sha256	a91a215ac769c4372b230a0084f01bfa3acfea81d777e3b480400f565a5e4bec
+checkpoint_series_tree	verified-candidate
+q4k_variants	e4/2,e4/4,e4/8,e4-scale/2,e4-scale/4,e4-scale/8,e4-scale-licm/2,e4-scale-licm/4,e4-scale-licm/8
+candidate_series	llama-vulkan-q4k-activation-group-sums.patch,llama-vulkan-q4k-activation-sideplane.patch,llama-vulkan-q4k-scale-word-select.patch,llama-vulkan-q4k-superblock-loop-licm.patch,llama-vulkan-q4k-variant-select.patch
+candidate_series_sha256	c2c14eb83abe79289ffdc44ca9986f14cd88affbff9f41d6e31b15588e4ea3f7
+checkpoint_series_tree_sha256	fae8c64944ae37badc87487ffa545444f6211a4661fcc3dd7f4674ef02e3ff15
+checkpoint_sources_ledger_sha256	0e77bb7779f51900d2fe4769d287695284e6a2ca71f931ecb3965a644c2f7910
+checkpoint_source_root	$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-q4k-sealed
+compiler_flags	-march=znver1 -mtune=znver1
+cmake_flags	-DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_OPENSSL=OFF -DGGML_CCACHE=ON -DGGML_LTO=OFF -DGGML_OPENMP=OFF -DGGML_BLAS=OFF -DGGML_LLAMAFILE=OFF -DGGML_CPU=ON -DGGML_CUDA=OFF -DGGML_HIP=OFF -DGGML_OPENCL=OFF -DGGML_RPC=OFF -DGGML_SYCL=OFF -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=ON -DGGML_VULKAN_INT24_DOT=OFF -DGGML_NATIVE=OFF -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON
+file_prefix_map	-ffile-prefix-map=$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-q4k-sealed=/src -ffile-prefix-map=$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-q4k-sealed/build-raven2-vulkan-production=/build
+shader_pack_key	966f90f35a83259747c554c211a95e16f5560d489f8ba940841e8cb4780d2a84
+shader_pack	generated
+object_cache	none
+ccache_hits	0
+ccache_misses	0
+instrument_binary_key	431c3d659091c2a7c36b599277fbdfc6203844f6abc6656bd32931b7bc4e0f79
+binary	built
+executable	llama-server	58100448	83684f3c5992c1e62f26d15247393cf4b1aa380c5f2a4e1ca1b05071db0e49b4
+executable	llama-cli	58272776	1025cacb09d8a461ac40ebb5c3ad23e556b7370df5b26805dd0bf59533caea65
+executable	llama-bench	54563536	795953e22380f42e92f2a3ce6e21cce8119937dbd373b8314641e499fb78b841
+executable	llama-mtmd-cli	56205416	f7c341c4737e37b615d88bedb7b780d596cdf5c18f0c538303702ab33b15117c

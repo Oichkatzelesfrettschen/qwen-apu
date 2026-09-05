@@ -1,0 +1,2 @@
+pair	control	outer	inner	first_outer	first_inner	first_delta	second_outer	second_inner	second_delta	replicates	mean_delta	sd_delta	ci_low	ci_high	deltas	sclk_modes	off_regime_arms	bound	sclk_band	verdict	detail
+1	served-ab	C	K	-	-	-	-	-	-	4	-	-	-	-	-	-	0	0.05	0.06	incomplete	surviving_pairs=3 of 4 surviving_mean=+0.0521 surviving_deltas=+0.0257 +0.0518 +0.0788

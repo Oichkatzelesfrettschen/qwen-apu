@@ -1,0 +1,1 @@
+power_envelope=live stapm_limit_mw=15000 fast_limit_mw=25000 slow_limit_mw=20000 vrm_current_ma=35000 vrmmax_current_ma=45000 tctl_limit_c=90.000 snapshot=absent
