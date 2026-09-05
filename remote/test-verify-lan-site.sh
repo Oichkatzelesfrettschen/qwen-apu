@@ -78,6 +78,11 @@ stop_server() {
     server_pid=''
 }
 
+# The fixture roster names no Qwen3.5-architecture id, so the checkpoint
+# subject is named explicitly for every run; the runs that test the subject
+# rule itself clear it, since the checker reads an empty value as unset.
+export QWEN_VERIFY_MODEL=fixture-model
+
 site_url="http://127.0.0.1:$router_port/?broker=http://127.0.0.1:$broker_port&artifacts=http://127.0.0.1:$artifacts_port"
 
 run_checker() {
@@ -86,6 +91,9 @@ run_checker() {
     QWEN_VERIFY_PAGE_DRIVER=$fixture_page_driver \
     QWEN_VERIFY_CONVERSATION_DRIVER=$fixture_conversation_driver \
         "$checker" "$site_url" "$output"
+}
+row_of() {
+    awk -F'\t' -v key="$2" '$1 == key { print; exit }' "$1"
 }
 
 # ---- the whole matrix passes over a healthy fixture --------------------------
@@ -187,6 +195,134 @@ if [ "$(awk -F'\t' '$1 == "tool_prefix_checkpoint" { print $2; exit }' \
     exit 1
 fi
 report tool_prefix_checkpoint_catches_a_non_restoring_server accepted
+stop_server
+
+# ---- the checkpoint subject is a Qwen3.5-architecture id or an explicit
+# QWEN_VERIFY_MODEL, never the roster's first id ------------------------------
+start_server
+if QWEN_VERIFY_MODEL='' QWEN_VERIFY_PAGE_DRIVER=$fixture_page_driver \
+    QWEN_VERIFY_CONVERSATION_DRIVER=$fixture_conversation_driver \
+    "$checker" "$site_url" "$work_directory/no-subject-run" >/dev/null 2>&1; then
+    printf 'the checker passed with no checkpoint subject on the roster\n' >&2
+    exit 1
+fi
+no_subject_row=$(row_of "$work_directory/no-subject-run/results.tsv" tool_prefix_checkpoint)
+case $no_subject_row in
+    *"	fail	no qwen35-* or qwen38-* id on the roster"*) ;;
+    *)
+        printf 'tool_prefix_checkpoint did not refuse by name without a subject: %s\n' "$no_subject_row" >&2
+        exit 1
+        ;;
+esac
+if [ "$(awk -F'\t' '$1 == "initial-props" { print $2; exit }' \
+    "$work_directory/no-subject-run/results.tsv")" != pass ]; then
+    printf 'initial-props did not read pass on the roster first id without a subject\n' >&2
+    exit 1
+fi
+report checkpoint_subject_refused_by_name_without_a_qwen_row accepted
+stop_server
+
+python3 "$fixture_server" --router-port "$router_port" --broker-port "$broker_port" \
+    --artifacts-port "$artifacts_port" --static "$static_directory" \
+    --roster lfm-fixture,qwen38-fixture,qwen35-fixture >"$work_directory/server-qwen-roster.log" 2>&1 &
+server_pid=$!
+deadline=$(($(date +%s) + 30))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    curl -sS -o /dev/null "http://127.0.0.1:$router_port/health" 2>/dev/null && break
+    sleep 0.2
+done
+if ! QWEN_VERIFY_MODEL='' QWEN_VERIFY_PAGE_DRIVER=$fixture_page_driver \
+    QWEN_VERIFY_CONVERSATION_DRIVER=$fixture_conversation_driver \
+    "$checker" "$site_url" "$work_directory/qwen-roster-run" >/dev/null 2>&1; then
+    printf 'the checker failed over a roster carrying a Qwen row\n' >&2
+    exit 1
+fi
+qwen_roster_row=$(row_of "$work_directory/qwen-roster-run/results.tsv" tool_prefix_checkpoint)
+case $qwen_roster_row in
+    *"model=qwen38-fixture subject_source=roster-first-qwen35-architecture-id prefix=cold nonce="*) ;;
+    *)
+        printf 'the checkpoint subject was not the roster first Qwen row: %s\n' "$qwen_roster_row" >&2
+        exit 1
+        ;;
+esac
+if [ "$(awk -F'\t' '$1 == "initial-props" { print $3; exit }' \
+    "$work_directory/qwen-roster-run/results.tsv")" != model=qwen38-fixture ]; then
+    printf 'initial-props did not read the checkpoint subject\n' >&2
+    exit 1
+fi
+report checkpoint_subject_is_the_roster_first_qwen_row accepted
+
+# ---- the first request's head is cold by construction: a second run against
+# the same fixture process, whose in-memory signature still carries the run
+# above, passes because the nonce makes the head a new one -------------------
+if ! QWEN_VERIFY_MODEL='' QWEN_VERIFY_PAGE_DRIVER=$fixture_page_driver \
+    QWEN_VERIFY_CONVERSATION_DRIVER=$fixture_conversation_driver \
+    "$checker" "$site_url" "$work_directory/warm-fixture-run" >/dev/null 2>&1; then
+    printf 'the checker failed against a fixture whose previous head was still warm\n' >&2
+    exit 1
+fi
+first_nonce=$(printf '%s' "$qwen_roster_row" | sed 's/.*nonce=\([^ ]*\).*/\1/')
+second_nonce=$(row_of "$work_directory/warm-fixture-run/results.tsv" tool_prefix_checkpoint | sed 's/.*nonce=\([^ ]*\).*/\1/')
+if [ -z "$first_nonce" ] || [ "$first_nonce" = "$second_nonce" ]; then
+    printf 'the two runs carried one nonce: %s %s\n' "$first_nonce" "$second_nonce" >&2
+    exit 1
+fi
+report cold_prefix_by_nonce_passes_against_a_warm_fixture accepted
+stop_server
+
+# ---- a router that never answers leaves a terminal fail row rather than an
+# absent one, and every expected row exists ------------------------------------
+start_server --hang-chat
+if QWEN_VERIFY_CHAT_TIMEOUT_S=2 run_checker "$work_directory/hang-run" >/dev/null 2>&1; then
+    printf 'the checker passed against a router that never answers\n' >&2
+    exit 1
+fi
+hang_row=$(row_of "$work_directory/hang-run/results.tsv" tool_prefix_checkpoint)
+case $hang_row in
+    *"	fail	"*"first_status=000"*) ;;
+    *)
+        printf 'tool_prefix_checkpoint carried no terminal row against a hung router: %s\n' "$hang_row" >&2
+        exit 1
+        ;;
+esac
+for expected_row in initial-page-get initial-health initial-models initial-props \
+    initial-broker-health initial-artifacts-health web_search_turn \
+    image_generation_turn conversation_restoration tool_prefix_checkpoint relaunch; do
+    if [ -z "$(row_of "$work_directory/hang-run/results.tsv" "$expected_row")" ]; then
+        printf 'row %s is absent from the hung run\n' "$expected_row" >&2
+        exit 1
+    fi
+done
+report hung_router_leaves_a_terminal_row accepted
+stop_server
+
+# ---- a run ended by a signal writes the rows it never reached ---------------
+start_server --hang-chat
+rm -rf "$work_directory/signal-run"
+QWEN_VERIFY_CHAT_TIMEOUT_S=5 \
+    QWEN_VERIFY_PAGE_DRIVER=$fixture_page_driver \
+    QWEN_VERIFY_CONVERSATION_DRIVER=$fixture_conversation_driver \
+    "$checker" "$site_url" "$work_directory/signal-run" >/dev/null 2>&1 &
+checker_pid=$!
+deadline=$(($(date +%s) + 30))
+first_request_sent=0
+while [ "$(date +%s)" -lt "$deadline" ] && [ "$first_request_sent" = 0 ]; do
+    for request_file in "$work_directory/signal-run/http/"*-tool-prefix-1.request; do
+        [ -f "$request_file" ] && first_request_sent=1
+    done
+    sleep 0.2
+done
+kill -TERM "$checker_pid"
+wait "$checker_pid" 2>/dev/null || true
+signal_row=$(row_of "$work_directory/signal-run/results.tsv" tool_prefix_checkpoint)
+case $signal_row in
+    *"	fail	the harness ended before this row was written"*) ;;
+    *)
+        printf 'the interrupted run left no terminal checkpoint row: %s\n' "$signal_row" >&2
+        exit 1
+        ;;
+esac
+report interrupted_run_writes_missing_rows accepted
 stop_server
 
 # ---- an unhealthy router fails the health row and the whole run --------------

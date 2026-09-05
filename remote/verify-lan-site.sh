@@ -56,13 +56,29 @@ set -eu
 #                                    tool-prefix-checkpoint requests carry
 #   QWEN_VERIFY_TOOL_PREFIX_PROMPT_1/2     each request's own final message
 #   QWEN_VERIFY_MODEL                the model id the props check and the
-#                                    tool-prefix-checkpoint requests name;
-#                                    default the roster's first id, which is
-#                                    an arbitrary pick on a router preset
-#                                    naming many sections
+#                                    tool-prefix-checkpoint requests name.
+#                                    The checkpoint claim is about the
+#                                    Qwen3.5 hybrid slot, so the default is
+#                                    the roster's first qwen35-* or qwen38-*
+#                                    id; a roster carrying none makes the
+#                                    checkpoint row fail by name, and the
+#                                    props check then reads the roster's
+#                                    first id. evidence/deployment-epochs/
+#                                    main-e909cfc-r1 records the LFM2 row
+#                                    charging 114 tokens on both requests
+#                                    when the roster's first id was the
+#                                    subject.
 #   QWEN_VERIFY_PROMPT_PREFIX_RATIO  the second request's prompt_n must read
 #                                    at or below this fraction of the first's,
-#                                    default 0.5
+#                                    default 0.5. The first request carries a
+#                                    per-run nonce in its system prompt, so
+#                                    its head is a cold prefix by construction
+#                                    and the ratio compares a miss against a
+#                                    hit rather than two hits of a head an
+#                                    earlier run left warm.
+#   QWEN_VERIFY_CHAT_TIMEOUT_S       seconds one chat completion may take,
+#                                    default 700; a request past it writes a
+#                                    fail row carrying status 000
 #   QWEN_VERIFY_PAGE_DRIVER          path to drive-fallback-page.py, default
 #                                    the copy beside this script
 #   QWEN_VERIFY_CONVERSATION_DRIVER  path to a conversation-restoration
@@ -106,6 +122,7 @@ tool_prefix_system_prompt=${QWEN_VERIFY_TOOL_PREFIX_SYSTEM_PROMPT:-'You are the 
 tool_prefix_prompt_1=${QWEN_VERIFY_TOOL_PREFIX_PROMPT_1:-'What is two plus two?'}
 tool_prefix_prompt_2=${QWEN_VERIFY_TOOL_PREFIX_PROMPT_2:-'What is three plus three?'}
 prefix_ratio=${QWEN_VERIFY_PROMPT_PREFIX_RATIO:-0.5}
+chat_timeout_seconds=${QWEN_VERIFY_CHAT_TIMEOUT_S:-700}
 page_driver=${QWEN_VERIFY_PAGE_DRIVER:-"$script_directory/web-mcp/drive-fallback-page.py"}
 chromium=${QWEN_VERIFY_CHROMIUM:-chromium}
 
@@ -150,10 +167,28 @@ if [ -n "$api_key_file" ]; then
     printf 'header = "Authorization: Bearer %s"\n' "$api_key_bytes" >"$api_key_curl_config"
 fi
 generated_conversation_driver=$output_directory/.generated-conversation-driver.py
+# Every check owns one row. A run that ends ahead of a row -- a signal, a
+# tool that exits under set -e, an operator's interrupt -- leaves that row as
+# a fail naming the early end rather than as an absence a reader could take
+# for a check that never existed; the e909cfc epoch record retains a run
+# whose checkpoint row was missing for exactly that reason.
+expected_checks='initial-page-get initial-health initial-models initial-props
+initial-broker-health initial-artifacts-health web_search_turn
+image_generation_turn conversation_restoration tool_prefix_checkpoint relaunch'
+write_missing_rows() {
+    [ -f "$results_tsv" ] || return 0
+    for expected_check in $expected_checks; do
+        if ! grep -q "^$expected_check	" "$results_tsv"; then
+            record "$expected_check" fail 'the harness ended before this row was written'
+        fi
+    done
+}
 cleanup() {
+    write_missing_rows
     rm -f "$api_key_curl_config" "$generated_conversation_driver"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'cleanup; trap - EXIT; exit 130' HUP INT TERM
 
 exchange=0
 call() {
@@ -171,7 +206,7 @@ call() {
     if [ -n "$call_body" ]; then
         call_request=$output_directory/http/$exchange-$call_label.request
         printf '%s' "$call_body" >"$call_request"
-        curl -sS --max-time 700 -o "$call_out" -D "$call_headers_file" \
+        curl -sS --max-time "$chat_timeout_seconds" -o "$call_out" -D "$call_headers_file" \
             -X "$call_method" "$call_url" -H 'Content-Type: application/json' \
             --data-binary "@$call_request" "$@" || true
     else
@@ -220,6 +255,8 @@ print(match.group(1) if match else "")
 }
 
 default_model_id=${QWEN_VERIFY_MODEL:-}
+checkpoint_subject_id=${QWEN_VERIFY_MODEL:-}
+checkpoint_subject_source=${QWEN_VERIFY_MODEL:+QWEN_VERIFY_MODEL}
 page_response_path=''
 health_matrix() {
     prefix=$1
@@ -245,7 +282,10 @@ health_matrix() {
         roster_count=$(jq '.data | length' "$call_body_path")
         roster_ids=$(jq -r '.data[].id' "$call_body_path" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
         if [ -z "${QWEN_VERIFY_MODEL:-}" ]; then
-            default_model_id=$(jq -r '.data[0].id // empty' "$call_body_path")
+            checkpoint_subject_id=$(jq -r \
+                '[.data[].id | select(test("^qwen3[58]-"))][0] // empty' "$call_body_path")
+            checkpoint_subject_source=roster-first-qwen35-architecture-id
+            default_model_id=${checkpoint_subject_id:-$(jq -r '.data[0].id // empty' "$call_body_path")}
         fi
         record "$prefix-models" pass "count=$roster_count ids=$roster_ids"
     else
@@ -647,9 +687,13 @@ else
 fi
 
 # ---- a tool-prefix checkpoint hit ----------------------------------------------
-if [ -z "$default_model_id" ]; then
-    record tool_prefix_checkpoint fail 'no default model id was read from the roster'
+if [ -z "$checkpoint_subject_id" ]; then
+    record tool_prefix_checkpoint fail \
+        'no qwen35-* or qwen38-* id on the roster and QWEN_VERIFY_MODEL unset; the claim is about the Qwen3.5 hybrid slot'
 else
+    # the nonce makes the first request's head a cold prefix by construction
+    tool_prefix_nonce=$(date -u +%Y%m%dT%H%M%SZ)-$$
+    tool_prefix_system_prompt="$tool_prefix_system_prompt Verification run $tool_prefix_nonce."
     tool_schema=$output_directory/.tool-prefix-schema.json
     cat >"$tool_schema" <<'TOOL_SCHEMA_JSON'
 [{"type":"function","function":{"name":"get_time","description":"Return the current time for a named timezone.","parameters":{"type":"object","properties":{"timezone":{"type":"string"}},"required":["timezone"]}}}]
@@ -674,17 +718,17 @@ payload = {
 print(json.dumps(payload))
 ' "$1" "$2" "$3" "$4"
     }
-    request_1=$(build_chat_request "$default_model_id" "$tool_prefix_system_prompt" \
+    request_1=$(build_chat_request "$checkpoint_subject_id" "$tool_prefix_system_prompt" \
         "$tool_schema" "$tool_prefix_prompt_1")
     call tool-prefix-1 POST "$router_origin/v1/chat/completions" "$request_1"
     first_status=$call_status
-    first_prompt_n=$(jq -r '.timings.prompt_n // empty' "$call_body_path" 2>/dev/null)
+    first_prompt_n=$(jq -r '.timings.prompt_n // empty' "$call_body_path" 2>/dev/null || true)
 
-    request_2=$(build_chat_request "$default_model_id" "$tool_prefix_system_prompt" \
+    request_2=$(build_chat_request "$checkpoint_subject_id" "$tool_prefix_system_prompt" \
         "$tool_schema" "$tool_prefix_prompt_2")
     call tool-prefix-2 POST "$router_origin/v1/chat/completions" "$request_2"
     second_status=$call_status
-    second_prompt_n=$(jq -r '.timings.prompt_n // empty' "$call_body_path" 2>/dev/null)
+    second_prompt_n=$(jq -r '.timings.prompt_n // empty' "$call_body_path" 2>/dev/null || true)
 
     checkpoint_verdict=$(python3 -c '
 import sys
@@ -698,7 +742,7 @@ except (ValueError, TypeError):
 print("pass" if ok else "fail")
 ' "$first_status" "$second_status" "${first_prompt_n:-0}" "${second_prompt_n:-0}" "$prefix_ratio")
     record tool_prefix_checkpoint "$checkpoint_verdict" \
-        "model=$default_model_id first_status=$first_status first_prompt_n=${first_prompt_n:-} second_status=$second_status second_prompt_n=${second_prompt_n:-} ratio<=$prefix_ratio"
+        "model=$checkpoint_subject_id subject_source=$checkpoint_subject_source prefix=cold nonce=$tool_prefix_nonce first_status=$first_status first_prompt_n=${first_prompt_n:-} second_status=$second_status second_prompt_n=${second_prompt_n:-} ratio<=$prefix_ratio"
 fi
 
 # ---- an operator-only teardown and relaunch, repeating the health matrix -----
