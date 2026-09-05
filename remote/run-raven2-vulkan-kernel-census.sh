@@ -1158,6 +1158,11 @@ if [ "$needs_production" = 1 ] && [ "$needs_instrumented" = 1 ]; then
     # build-llama-preset.sh writes candidate_series in ledger order, so the
     # expected value is the ledger's candidate rows filtered to P's members
     # plus the census patch, in that order.
+    if [ ! -r "$script_directory/llama-patch-series.tsv" ]; then
+        printf 'the candidate series comparison reads the patch ledger beside the runner: %s\n' \
+            "$script_directory/llama-patch-series.tsv" >&2
+        exit 2
+    fi
     expected_candidate_series=$(awk -F'\t' -v wanted="${production_candidate_series:+$production_candidate_series,}llama-vulkan-pipeline-census.patch" '
         BEGIN { n = split(wanted, names, ","); for (i = 1; i <= n; i++) want[names[i]] = 1 }
         $1 == "candidate" && ($2 in want) { out = out (out == "" ? "" : ",") $2 }

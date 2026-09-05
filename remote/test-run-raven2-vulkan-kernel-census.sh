@@ -1255,7 +1255,7 @@ for linked_member in model-registry.sh qwen-home.sh models.tsv ctx-checkpoints.t
     sample-clock-sidecar.py validate-clock-sidecar.py \
     telemetry-broker.c build-telemetry-broker.sh \
     verify-external-vulkan-lease.py check-runtime-tree.sh \
-    summarize-perf-logger-slice.py; do
+    summarize-perf-logger-slice.py llama-patch-series.tsv; do
     ln -s -- "$script_directory/$linked_member" "$signal_directory/$linked_member"
 done
 
@@ -1541,7 +1541,7 @@ for linked_member in model-registry.sh qwen-home.sh models.tsv ctx-checkpoints.t
     sample-clock-sidecar.py \
     telemetry-broker.c build-telemetry-broker.sh \
     verify-external-vulkan-lease.py check-runtime-tree.sh \
-    summarize-perf-logger-slice.py; do
+    summarize-perf-logger-slice.py llama-patch-series.tsv; do
     ln -s -- "$script_directory/$linked_member" "$brick_directory/$linked_member"
 done
 # The sidecar validator stands in for itself: it runs the tree's own reader on
