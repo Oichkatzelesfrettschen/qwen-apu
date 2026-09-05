@@ -1,0 +1,12 @@
+{
+  "label": "07-P",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 11.9637937819756,
+  "prefill_ms": 1588.125,
+  "decode_tok_per_second": 3.156793893978927,
+  "decode_ms": 19956.957,
+  "prompt_tokens": 19,
+  "decode_tokens": 64,
+  "valid": true
+}

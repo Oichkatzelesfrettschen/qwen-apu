@@ -59,7 +59,17 @@ outside it.
   selected; selected with no local improvement on this shape; improved locally
   with no graph effect; or its graph ownership is too small to matter. The
   larger 4B program then returns to temporal amortization as experiments.
-- Result: `evidence/raven2-vulkan-kernel-census/` beside the 2B records.
+- Result: `evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/`.
+  Run 2026-09-05: three I1 arms at 1100/933 name the composed shader as the
+  executed Q4_K module, owning 57% of the 4B token (170 ms of 294 per graph)
+  beside Q6_K at 27%; with that ownership the served null [-0.10%, +0.06%]
+  excludes the 2B's measured -3.9% local shortening by more than twenty
+  half-widths, so the supported conclusion is **selected with no local
+  improvement on this shape**. The Q4_K family streams at 10.0 GB/s against
+  the same class's Q6_K at 13.1, so what bounds it is not DRAM and not the
+  saving the composition carries. Remaining as a confirmation rather than an
+  open question: one kernel-delta bracket on the 4B, predicted inside
+  [-0.2%, +0.2%] on the Q4_K exclusive time.
 
 ## The 0.8B attribution
 
