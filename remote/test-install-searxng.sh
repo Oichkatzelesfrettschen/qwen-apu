@@ -95,5 +95,82 @@ if QWEN_SEARXNG_ROOT=$work/nowhere "$installer" verify >"$work/absent.log" 2>&1;
         && report absent_instance_refuses_verify ok || report absent_instance_refuses_verify "$(cat "$work/absent.log")"
 fi
 
+# ---- the wheelhouse: a hashed wheel set installs the lock with no index ----
+# The population stage reaches the network, so this arm writes the wheelhouse
+# and its manifest directly and exercises the readers: an install over a
+# verified wheelhouse resolves with --no-index, a mutated wheel refuses, an
+# unnamed file in the directory refuses, and QWEN_SEARXNG_OFFLINE=1 refuses
+# where no manifest stands. The pinned population against the real lock runs
+# on a networked machine and is stated as not run here.
+wheelhouse=$QWEN_HOME/opt/searxng/wheelhouse
+mkdir -p "$wheelhouse"
+python3 - "$wheelhouse" <<'WHEEL'
+import sys, zipfile
+from pathlib import Path
+
+house = Path(sys.argv[1])
+for name, version in (("qwenstub", "1.0"), ("qwenstubtwo", "2.0")):
+    wheel = house / f"{name}-{version}-py3-none-any.whl"
+    info = f"{name}-{version}.dist-info"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(f"{name}/__init__.py", "")
+        archive.writestr(
+            f"{info}/METADATA",
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        )
+        archive.writestr(f"{info}/WHEEL", "Wheel-Version: 1.0\nGenerator: fixture\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+        archive.writestr(f"{info}/RECORD", "")
+WHEEL
+write_wheelhouse_manifest() {
+    {
+        printf 'file\tbytes\tsha256\n'
+        for wheel_path in "$wheelhouse"/*.whl; do
+            printf '%s\t%s\t%s\n' "${wheel_path##*/}" \
+                "$(wc -c <"$wheel_path" | tr -d ' ')" \
+                "$(sha256sum "$wheel_path" | cut -d ' ' -f 1)"
+        done | LC_ALL=C sort
+    } >"$wheelhouse/wheelhouse.tsv"
+}
+write_wheelhouse_manifest
+printf 'qwenstub==1.0\nqwenstubtwo==2.0\n' >"$QWEN_SEARXNG_TOOLCHAIN/requirements.lock"
+if "$installer" wheelhouse-verify >"$work/wheelhouse-verify.log" 2>&1; then
+    grep -q "^searxng_wheelhouse_files=2$" "$work/wheelhouse-verify.log" \
+        && report wheelhouse_verify_counts_files ok \
+        || report wheelhouse_verify_counts_files "$(cat "$work/wheelhouse-verify.log")"
+else
+    report wheelhouse_verify_counts_files "$(cat "$work/wheelhouse-verify.log")"
+fi
+if "$installer" install >"$work/offline-install.log" 2>&1; then
+    report offline_install_from_wheelhouse ok
+else
+    report offline_install_from_wheelhouse "$(tail -n 5 "$work/offline-install.log")"
+fi
+"$QWEN_HOME/opt/searxng/venv/bin/python" -c 'import qwenstub, qwenstubtwo' 2>/dev/null \
+    && report offline_install_places_the_wheels ok || report offline_install_places_the_wheels missing
+mutated=$(ls "$wheelhouse"/*.whl | head -n 1)
+printf 'x' >>"$mutated"
+if "$installer" wheelhouse-verify >"$work/wheelhouse-mutated.log" 2>&1; then
+    report mutated_wheel_refused accepted
+else
+    grep -q 'bytes where the manifest pins' "$work/wheelhouse-mutated.log" \
+        && report mutated_wheel_refused ok || report mutated_wheel_refused "$(cat "$work/wheelhouse-mutated.log")"
+fi
+write_wheelhouse_manifest
+: >"$wheelhouse/unnamed-1.0-py3-none-any.whl"
+if "$installer" wheelhouse-verify >"$work/wheelhouse-unnamed.log" 2>&1; then
+    report unnamed_wheel_refused accepted
+else
+    grep -q 'the manifest names it nowhere' "$work/wheelhouse-unnamed.log" \
+        && report unnamed_wheel_refused ok || report unnamed_wheel_refused "$(cat "$work/wheelhouse-unnamed.log")"
+fi
+rm -rf "$wheelhouse"
+if QWEN_SEARXNG_OFFLINE=1 "$installer" install >"$work/offline-absent.log" 2>&1; then
+    report offline_without_wheelhouse_refused accepted
+else
+    grep -q 'QWEN_SEARXNG_OFFLINE=1 and no wheelhouse manifest' "$work/offline-absent.log" \
+        && report offline_without_wheelhouse_refused ok \
+        || report offline_without_wheelhouse_refused "$(tail -n 3 "$work/offline-absent.log")"
+fi
+
 if [ "$failures" -ne 0 ]; then printf '%s failure(s)\n' "$failures"; exit 1; fi
 printf 'test-install-searxng: all checks passed\n'

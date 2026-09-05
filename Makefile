@@ -15,7 +15,8 @@ REMOTE := remote
 QWEN_HOME ?= $(shell $(REMOTE)/qwen-home.sh print qwen_home)
 export QWEN_HOME
 
-.PHONY: bootstrap install-searxng verify-searxng install-ryzenadj \
+.PHONY: bootstrap install-searxng verify-searxng \
+        searxng-wheelhouse verify-searxng-wheelhouse install-ryzenadj \
         install-image-runtime install-shaderc install-models build-llama \
         status doctor verify verify-layout verify-components verify-live \
         verify-models uninstall purge purge-legacy \
@@ -31,6 +32,16 @@ install-searxng: bootstrap
 
 verify-searxng:
 	$(REMOTE)/install-searxng.sh verify
+
+# The wheel set the lock resolves to, by digest. `wheelhouse` reaches the
+# network once and writes wheelhouse.tsv under opt/searxng; every later
+# install verifies that manifest and resolves with the index closed, so a
+# reinstall is reproducible offline.
+searxng-wheelhouse: bootstrap
+	$(REMOTE)/install-searxng.sh wheelhouse
+
+verify-searxng-wheelhouse:
+	$(REMOTE)/install-searxng.sh wheelhouse-verify
 
 install-ryzenadj: bootstrap
 	$(REMOTE)/build-ryzenadj.sh

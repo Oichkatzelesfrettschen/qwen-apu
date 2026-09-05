@@ -22,13 +22,28 @@ set -eu
 # loopback, and stops it, so an install is admitted by the same path the
 # appliance launches it through.
 #
-# usage: install-searxng.sh [install|verify|identity]
-#   QWEN_SEARXNG_ROOT      the instance root, default opt/searxng under QWEN_HOME
-#   QWEN_SEARXNG_TOOLCHAIN the pin directory, default toolchains/searxng
-#   QWEN_SEARXNG_PORT      the loopback port `verify` uses, default 8888
+# The lock states which distributions at which versions; the wheelhouse states
+# their bytes. `wheelhouse` downloads the lock's wheels into
+# opt/searxng/wheelhouse under the root and writes wheelhouse.tsv with one
+# row per file carrying its byte count and SHA-256, and `wheelhouse-verify`
+# reads that manifest back: every named file present at its digest, and no
+# file in the directory the manifest leaves unnamed. An install over a
+# populated wheelhouse verifies it, then resolves with `--no-index` against
+# `--find-links` alone, so the same bytes install on a machine with no
+# network and a reinstall a year on installs what the first one did rather
+# than what the index serves that day. The wheelhouse lives under
+# opt/searxng/ rather than under cache/, because an offline reinstall depends
+# on it and cache/ is the tree `make uninstall` discards.
+#
+# usage: install-searxng.sh [install|verify|identity|wheelhouse|wheelhouse-verify]
+#   QWEN_SEARXNG_ROOT       the instance root, default opt/searxng under QWEN_HOME
+#   QWEN_SEARXNG_TOOLCHAIN  the pin directory, default toolchains/searxng
+#   QWEN_SEARXNG_PORT       the loopback port `verify` uses, default 8888
+#   QWEN_SEARXNG_WHEELHOUSE the wheel set, default wheelhouse under the instance root
+#   QWEN_SEARXNG_OFFLINE    1 requires the wheelhouse rather than admitting the index
 
 usage() {
-    sed -n '25,29p' "$0" >&2
+    sed -n '37,42p' "$0" >&2
     exit 2
 }
 
@@ -39,7 +54,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 [ "$#" -le 1 ] || usage
 action=${1:-install}
 case $action in
-    install | verify | identity) ;;
+    install | verify | identity | wheelhouse | wheelhouse-verify) ;;
     *) usage ;;
 esac
 
@@ -51,6 +66,8 @@ toolchain_directory=${QWEN_SEARXNG_TOOLCHAIN:-"$qwen_tree_root/toolchains/searxn
 source_pins=$toolchain_directory/source.tsv
 requirements_lock=$toolchain_directory/requirements.lock
 pin_branch=qwen-search-pin
+wheelhouse_directory=${QWEN_SEARXNG_WHEELHOUSE:-"$instance_root/wheelhouse"}
+wheelhouse_manifest=$wheelhouse_directory/wheelhouse.tsv
 
 read_pin() {
     awk -F'\t' -v key="$1" 'NR > 1 && $1 == key { print $2; exit }' "$source_pins"
@@ -75,6 +92,59 @@ esac
 # environment equal to the lock hashes to this same value.
 lock_sha256=$(sha256sum "$requirements_lock" | cut -d ' ' -f 1)
 
+# The manifest is the wheel set's identity: one row per file with its byte
+# count and SHA-256, sorted by name, so two populations of the same lock are
+# compared as text. A file in the directory the manifest leaves unnamed is a
+# wheel nothing pinned, which is the case an offline install exists to close.
+wheelhouse_verify() {
+    [ -r "$wheelhouse_manifest" ] || {
+        printf 'no wheelhouse manifest at %s; run %s wheelhouse\n' \
+            "$wheelhouse_manifest" "$0" >&2
+        return 1
+    }
+    wheelhouse_named=$(mktemp "${TMPDIR:-/tmp}/wheelhouse-named.XXXXXX")
+    wheelhouse_rows=0
+    while IFS="$(printf '\t')" read -r wheel_name wheel_bytes wheel_sha256; do
+        case $wheel_name in '' | '#'* | file) continue ;; esac
+        printf '%s\n' "$wheel_name" >>"$wheelhouse_named"
+        wheelhouse_rows=$((wheelhouse_rows + 1))
+        wheel_path=$wheelhouse_directory/$wheel_name
+        if [ ! -f "$wheel_path" ]; then
+            printf 'wheelhouse names %s, which is absent\n' "$wheel_name" >&2
+            rm -f "$wheelhouse_named"
+            return 1
+        fi
+        observed_bytes=$(wc -c <"$wheel_path" | tr -d ' ')
+        if [ "$observed_bytes" != "$wheel_bytes" ]; then
+            printf '%s holds %s bytes where the manifest pins %s\n' \
+                "$wheel_name" "$observed_bytes" "$wheel_bytes" >&2
+            rm -f "$wheelhouse_named"
+            return 1
+        fi
+        observed_sha256=$(sha256sum "$wheel_path" | cut -d ' ' -f 1)
+        if [ "$observed_sha256" != "$wheel_sha256" ]; then
+            printf '%s hashes to %s where the manifest pins %s\n' \
+                "$wheel_name" "$observed_sha256" "$wheel_sha256" >&2
+            rm -f "$wheelhouse_named"
+            return 1
+        fi
+    done <"$wheelhouse_manifest"
+    for wheel_path in "$wheelhouse_directory"/*; do
+        [ -f "$wheel_path" ] || continue
+        wheel_name=${wheel_path##*/}
+        [ "$wheel_name" = wheelhouse.tsv ] && continue
+        if ! grep -Fqx "$wheel_name" "$wheelhouse_named"; then
+            printf '%s sits in the wheelhouse and the manifest names it nowhere\n' "$wheel_name" >&2
+            rm -f "$wheelhouse_named"
+            return 1
+        fi
+    done
+    rm -f "$wheelhouse_named"
+    printf 'searxng_wheelhouse=%s\nsearxng_wheelhouse_files=%s\nsearxng_wheelhouse_sha256=%s\n' \
+        "$wheelhouse_directory" "$wheelhouse_rows" \
+        "$(sha256sum "$wheelhouse_manifest" | cut -d ' ' -f 1)"
+}
+
 venv_freeze() {
     "$instance_python" -m pip freeze --disable-pip-version-check 2>/dev/null | LC_ALL=C sort
 }
@@ -94,6 +164,41 @@ print_identity() {
 
 if [ "$action" = identity ]; then
     print_identity
+    exit 0
+fi
+
+if [ "$action" = wheelhouse-verify ]; then
+    wheelhouse_verify
+    exit 0
+fi
+
+# Populating the wheelhouse is the one stage that reaches the network, and it
+# runs against the lock rather than against the index's own resolution: every
+# wheel is one the lock names at its pinned version, and the manifest written
+# after the download is what every later install reads instead of the index.
+if [ "$action" = wheelhouse ]; then
+    [ -x "$instance_python" ] || {
+        printf 'no interpreter at %s; run %s install first\n' "$instance_python" "$0" >&2
+        exit 2
+    }
+    mkdir -p "$wheelhouse_directory"
+    PIP_CACHE_DIR=$qwen_home_cache/pip "$instance_python" -m pip download -q \
+        --disable-pip-version-check --no-deps -r "$requirements_lock" \
+        -d "$wheelhouse_directory"
+    wheelhouse_staging=$(mktemp "$wheelhouse_directory/.manifest.XXXXXX")
+    {
+        printf 'file\tbytes\tsha256\n'
+        for wheel_path in "$wheelhouse_directory"/*; do
+            [ -f "$wheel_path" ] || continue
+            wheel_name=${wheel_path##*/}
+            case $wheel_name in wheelhouse.tsv | .manifest.*) continue ;; esac
+            printf '%s\t%s\t%s\n' "$wheel_name" \
+                "$(wc -c <"$wheel_path" | tr -d ' ')" \
+                "$(sha256sum "$wheel_path" | cut -d ' ' -f 1)"
+        done | LC_ALL=C sort
+    } >"$wheelhouse_staging"
+    mv -f "$wheelhouse_staging" "$wheelhouse_manifest"
+    wheelhouse_verify
     exit 0
 fi
 
@@ -137,8 +242,24 @@ if [ "$action" = install ]; then
     mkdir -p "$qwen_home_cache/pip"
     # The lock is the whole environment, so dependency resolution is off and
     # every installed distribution is one the lock names at its pinned version.
-    PIP_CACHE_DIR=$qwen_home_cache/pip "$instance_python" -m pip install -q \
-        --disable-pip-version-check --no-deps -r "$requirements_lock"
+    # A populated wheelhouse is verified whole and then supplies every byte
+    # with the index closed, so the install is reproducible offline; without
+    # one the resolution reaches the index, which QWEN_SEARXNG_OFFLINE=1
+    # refuses so a machine that meant to install from its own wheels says so
+    # rather than silently fetching.
+    if [ -r "$wheelhouse_manifest" ]; then
+        wheelhouse_verify
+        PIP_CACHE_DIR=$qwen_home_cache/pip "$instance_python" -m pip install -q \
+            --disable-pip-version-check --no-deps --no-index \
+            --find-links "$wheelhouse_directory" -r "$requirements_lock"
+    elif [ "${QWEN_SEARXNG_OFFLINE:-0}" = 1 ]; then
+        printf 'QWEN_SEARXNG_OFFLINE=1 and no wheelhouse manifest at %s; run %s wheelhouse on a networked machine\n' \
+            "$wheelhouse_manifest" "$0" >&2
+        exit 2
+    else
+        PIP_CACHE_DIR=$qwen_home_cache/pip "$instance_python" -m pip install -q \
+            --disable-pip-version-check --no-deps -r "$requirements_lock"
+    fi
     observed_freeze=$(venv_freeze)
     expected_freeze=$(LC_ALL=C sort "$requirements_lock")
     if [ "$observed_freeze" != "$expected_freeze" ]; then

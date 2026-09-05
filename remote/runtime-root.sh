@@ -125,6 +125,11 @@ status_rows() {
     tsv_row searxng-venv venv "$qwen_home_searxng_root/venv" toolchains/searxng/requirements.lock - \
         "$(file_or_absent "$searxng_lock")" "$searxng_venv_identity" no 'make install-searxng'
 
+    wheelhouse_manifest_path=$qwen_home_searxng_root/wheelhouse/wheelhouse.tsv
+    tsv_row searxng-wheelhouse wheels "$qwen_home_searxng_root/wheelhouse" \
+        toolchains/searxng/requirements.lock - "$(file_or_absent "$searxng_lock")" \
+        "$(file_or_absent "$wheelhouse_manifest_path")" no 'make searxng-wheelhouse'
+
     tsv_row ryzenadj binary "$qwen_home_ryzenadj" github:FlyGoat/RyzenAdj \
         "$(git_head_or_absent "$qwen_home_ryzenadj_source")" - "$(file_or_absent "$qwen_home_ryzenadj")" no 'make install-ryzenadj'
     tsv_row image-runtime binary "$qwen_home_image_runtime" github:leejet/stable-diffusion.cpp \

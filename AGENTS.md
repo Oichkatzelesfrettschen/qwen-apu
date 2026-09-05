@@ -1701,6 +1701,8 @@ the correction allowance the page already tracked does not move.
 # The runtime root, from the appliance's own checkout
 make bootstrap                                  # lay out $QWEN_HOME (.runtime) and its marker
 make install-searxng && make verify-searxng     # the pinned instance under opt/searxng, user-owned
+make searxng-wheelhouse                         # the lock's wheels by digest under opt/searxng
+make verify-searxng-wheelhouse                  # every wheel at its pinned digest, none unnamed
 make install-ryzenadj install-image-runtime install-shaderc install-models build-llama
 make status                                     # every claimed component into $QWEN_HOME/manifest.tsv
 make doctor                                     # legacy, foreign, and transient paths, untouched

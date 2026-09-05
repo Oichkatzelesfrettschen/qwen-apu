@@ -245,6 +245,32 @@ loopback, and stops it. The launcher's `check` action reports an absent
 component as a block naming the root, the source, the interpreter, and
 `make install-searxng`, and both launchers run it ahead of the health gate.
 
+### The wheelhouse
+
+The lock states which distributions at which versions and the wheelhouse
+states their bytes. `make searxng-wheelhouse` downloads the lock's wheels into
+`opt/searxng/wheelhouse` and writes `wheelhouse.tsv` with one row per file
+carrying its byte count and SHA-256; `make verify-searxng-wheelhouse` reads
+that manifest back and requires every named file present at its digest and no
+file in the directory the manifest leaves unnamed. An install over a populated
+wheelhouse verifies it and then resolves with `--no-index` against
+`--find-links` alone, so the same bytes install on a machine with no network
+and a reinstall a year on installs what the first one did rather than what the
+index serves that day. `QWEN_SEARXNG_OFFLINE=1` refuses an install where no
+manifest stands, so a machine that meant to install from its own wheels says
+so rather than silently fetching. The wheelhouse lives under `opt/searxng/`
+rather than under `cache/`, because an offline reinstall depends on it and
+`cache/` is the tree `make uninstall` discards, and `make status` carries its
+manifest digest as the `searxng-wheelhouse` row.
+
+`remote/test-install-searxng.sh` writes a two-wheel fixture wheelhouse and its
+manifest directly and exercises every reader: the verification counts the
+files, the install resolves offline and places both wheels, a mutated wheel
+and an unnamed file each refuse, and `QWEN_SEARXNG_OFFLINE=1` refuses without
+a manifest. Populating the wheelhouse against the real 43-distribution lock
+reaches the network and is not run: no wheelhouse for the pinned lock has been
+built or measured, and its digests stay uninvented until one is.
+
 ## Migration of the appliance
 
 The appliance moves onto the root in this order, each step proven before the
