@@ -1,7 +1,7 @@
 key	value
 schema	fixed64-served-campaign-v2
 campaign_kind	pipeline-census
-execution_surface	hp14-ssh
+execution_surface	qwen-laptop-ssh
 host_shortname	qwen-laptop
 ssh_session	present
 server_nice	19

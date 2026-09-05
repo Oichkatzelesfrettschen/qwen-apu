@@ -12,7 +12,7 @@ state_directory	$HOME/Github/qwen-apu/.runtime/state
 server_logical	$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-q4k-sealed/build-raven2-vulkan-production/bin/llama-server
 server_resolved	$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-q4k-sealed/build-raven2-vulkan-production/bin/llama-server
 execution_path	/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-execution_surface	hp14-ssh
+execution_surface	qwen-laptop-ssh
 host_shortname	qwen-laptop
 ssh_session	present
 server_nice	19

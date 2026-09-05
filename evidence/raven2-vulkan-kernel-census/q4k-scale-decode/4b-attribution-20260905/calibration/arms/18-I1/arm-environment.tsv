@@ -33,7 +33,7 @@ QWEN_IMAGE_SERVICE	0
 QWEN_VULKAN_LATENCY_PROBE	
 QWEN_PIPELINE_CENSUS	$HOME/Github/qwen-apu/.runtime/results/4b-attribution-20260905T1545Z/calibration/arms/18-I1/pipeline-census.tsv
 QWEN_PERF_LOGGER	
-QWEN_EXECUTION_SURFACE	hp14-ssh
+QWEN_EXECUTION_SURFACE	qwen-laptop-ssh
 QWEN_HOST_SHORTNAME	qwen-laptop
 QWEN_SSH_SESSION	present
 QWEN_EXECUTION_PROOF	$HOME/Github/qwen-apu/.runtime/results/4b-attribution-20260905T1545Z/calibration/campaign-inputs.tsv
