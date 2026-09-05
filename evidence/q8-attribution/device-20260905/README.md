@@ -189,6 +189,12 @@ change of the same relative size on `mul_mat_vec_q8_0_f32_f32` is worth
 about 7% of the 0.8B token and nothing else in the graph is worth more than
 4%.
 
+`shape-selection.md` re-keys this record's own brackets by tensor and names
+the dispatch that experiment aims at: the tied output projection
+`token_embd.weight`, one dispatch of 124160 workgroups holding 12.719 of the
+family's 38.355 ms per graph, 33.16% of the family and 22.12% of the token.
+`../q8-kernel-delta-design.md` registers the mechanism and both falsifiers.
+
 The first Q8-specific experiment this record chooses is therefore inside
 the mat-vec itself: a kernel-delta bracket on `mul_mat_vec_q8_0_f32_f32` at
 its served specialization (`64,2,1`, 40 VGPRs, 6 subgroups per SIMD), the

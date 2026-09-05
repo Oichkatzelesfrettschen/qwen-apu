@@ -100,6 +100,21 @@ outside it.
   The controls read unresolved and incomplete and license no instrument
   bound. The ending condition is met; the first Q8-specific experiment is a
   kernel-delta bracket inside the Q8_0 mat-vec body.
+- Next action: `evidence/q8-attribution/q8-kernel-delta-design.md` registers
+  that bracket. The shape split in
+  `evidence/q8-attribution/device-20260905/shape-selection.md` re-keys the
+  four accepted I1 arms' brackets by tensor and puts the tied output
+  projection `token_embd.weight` at 12.719 of the family's 38.355 ms per
+  graph -- one dispatch of 124160 workgroups, 33.16% of the family and
+  22.12% of the token, agreeing across arms within 0.12%. The candidate
+  builds the Q8_0 `_f32_f32` mat-vec at four rows per workgroup, the
+  `2*rm_stdq` every other legacy quant already uses, against a 44-to-56-VGPR
+  band with zero spills in the shader lab and a 5% fall in that shape's own
+  exclusive interval under `QWEN_CENSUS_AB_MODE=kernel-delta`. The lab arm
+  runs `remote/raven2-shader-lab/q8-mat-vec-receipt.sh --allow-device` on the
+  appliance, since gfx902 register allocation comes from RADV's own ACO
+  backend, and costs one pipeline creation rather than a teardown window; the
+  bracket needs a served window after the 4B series decision.
 
 ## E5: the standard packed dot through OpSDotKHR and ACO
 
