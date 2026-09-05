@@ -480,6 +480,63 @@ if ! grep -q 'resolves to 0 registry rows' "$work_directory/foreign.stderr"; the
 fi
 report section_bound_to_own_model accepted
 
+# The Q4_K formulation binds to the same resolved row. A registry releasing one
+# for the 2B requires that section to carry the key and requires every other
+# section to carry none, so a preset generated against another registry is
+# refused at assembly and at activation rather than serving a formulation the
+# row never released.
+q4k_registry=$work_directory/q4k-models.tsv
+awk -F'\t' 'BEGIN { OFS = "\t" }
+    { for (field = NF + 1; field <= 23; field++) { $field = "-" }
+      if ($1 == "qwen-2b") { $23 = "e4-scale/4" }
+      print }' "$QWEN_MODEL_REGISTRY" >"$q4k_registry"
+printf '[qwen-2b]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 2\nLLAMA_ARG_VK_Q4K_VARIANT = e4-scale/4\n' \
+    "$model_root" >"$bound_preset"
+if ! "$preset_check" "$bound_preset" "$positive_ledger" "$q4k_registry" \
+    >/dev/null 2>"$work_directory/q4k-match.stderr"; then
+    printf 'a section carrying its own row formulation was refused\n' >&2
+    cat "$work_directory/q4k-match.stderr" >&2
+    exit 1
+fi
+printf '[qwen-2b]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 2\nLLAMA_ARG_VK_Q4K_VARIANT = e4/4\n' \
+    "$model_root" >"$bound_preset"
+if "$preset_check" "$bound_preset" "$positive_ledger" "$q4k_registry" \
+    >/dev/null 2>"$work_directory/q4k-drift.stderr"; then
+    printf 'a section naming another formulation escaped the preset check\n' >&2
+    exit 1
+fi
+if ! grep -q 'carries Q4_K formulation e4/4 where the registry releases e4-scale/4' \
+    "$work_directory/q4k-drift.stderr"; then
+    printf 'the formulation drift refusal lost its reason\n' >&2
+    exit 1
+fi
+printf '[qwen-2b]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 2\n' \
+    "$model_root" >"$bound_preset"
+if "$preset_check" "$bound_preset" "$positive_ledger" "$q4k_registry" \
+    >/dev/null 2>"$work_directory/q4k-absent.stderr"; then
+    printf 'a section omitting a released formulation escaped the preset check\n' >&2
+    exit 1
+fi
+if ! grep -q 'carries 0 LLAMA_ARG_VK_Q4K_VARIANT keys' \
+    "$work_directory/q4k-absent.stderr"; then
+    printf 'the absent-formulation refusal lost its reason\n' >&2
+    exit 1
+fi
+printf '[qwen-08b]\nLLAMA_ARG_MODEL = %s/qwen-08b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\nLLAMA_ARG_VK_Q4K_VARIANT = e4-scale/4\n' \
+    "$model_root" >"$bound_preset"
+if "$preset_check" "$bound_preset" "$positive_ledger" "$q4k_registry" \
+    >/dev/null 2>"$work_directory/q4k-unreleased.stderr"; then
+    printf 'a section keyed against an unreleased row escaped the preset check\n' >&2
+    exit 1
+fi
+if ! grep -q 'releases no Q4_K formulation for qwen-08b' \
+    "$work_directory/q4k-unreleased.stderr"; then
+    printf 'the unreleased-formulation refusal lost its reason\n' >&2
+    exit 1
+fi
+report preset_bound_to_row_formulation accepted
+
+
 # The natural bundle is restored from the consistent tamper above, so the
 # checks below activate it again.
 write_manifest natural-boundary-v1 "$consistent_tamper/llama-server" \

@@ -105,8 +105,8 @@ awk -F'\t' -v tuple_ledger_path="$tuple_ledger" '
     FILENAME == ARGV[2] && ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) { next }
     FILENAME == ARGV[2] {
         model_rows++
-        if (NF != 22) {
-            printf "model row %d holds %d fields, expected 22\n", \
+        if (NF != 23) {
+            printf "model row %d holds %d fields, expected 23\n", \
                 FNR, NF > "/dev/stderr"
             malformed++
             next

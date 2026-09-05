@@ -34,7 +34,7 @@ check_rows() {
         /^[[:space:]]*$/ { next }
         {
             rows++
-            if (NF != 22) {
+            if (NF != 23) {
                 printf "row %d holds %d fields\n", NR, NF
                 bad++
                 next
@@ -156,7 +156,7 @@ else
     report cache_type_vocabulary rejected
 fi
 
-expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tprojector_fetch_script\tdecode_tok_s\tprefill_tok_s\tquality\ttier\tbatch\tubatch\tvalidated_filled_depth\tvalidation_evidence\traw_tool_selection\tguarded_tool_execution')
+expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tprojector_fetch_script\tdecode_tok_s\tprefill_tok_s\tquality\ttier\tbatch\tubatch\tvalidated_filled_depth\tvalidation_evidence\traw_tool_selection\tguarded_tool_execution\tq4k_variant')
 actual_header=$(grep '^# id' "$registry" || true)
 if [ "$actual_header" = "$expected_header" ]; then
     report schema_header accepted
@@ -220,10 +220,10 @@ fi
 fixture_registry=$work_directory/models.tsv
 fixture_quarantine=$work_directory/quarantine.tsv
 printf '%b\n' \
-    'safe\ttext\tmodels/safe.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-\tunmeasured\trefused' \
-    'model-blocked\ttext\tmodels/model-blocked.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-\tunmeasured\trefused' \
-    'profile-blocked\ttext\tmodels/profile-blocked.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tcandidate\t128\t32\t-\t-\tunmeasured\trefused' \
-    'profile-neighbour\ttext\tmodels/profile-neighbour.gguf\tfetch.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tcandidate\t128\t32\t-\t-\tunmeasured\trefused' \
+    'safe\ttext\tmodels/safe.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-\tunmeasured\trefused\t-' \
+    'model-blocked\ttext\tmodels/model-blocked.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-\tunmeasured\trefused\t-' \
+    'profile-blocked\ttext\tmodels/profile-blocked.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tcandidate\t128\t32\t-\t-\tunmeasured\trefused\t-' \
+    'profile-neighbour\ttext\tmodels/profile-neighbour.gguf\tfetch.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tcandidate\t128\t32\t-\t-\tunmeasured\trefused\t-' \
     >"$fixture_registry"
 printf '%b\n' \
     'model-record\tmodel\tmodel-blocked\tdevice-lost\t-\t-\t-\t-\t-\t-\t-\t-\tevidence/model.md\tany' \
@@ -379,7 +379,7 @@ fi
 # validator names.
 tuple_fixture_models=$work_directory/tuple-models.tsv
 printf '%b\n' \
-    'tuple-model\ttext\tmodels/tuple-model.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-\tunmeasured\trefused' \
+    'tuple-model\ttext\tmodels/tuple-model.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-\tunmeasured\trefused\t-' \
     >"$tuple_fixture_models"
 
 # The validator resolves an evidence path against the repository root, the
@@ -700,7 +700,7 @@ printf '%b\n' \
     >"$check_tuple_image_profiles"
 check_tuple_models=$work_directory/check-tuple-models.tsv
 printf '%b\n' \
-    'check-model\ttext\tmodels/check-model.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t4096\tevidence/check-model.md\tunmeasured\trefused' \
+    'check-model\ttext\tmodels/check-model.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t4096\tevidence/check-model.md\tunmeasured\trefused\t-' \
     >"$check_tuple_models"
 matching_check_tuples=$work_directory/matching-check-tuples.tsv
 printf '%b\n' \
@@ -757,7 +757,7 @@ fi
 
 projector_check_models=$work_directory/projector-check-models.tsv
 printf '%b\n' \
-    'vision-model\tvision\tmodels/vision-model.gguf\tfetch.sh\t4096\t4096\t4096\tq8_0\tq4_0\ton\trequired\tfetch-projector.sh\t-\t-\tuntested\tproduction\t128\t32\t4096\tevidence/vision.md\tunmeasured\trefused' \
+    'vision-model\tvision\tmodels/vision-model.gguf\tfetch.sh\t4096\t4096\t4096\tq8_0\tq4_0\ton\trequired\tfetch-projector.sh\t-\t-\tuntested\tproduction\t128\t32\t4096\tevidence/vision.md\tunmeasured\trefused\t-' \
     >"$projector_check_models"
 projector_none_tuples=$work_directory/projector-none-tuples.tsv
 printf '%b\n' \
@@ -788,6 +788,45 @@ if QWEN_MODEL_REGISTRY=$projector_check_models \
     report check_validated_tuples_accepts_loaded_projector accepted
 else
     report check_validated_tuples_accepts_loaded_projector rejected
+fi
+
+# The Q4_K formulation vocabulary is closed, so the subcommand admits `-`,
+# the production module named through the multiplexer, and each family over each
+# occupancy width, and refuses everything else.
+if "$reader" validate-q4k-variant - &&
+   "$reader" validate-q4k-variant production/4 &&
+   "$reader" validate-q4k-variant e4-scale-licm/8 &&
+   ! "$reader" validate-q4k-variant e4-scale/3 &&
+   ! "$reader" validate-q4k-variant production &&
+   ! "$reader" validate-q4k-variant ''; then
+    report q4k_variant_vocabulary accepted
+else
+    report q4k_variant_vocabulary rejected
+fi
+
+# Every shipped row releases the production module, so an enumeration reads the
+# whole registry and a key would be a release this tree has not made.
+if [ -z "$(awk -F'\t' '/^#/ { next } NF && $23 != "-" { print $1 }' "$registry")" ]; then
+    report q4k_variant_rows_unreleased accepted
+else
+    report q4k_variant_rows_unreleased rejected
+fi
+
+# A row outside the vocabulary makes the whole registry unreadable rather than
+# emitting the neighbours beside it, the discipline every closed field takes.
+q4k_invalid_registry=$work_directory/q4k-invalid-models.tsv
+awk -F'\t' 'BEGIN { OFS = "\t" }
+    /^#/ || NF == 0 { print; next }
+    !done { $23 = "e4-scale/3"; done = 1 }
+    { print }' "$registry" >"$q4k_invalid_registry"
+if QWEN_MODEL_REGISTRY=$q4k_invalid_registry "$reader" servable-ids \
+    >/dev/null 2>"$work_directory/q4k-invalid.err"; then
+    report q4k_invalid_row_refused rejected
+elif grep -q 'carries invalid q4k_variant' "$work_directory/q4k-invalid.err"; then
+    report q4k_invalid_row_refused accepted
+else
+    report q4k_invalid_row_refused rejected
+    cat "$work_directory/q4k-invalid.err" >&2
 fi
 
 if [ "$failures" -eq 0 ]; then

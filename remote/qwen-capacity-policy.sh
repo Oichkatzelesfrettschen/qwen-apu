@@ -71,6 +71,7 @@ validate_router_preset_tuples() {
             batch_count = 0
             ubatch_count = 0
             checkpoint_count = 0
+            q4k_count = 0
             tags_count = 0
             mcp_count = 0
             model_value = ""
@@ -81,6 +82,7 @@ validate_router_preset_tuples() {
             batch_value = ""
             ubatch_value = ""
             checkpoint_value = ""
+            q4k_value = ""
             tags_value = ""
         }
         function reject_key(key, count) {
@@ -335,6 +337,26 @@ validate_router_preset_tuples() {
                     section, checkpoint_value, expected_checkpoints > "/dev/stderr"
                 rejected = 1
             }
+            # The Q4_K formulation is a per-row release, so the key is present
+            # exactly where the row names one. An absent key serves the
+            # production module, which is what every build executes unkeyed, and
+            # a key on a `-` row would serve a formulation the registry never
+            # released for that checkpoint. The value is compared as well as
+            # the count, since a preset persists across a registry edit.
+            expected_q4k = registry_q4k[registry_key]
+            if (expected_q4k == "") { expected_q4k = "-" }
+            if (expected_q4k == "-") {
+                if (q4k_count != 0) {
+                    printf "router preset section %s carries LLAMA_ARG_VK_Q4K_VARIANT %s, the registry row releases no Q4_K formulation\n", \
+                        section, q4k_value > "/dev/stderr"
+                    rejected = 1
+                }
+            } else if (q4k_count != 1) {
+                reject_key("LLAMA_ARG_VK_Q4K_VARIANT", q4k_count)
+            } else if (q4k_value != expected_q4k) {
+                reject_registry_value("LLAMA_ARG_VK_Q4K_VARIANT", q4k_value,
+                    expected_q4k)
+            }
             if (include_quarantine != 1 && quarantined_models[registry_key]) {
                 printf "router preset section %s is excluded by model quarantine\n", \
                     section > "/dev/stderr"
@@ -454,6 +476,7 @@ validate_router_preset_tuples() {
             registry_batch[$1] = $17
             registry_ubatch[$1] = $18
             registry_filled_depth[$1] = $19
+            registry_q4k[$1] = ($23 == "") ? "-" : $23
             next
         }
         /^[[:space:]]*($|[#;])/ { next }
@@ -509,6 +532,9 @@ validate_router_preset_tuples() {
             } else if (key == "LLAMA_ARG_CTX_CHECKPOINTS") {
                 checkpoint_count++
                 checkpoint_value = value
+            } else if (key == "LLAMA_ARG_VK_Q4K_VARIANT") {
+                q4k_count++
+                q4k_value = value
             } else if (key == "LLAMA_ARG_TAGS") {
                 tags_count++
                 tags_value = value
@@ -617,6 +643,7 @@ approved_registry_flash_attention=''
 approved_registry_batch=''
 approved_registry_ubatch=''
 approved_registry_validated_depth=''
+approved_registry_q4k_variant=''
 if [ "$approved_identity_field_count" -ne 0 ]; then
     if [ "$approved_identity_field_count" -ne 5 ]; then
         printf 'approved model identity requires ID, file, device, inode, and bytes\n' >&2
@@ -726,8 +753,8 @@ for line_number, line in enumerate(registry_text.splitlines(), start=1):
     fields = line.split("\t")
     if fields[0] != expected_id:
         continue
-    if len(fields) != 22:
-        fail(f"line {line_number} holds {len(fields)} fields instead of 22")
+    if len(fields) != 23:
+        fail(f"line {line_number} holds {len(fields)} fields instead of 23")
     matching_rows.append((line_number, fields))
 if len(matching_rows) != 1:
     fail(f"ID {expected_id} resolves to {len(matching_rows)} rows")
@@ -752,6 +779,17 @@ if fields[9] not in {"on", "off", "auto"}:
 validated_depth = fields[18]
 if validated_depth != "-":
     canonical_positive(validated_depth, "validated_filled_depth")
+# The Q4_K formulation vocabulary is closed, and this reader states it beside
+# the cache and flash vocabularies rather than deferring to model-registry.sh,
+# since the descriptor route exists to read one row without reopening the file.
+q4k_variants = {"-", "production/4"}
+q4k_variants.update(
+    f"{family}/{width}"
+    for family in ("e4", "e4-scale", "e4-scale-licm")
+    for width in ("2", "4", "8")
+)
+if fields[22] not in q4k_variants:
+    fail(f"q4k_variant is invalid: {fields[22]}")
 print(
     fields[0],
     fields[2],
@@ -762,6 +800,7 @@ print(
     batch,
     ubatch,
     validated_depth,
+    fields[22],
     sep="\t",
 )
 PY
@@ -772,7 +811,8 @@ PY
         approved_registry_model_file approved_registry_context_ceiling \
         approved_registry_cache_type_k approved_registry_cache_type_v \
         approved_registry_flash_attention approved_registry_batch \
-        approved_registry_ubatch approved_registry_validated_depth <<EOF
+        approved_registry_ubatch approved_registry_validated_depth \
+        approved_registry_q4k_variant <<EOF
 $approved_registry_row
 EOF
     registry_selector_kind=id
@@ -829,6 +869,7 @@ registry_model_field() {
             batch) printf '%s\n' "$approved_registry_batch" ;;
             ubatch) printf '%s\n' "$approved_registry_ubatch" ;;
             validated_filled_depth) printf '%s\n' "$approved_registry_validated_depth" ;;
+            q4k_variant) printf '%s\n' "$approved_registry_q4k_variant" ;;
             *) return 2 ;;
         esac
         return 0
@@ -2057,6 +2098,150 @@ printf 'checkpoint_binding semantics=%s requirement=%s manifest_sha256=%s\n' \
     "$checkpoint_semantics" "$checkpoint_guard_requirement" \
     "$checkpoint_manifest_sha256"
 
+# The Q4_K mat-vec formulation the launch serves, and the build authority that
+# admits it. remote/models.tsv carries `q4k_variant` per row: `-` serves the
+# production module every build executes unkeyed, and a key names one of the
+# formulations the variant-select build compiles. Router mode carries that key
+# per section, since common_preset::merge would push one router argv value onto
+# every child, and the tuple validator above already required each section to
+# equal its own row.
+#
+# QWEN_Q4K_VARIANT is the experiment route, and precedence is stated rather than
+# inferred: an ambient value equal to the row is redundant and passes, and an
+# ambient value that differs replaces the released selection only under
+# QWEN_Q4K_EXPERIMENT_ARM=1, which remote/run-served-binary-ab.sh sets for the
+# arm it measures. Without that declaration the row wins and the differing value
+# is refused, so a stale export cannot serve one formulation under a row that
+# released another.
+q4k_experiment_arm=${QWEN_Q4K_EXPERIMENT_ARM:-0}
+case $q4k_experiment_arm in
+    0 | 1) ;;
+    *)
+        printf 'QWEN_Q4K_EXPERIMENT_ARM must be 0 or 1: %s\n' \
+            "$q4k_experiment_arm" >&2
+        exit 2
+        ;;
+esac
+q4k_environment_key=${QWEN_Q4K_VARIANT:-}
+registry_q4k_variant=-
+if [ "$router_enabled" != 1 ]; then
+    registry_q4k_variant=$(registry_model_field q4k_variant 2>/dev/null) ||
+        registry_q4k_variant=-
+    [ -n "$registry_q4k_variant" ] || registry_q4k_variant=-
+    if ! "$script_directory/model-registry.sh" validate-q4k-variant \
+        "$registry_q4k_variant"; then
+        printf 'the registry row carries q4k_variant %s, which is outside the vocabulary\n' \
+            "$registry_q4k_variant" >&2
+        exit 2
+    fi
+fi
+q4k_selection=$registry_q4k_variant
+q4k_selection_source=registry
+if [ -n "$q4k_environment_key" ]; then
+    if ! "$script_directory/model-registry.sh" validate-q4k-variant \
+        "$q4k_environment_key"; then
+        printf 'QWEN_Q4K_VARIANT is outside the vocabulary: %s\n' \
+            "$q4k_environment_key" >&2
+        exit 2
+    fi
+    # Router mode reads the key off each section, so an environment value would
+    # reach every child through the environ snapshot server-models.cpp spawns
+    # from and serve one formulation under every row.
+    if [ "$router_enabled" = 1 ]; then
+        printf 'QWEN_Q4K_VARIANT is refused in router mode: %s\n' \
+            "$q4k_environment_key" >&2
+        printf 'launch the checkpoint the arm measures on the single-model path\n' >&2
+        exit 2
+    fi
+    if [ "$q4k_environment_key" != "$registry_q4k_variant" ] &&
+        [ "$q4k_experiment_arm" != 1 ]; then
+        printf 'QWEN_Q4K_VARIANT names %s where the registry row releases %s\n' \
+            "$q4k_environment_key" "$registry_q4k_variant" >&2
+        printf 'set QWEN_Q4K_EXPERIMENT_ARM=1 to measure a formulation the row does not release\n' >&2
+        exit 2
+    fi
+    q4k_selection=$q4k_environment_key
+    q4k_selection_source=environment
+fi
+
+# The keys this launch will actually carry, which the build must admit. Router
+# mode reads them off the preset sections; the single-model path carries the one
+# selection. `-` states that every served section runs the production module,
+# and the guard then reads no manifest for this requirement.
+q4k_guard_requirement=-
+if [ "$router_enabled" = 1 ]; then
+    if [ -r "$router_presets" ]; then
+        q4k_guard_requirement=$(awk '
+            /^[[:space:]]*LLAMA_ARG_VK_Q4K_VARIANT[[:space:]]*=/ {
+                value = $0
+                sub(/^[^=]*=[[:space:]]*/, "", value)
+                sub(/[[:space:]]+$/, "", value)
+                if (value != "" && !seen[value]++) {
+                    keys = keys (keys == "" ? "" : ",") value
+                }
+            }
+            END { print (keys == "") ? "-" : keys }
+        ' "$router_presets")
+    fi
+elif [ "$q4k_selection" != - ]; then
+    q4k_guard_requirement=$q4k_selection
+fi
+
+# The manifest states the admitted set from the source the build compiled, the
+# way it states the checkpoint semantics. A build carrying no reader declares
+# `-` and admits no key, so a row released against it would serve the production
+# module under a name claiming a formulation; the refusal stands here while the
+# argv is still readable and qwen-build-exec-guard.sh states it again at the
+# exec boundary over the manifest it rehashes.
+q4k_declared_variants=-
+if [ "$q4k_guard_requirement" != - ]; then
+    if [ -z "${checkpoint_manifest:-}" ] || [ ! -r "${checkpoint_manifest:-}" ]; then
+        printf 'the selected llama-server carries no artifact manifest: %s\n' \
+            "$llama_server" >&2
+        printf 'a Q4_K formulation key requires a build declaring q4k_variants\n' >&2
+        exit 2
+    fi
+    q4k_declared_variants=$(awk -F'\t' '
+        $1 == "q4k_variants" { count++; value = $2 }
+        END { print (count == 1 && value != "") ? value : "-" }
+    ' "$checkpoint_manifest")
+    if ! printf '%s\n' "$q4k_guard_requirement" | tr ',' '\n' |
+        awk -v admitted="$q4k_declared_variants" '
+            BEGIN {
+                if (admitted != "-") {
+                    admitted_count = split(admitted, keys, ",")
+                    for (index_key = 1; index_key <= admitted_count; index_key++) {
+                        admits[keys[index_key]] = 1
+                    }
+                }
+            }
+            $0 == "" { next }
+            !($0 in admits) {
+                printf "the selected llama-server does not admit Q4_K formulation %s\n", \
+                    $0 > "/dev/stderr"
+                bad = 1
+            }
+            END { exit bad ? 1 : 0 }
+        '; then
+        printf 'the build declares q4k_variants=%s: %s\n' \
+            "$q4k_declared_variants" "$llama_server" >&2
+        exit 2
+    fi
+fi
+printf 'q4k_binding selection=%s source=%s requirement=%s declared=%s\n' \
+    "$q4k_selection" "$q4k_selection_source" "$q4k_guard_requirement" \
+    "$q4k_declared_variants"
+
+# radv-low-priority-env.sh scrubs GGML_VK_Q4K_VARIANT and re-exports it from
+# this name alone, so the released selection reaches pipeline creation through
+# the one route past the scrub. Router mode leaves the name unset and the key
+# reaches each child through its own preset section.
+if [ "$router_enabled" != 1 ] && [ "$q4k_selection" != - ]; then
+    export QWEN_Q4K_VARIANT=$q4k_selection
+else
+    unset QWEN_Q4K_VARIANT
+fi
+
 set -- "$@" \
     --log-verbosity 4 \
     --device Vulkan0 \
@@ -2167,7 +2352,7 @@ if [ "$router_enabled" = 1 ]; then
     exec "$script_directory/radv-low-priority-env.sh" \
         "$script_directory/qwen-build-exec-guard.sh" \
         "$llama_server" "$checkpoint_manifest_sha256" \
-        "$checkpoint_guard_requirement" \
+        "$checkpoint_guard_requirement" "$q4k_guard_requirement" \
         "$script_directory/qwen-router-exec-guard.sh" \
         "$router_presets" "$router_preset_guard_sha256" \
         "$router_registry" "$router_registry_guard_sha256" \
@@ -2177,6 +2362,7 @@ if [ "$router_enabled" = 1 ]; then
         "$router_web_profiles_guard_sha256" \
         "$router_ctx_checkpoint_ledger" \
         "$router_ctx_checkpoint_guard_sha256" \
+        "$q4k_guard_requirement" \
         "$@"
 fi
 
@@ -2186,5 +2372,5 @@ fi
 exec "$script_directory/radv-low-priority-env.sh" \
     "$script_directory/qwen-build-exec-guard.sh" \
     "$llama_server" "$checkpoint_manifest_sha256" \
-    "$checkpoint_guard_requirement" \
+    "$checkpoint_guard_requirement" "$q4k_guard_requirement" \
     "$@"

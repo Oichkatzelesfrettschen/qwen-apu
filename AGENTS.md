@@ -499,6 +499,45 @@ section therefore carries all six keys, since an absent one falls through to the
 llama.cpp defaults of batch 2048 and ubatch 512, which is the quarantined
 geometry, and `LLAMA_ARG_CTX_CHECKPOINTS` beside them for the same reason.
 
+The Q4_K mat-vec formulation is released per row for the same reason and
+travels the same route. `remote/models.tsv` carries `q4k_variant`, closed over
+`-`, `production/4`, and `e4`, `e4-scale`, and `e4-scale-licm` over `/2`, `/4`,
+and `/8`, and `model-registry.sh` validates the whole registry before it emits
+any row; a `-` serves the production module every build executes unkeyed, so a
+measured win reaches one checkpoint while every other row keeps what it serves
+now. `build-router-presets.sh` and `build-web-presets.sh` write
+`LLAMA_ARG_VK_Q4K_VARIANT` into a section exactly where its row releases a key
+-- a draft-pair section from its target row, a web section from the checkpoint
+its `LLAMA_ARG_MODEL` resolves to, a review-only section from its own row --
+and the key stays off the router argv, since `common_preset::merge` would push
+one formulation onto every child the way `--ctx-size` once pushed one depth.
+`qwen-capacity-policy.sh` requires each section to carry the key its row
+releases and no key where the row reads `-`, and it holds every key the launch
+carries to the `q4k_variants` row of the selected build's artifact manifest,
+which `build-llama-preset.sh` writes from the source it compiled: a build
+without the multiplexed shader and its host reader declares `-` and admits
+nothing, so a key against it would serve the production module under a row
+claiming a formulation. `qwen-build-exec-guard.sh` states that requirement
+again at the exec boundary over the manifest it rehashes, independently of the
+checkpoint requirement, and `qwen-router-exec-guard.sh` re-derives the key set
+from the preset whose digest it just verified and requires it to equal what the
+policy bound, so a derivation that missed a section is caught rather than
+served. `verify-bundle-preset-ledger.sh` binds each section's key to the
+registry row its model file resolves to, so assembly and activation refuse a
+bundle whose preset names a formulation the registry does not release, and
+`write-deployment-receipt.sh` records the whole selection as
+`q4k_selection_identity` beside the build's own `q4k_variants_declared`. On the
+single-model path the policy exports the row's key as `QWEN_Q4K_VARIANT`, the
+one name past the `radv-low-priority-env.sh` scrub of `GGML_VK_Q4K_VARIANT`.
+Precedence there is stated rather than inferred: an ambient value equal to the
+row passes, and an ambient value that differs replaces the release only under
+`QWEN_Q4K_EXPERIMENT_ARM=1`, which `remote/run-served-binary-ab.sh` sets for the
+arm it measures, so a stale export serves nothing the registry did not release.
+Router mode refuses both names outright. A key on a row whose checkpoint holds
+no Q4_K tensors is admissible by syntax and dispatches no Q4_K mat-vec, and
+`evidence/raven2-vulkan-kernel-census/` rather than the registry is the
+authority on whether the named formulation executes.
+
 A draft-pair section is the one preset section named for something other than a
 registry id. `build-router-presets.sh` emits it for a `production` or
 `candidate` row of `remote/draft-pairs.tsv` under the `pair_id`, carrying the

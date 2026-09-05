@@ -47,6 +47,12 @@ awk -F'\t' -v preset="$preset_path" '
         registry_rows++
         registry_id[registry_rows] = $1
         registry_file[registry_rows] = $3
+        registry_q4k[registry_rows] = ($23 == "") ? "-" : $23
+        if (registry_q4k[registry_rows] !~ /^(-|production\/4|e4\/[248]|e4-scale\/[248]|e4-scale-licm\/[248])$/) {
+            printf "registry row %s carries invalid q4k_variant: %s\n", \
+                $1, registry_q4k[registry_rows] > "/dev/stderr"
+            failed = 1
+        }
         next
     }
     FILENAME == ARGV[2] {
@@ -68,6 +74,8 @@ awk -F'\t' -v preset="$preset_path" '
         keys = 0
         models = 0
         model_value = ""
+        q4k_keys = 0
+        q4k_value = ""
         next
     }
     /^[[:space:]]*LLAMA_ARG_CTX_CHECKPOINTS[[:space:]]*=/ {
@@ -76,6 +84,14 @@ awk -F'\t' -v preset="$preset_path" '
         sub(/[[:space:]]+$/, "", value)
         keys++
         count = value
+        next
+    }
+    /^[[:space:]]*LLAMA_ARG_VK_Q4K_VARIANT[[:space:]]*=/ {
+        value = $0
+        sub(/^[^=]*=[[:space:]]*/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+        q4k_keys++
+        q4k_value = value
         next
     }
     /^[[:space:]]*LLAMA_ARG_MODEL[[:space:]]*=/ {
@@ -93,12 +109,14 @@ awk -F'\t' -v preset="$preset_path" '
     # to whichever row came first.
     function resolve_model(path,    i, file, matches, id) {
         matches = 0
+        resolved_q4k = "-"
         for (i = 1; i <= registry_rows; i++) {
             file = registry_file[i]
             if (length(file) <= length(path) &&
                 substr(path, length(path) - length(file) + 1) == file) {
                 matches++
                 id = registry_id[i]
+                resolved_q4k = registry_q4k[i]
             }
         }
         if (matches != 1) {
@@ -132,6 +150,18 @@ awk -F'\t' -v preset="$preset_path" '
         expected = (model_id in ledger) ? ledger[model_id] : 0
         if (count + 0 != expected + 0) {
             printf "preset section [%s] carries checkpoint count %s where the bundled ledger states %s for %s\n", section, count, expected, model_id > "/dev/stderr"
+            failed = 1
+        }
+        if (resolved_q4k == "-") {
+            if (q4k_keys != 0) {
+                printf "preset section [%s] carries LLAMA_ARG_VK_Q4K_VARIANT %s where the registry releases no Q4_K formulation for %s\n", section, q4k_value, model_id > "/dev/stderr"
+                failed = 1
+            }
+        } else if (q4k_keys != 1) {
+            printf "preset section [%s] carries %d LLAMA_ARG_VK_Q4K_VARIANT keys where the registry releases %s for %s\n", section, q4k_keys, resolved_q4k, model_id > "/dev/stderr"
+            failed = 1
+        } else if (q4k_value != resolved_q4k) {
+            printf "preset section [%s] carries Q4_K formulation %s where the registry releases %s for %s\n", section, q4k_value, resolved_q4k, model_id > "/dev/stderr"
             failed = 1
         }
     }
