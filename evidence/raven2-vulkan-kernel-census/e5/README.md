@@ -378,7 +378,8 @@ down:
 
 ```sh
 remote/build-llama-e5.sh ~/src/llama.cpp-e5
-remote/run-e5-module-proof.sh OUT ~/src/llama.cpp-e5/build-raven2-vulkan-census/bin/llama-server \
+remote/run-e5-module-proof.sh $PWD/e5-module-proof \
+    ~/src/llama.cpp-e5/build-raven2-vulkan-census/bin/llama-server \
     MODEL_PATH RADV_PREFIX
 ```
 
@@ -394,6 +395,19 @@ at all, without an error. The recipe compiles the extension probe before
 configuring, refuses a build directory whose cache names another compiler with
 the removal stated, compares the cached value again after the build, and
 requires the built server to name `mul_mat_vec_q4_k_q8_1_f32`.
+
+The output directory is absolute because the census patch throws out of Vulkan
+initialization on a relative `GGML_VK_PIPELINE_CENSUS`, which takes the server
+down before `/health` rather than producing a record; the proof refuses one
+while the argument is still readable. It reads `QWEN_RADV_ICD` and
+`LD_LIBRARY_PATH` out of the driver's environment fragment by name rather than
+sourcing it, since the fragment's third name reaches the shim environment as an
+`LD_PRELOAD` that fakes a RAVEN2 node and a proof run against a faked device
+would read proven while measuring nothing about this silicon. It accepts where
+any created pipeline of the `mul_mat_vec_q4_k_q8_1` family carries the pack's
+digest and byte count, because `ggml_vk_load_shaders` creates several variants
+of the one declared module and reading the first row alone would close the
+candidate on a creation order.
 
 The stop rule is that a refuted identity ends the rung. The proof writes
 `terminal-state.tsv`, prints `module_identity=refuted`, and exits 3, and no

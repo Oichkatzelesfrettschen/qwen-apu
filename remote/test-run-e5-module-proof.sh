@@ -79,6 +79,10 @@ make_prefix() {
     {
         printf '#!/bin/sh\n'
         printf 'QWEN_RADV_ICD=%s\n' "$prefix/radeon_devenv_icd.x86_64.json"
+        printf 'QWEN_AMDGPU_DRM_SHIM=%s/libamdgpu_noop_drm_shim.so\n' "$prefix"
+        # shellcheck disable=SC2016  # the fragment's braces reach it as text
+        printf 'LD_LIBRARY_PATH=%s${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\n' "$prefix"
+        printf 'export QWEN_RADV_ICD QWEN_AMDGPU_DRM_SHIM LD_LIBRARY_PATH\n'
     } >"$prefix/radv-experiment-env.sh"
     printf '%s' "$prefix"
 }
@@ -103,6 +107,10 @@ if [ "${FAKE_COLLECTOR_STATUS:-0}" -ne 0 ]; then
 fi
 {
     printf 'census_open\t1\n'
+    if [ -n "${FAKE_DECOY_PIPELINE:-}" ]; then
+        printf 'census_pipeline\t9\t%s\tmain\tcccc\t99\tdddd\t99\t-\n' \
+            "$FAKE_DECOY_PIPELINE"
+    fi
     if [ -n "${FAKE_PIPELINE:-}" ]; then
         printf 'census_pipeline\t0\t%s\tmain\t%s\t%s\t%s\t%s\t-\n' \
             "$FAKE_PIPELINE" "$FAKE_MODULE_SHA256" "$FAKE_MODULE_BYTES" \
@@ -127,6 +135,11 @@ while [ "$count" -lt "${FAKE_ADD3:-140}" ]; do
     printf 'v_add3_u32 v0, v1, v2\n' >>"$output_directory/isa/002.s"
     count=$((count + 1))
 done
+count=0
+while [ "$count" -lt "${FAKE_MUL_LO:-0}" ]; do
+    printf 'v_mul_lo_u32 v0, v1, v2\n' >>"$output_directory/isa/002.s"
+    count=$((count + 1))
+done
 COLLECTOR
 chmod 0755 "$collector"
 
@@ -146,6 +159,8 @@ run_subject() {
     FAKE_MODULE_BYTES=${FAKE_MODULE_BYTES:-$module_bytes} \
     FAKE_MUL24=${FAKE_MUL24:-224} \
     FAKE_ADD3=${FAKE_ADD3:-140} \
+    FAKE_MUL_LO=${FAKE_MUL_LO:-0} \
+    FAKE_DECOY_PIPELINE=${FAKE_DECOY_PIPELINE:-} \
         "$subject" "$out" "$server" "$model" "${1:-$prefix}" \
         >"$work_root/out.log" 2>&1 || status=$?
     printf '%s' "$status"
@@ -184,6 +199,32 @@ report "$(grep -q "^radv_library_sha256	" "$work_root/out-accepted/inputs.tsv" &
     'inputs.tsv binds the driver library digest'
 report "$(grep -q "^pack_glslc_version	shaderc v2026.3" "$work_root/out-accepted/inputs.tsv" && echo 0 || echo 1)" \
     'inputs.tsv binds the producer version'
+
+report "$(grep -qx 'aco_v_mul_lo_u32	0' "$work_root/out-accepted/verdict.tsv" && echo 0 || echo 1)" \
+    'the verdict record carries the quarter-rate multiply count as its own field'
+
+# A variant of the same family created ahead of the declared module must not
+# refute the rung: the pack declares one module and the family creates several.
+status=$(FAKE_DECOY_PIPELINE=mul_mat_vec_q4_k_q8_1_f32_acc run_subject out-decoy)
+report "$status" 'a foreign family variant created first still exits 0'
+report "$(grep -qx 'family_pipeline_count	2' "$work_root/out-decoy/verdict.tsv" && echo 0 || echo 1)" \
+    'the verdict record counts every family pipeline'
+report "$(grep -qx "pipeline_name	$pipeline_name" "$work_root/out-decoy/verdict.tsv" && echo 0 || echo 1)" \
+    'the matched pipeline is the declared module rather than the first row'
+
+# falsifier 1's second clause reads as itself rather than as a missing expansion.
+status=$(FAKE_MUL_LO=8 run_subject out-quarter-rate)
+report "$status" 'a quarter-rate multiply beside the expansion still exits 0'
+report "$(grep -q 'v_mul_lo_u32=8' "$work_root/out.log" && echo 0 || echo 1)" \
+    'the verdict line reports the quarter-rate multiply count'
+
+# A relative output directory is refused, since the census refuses one too.
+status=0
+QWEN_E5_ISA_COLLECTOR=$collector QWEN_E5_SHADER_PACK=$pack \
+QWEN_E5_INSTRUCTION_CENSUS=$census_fixture \
+    "$subject" relative-out "$server" "$model" "$prefix" \
+    >"$work_root/out.log" 2>&1 || status=$?
+report "$([ "$status" -eq 2 ] && echo 0 || echo 1)" 'a relative output directory exits 2'
 
 # The generic expansion is a result rather than a refusal.
 status=$(FAKE_ADD3=98 run_subject out-generic)

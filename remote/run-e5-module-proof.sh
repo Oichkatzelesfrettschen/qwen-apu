@@ -97,6 +97,18 @@ if [ -e "$output_directory" ]; then
         "$output_directory" >&2
     exit 2
 fi
+# The census patch refuses a relative GGML_VK_PIPELINE_CENSUS by throwing out of
+# Vulkan initialization, so a relative output directory takes the server down
+# before /health rather than producing a record. It is refused here, where the
+# argument is still readable.
+case $output_directory in
+    /*) ;;
+    *)
+        printf 'the output directory is an absolute path, since the census refuses a relative one: %s\n' \
+            "$output_directory" >&2
+        exit 2
+        ;;
+esac
 
 pack_ledger=$shader_pack_directory/shader-pack.tsv
 pack_inputs=$shader_pack_directory/pack-inputs.tsv
@@ -258,7 +270,19 @@ refute() {
 # GGML_VK_PIPELINE_CENSUS; GGML_VK_FORCE_INTEGER_DOT is read by the collector
 # itself and forwarded past the same scrub; QWEN_RADV_ICD selects the isolated
 # driver for the loader.
+# The fragment build-isolated-radv.sh wrote carries three names and this arm
+# takes two of them. LD_LIBRARY_PATH covers the LLVM the -Dllvm=enabled driver
+# links beside itself, which the disassembler needs and the appliance's system
+# prefix does not carry. QWEN_AMDGPU_DRM_SHIM stays out: the shim environment
+# turns it into an LD_PRELOAD that fakes a RAVEN2 node, which is how the
+# workstation receipts were taken, and a proof run against a faked device would
+# read proven while measuring nothing about this silicon. The fragment is
+# therefore read by name rather than sourced.
+# shellcheck disable=SC2016  # the fragment's own literal text is the pattern
+radv_library_path=$(sed -n 's/^LD_LIBRARY_PATH=\([^$]*\)\${LD_LIBRARY_PATH.*/\1/p' \
+    "$radv_fragment" | head -n 1)
 collection_status=0
+LD_LIBRARY_PATH=${radv_library_path}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
 QWEN_RADV_ICD=$radv_icd \
 QWEN_PIPELINE_CENSUS=$census_path \
 GGML_VK_FORCE_INTEGER_DOT=1 \
@@ -281,24 +305,34 @@ fi
 # float-control rewrite. The pack states the compiler's own output, so the
 # comparison is against the source digest and the executed digest is recorded
 # beside it.
-observed_module_sha256=$(awk -F'\t' -v prefix="$e5_pipeline_prefix" '
-    $1 == "census_pipeline" && index($3, prefix) == 1 { print $5; exit }' "$census_path")
-observed_module_bytes=$(awk -F'\t' -v prefix="$e5_pipeline_prefix" '
-    $1 == "census_pipeline" && index($3, prefix) == 1 { print $6; exit }' "$census_path")
-observed_executed_sha256=$(awk -F'\t' -v prefix="$e5_pipeline_prefix" '
-    $1 == "census_pipeline" && index($3, prefix) == 1 { print $7; exit }' "$census_path")
-observed_pipeline_name=$(awk -F'\t' -v prefix="$e5_pipeline_prefix" '
-    $1 == "census_pipeline" && index($3, prefix) == 1 { print $3; exit }' "$census_path")
-
-if [ -z "$observed_pipeline_name" ]; then
+#
+# ggml_vk_load_shaders creates several pipelines under this prefix -- the
+# accumulator and subgroup variants of one family -- and the pack declares the
+# one module their shared source and defines compile to. The proof therefore
+# accepts where any created pipeline of the family carries the pack's digest and
+# byte count and refutes only where none does, since reading the first row alone
+# would refute the rung on the creation order of a variant the pack never
+# declared, and this stop rule closes the candidate.
+family_rows=$output_directory/family-pipelines.tsv
+awk -F'\t' -v prefix="$e5_pipeline_prefix" '
+    BEGIN { print "pipeline_name\tmodule_sha256\tmodule_bytes\texecuted_sha256" }
+    $1 == "census_pipeline" && index($3, prefix) == 1 {
+        print $3 "\t" $5 "\t" $6 "\t" $7 }' "$census_path" >"$family_rows"
+family_count=$(awk 'NR > 1' "$family_rows" | wc -l | tr -d ' ')
+if [ "$family_count" -eq 0 ]; then
     refute pipeline_created "$e5_pipeline_prefix" absent
 fi
-if [ "$observed_module_sha256" != "$expected_module_sha256" ]; then
+
+matched_row=$(awk -F'\t' -v want="$expected_module_sha256" -v bytes="$expected_module_bytes" '
+    NR > 1 && $2 == want && $3 == bytes { print; exit }' "$family_rows")
+if [ -z "$matched_row" ]; then
+    observed_module_sha256=$(awk -F'\t' 'NR == 2 { print $2 }' "$family_rows")
     refute module_sha256 "$expected_module_sha256" "${observed_module_sha256:--}"
 fi
-if [ "$observed_module_bytes" != "$expected_module_bytes" ]; then
-    refute module_bytes "$expected_module_bytes" "${observed_module_bytes:--}"
-fi
+observed_pipeline_name=$(printf '%s' "$matched_row" | cut -f 1)
+observed_module_sha256=$(printf '%s' "$matched_row" | cut -f 2)
+observed_module_bytes=$(printf '%s' "$matched_row" | cut -f 3)
+observed_executed_sha256=$(printf '%s' "$matched_row" | cut -f 4)
 
 # The disassembly carries one block per compiled shader under RADV's own stage
 # name, so the q8_1 mat-vec is selected by what it is rather than by what it is
@@ -315,9 +349,9 @@ fi
 
 aco_row=$(awk -F'\t' -v mul24="$expected_mul24" '
     NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
-    $(column["v_mul_i32_i24"]) == mul24 && $(column["v_mul_lo_u32"]) == 0 {
+    $(column["v_mul_i32_i24"]) == mul24 {
         print $(column["isa_path"]) "\t" $(column["isa_sha256"]) "\t" \
-            $(column["v_add3_u32"]) "\t" $(column["v_mul_i32_i24"]);
+            $(column["v_add3_u32"]) "\t" $(column["v_mul_lo_u32"]);
         exit
     }' "$recount_record")
 if [ -z "$aco_row" ]; then
@@ -330,6 +364,10 @@ fi
 aco_isa_path=$(printf '%s' "$aco_row" | cut -f 1)
 aco_isa_sha256=$(printf '%s' "$aco_row" | cut -f 2)
 aco_add3=$(printf '%s' "$aco_row" | cut -f 3)
+# The ladder's falsifier 1 names v_mul_lo_u32 in the inner loop as its own
+# clause, so the quarter-rate multiply is selected on nothing and reported as
+# itself rather than folded into the row that finds the expansion.
+aco_mul_lo=$(printf '%s' "$aco_row" | cut -f 4)
 
 case $aco_add3 in
     "$expected_add3_mr2115") aco_lowering=mr2115 ;;
@@ -350,6 +388,8 @@ esac
     printf 'aco_isa_sha256\t%s\n' "$aco_isa_sha256"
     printf 'aco_v_add3_u32\t%s\n' "$aco_add3"
     printf 'aco_v_mul_i32_i24\t%s\n' "$expected_mul24"
+    printf 'aco_v_mul_lo_u32\t%s\n' "$aco_mul_lo"
+    printf 'family_pipeline_count\t%s\n' "$family_count"
 } >"$output_directory/verdict.tsv"
 
 # The module is proven and the lowering is recorded rather than gated: merge
@@ -359,6 +399,6 @@ esac
 # that the next rung reads, so none of them refutes module identity.
 emit_terminal_state accepted aco_lowering \
     "$expected_add3_mr2115" "$aco_add3"
-printf 'e5_module_proof module_identity=proven aco_lowering=%s module_sha256=%s executed_sha256=%s isa_sha256=%s inputs=%s\n' \
-    "$aco_lowering" "$observed_module_sha256" "$observed_executed_sha256" \
+printf 'e5_module_proof module_identity=proven aco_lowering=%s v_mul_lo_u32=%s module_sha256=%s executed_sha256=%s isa_sha256=%s inputs=%s\n' \
+    "$aco_lowering" "$aco_mul_lo" "$observed_module_sha256" "$observed_executed_sha256" \
     "$aco_isa_sha256" "$inputs_record"
