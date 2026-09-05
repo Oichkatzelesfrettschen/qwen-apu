@@ -348,6 +348,7 @@ different outcomes.
 | --- | --- | --- | --- |
 | component admission | does the change help at all, correctly | paired lower bound above zero, correctness held | **passed** |
 | target closure | does the production candidate clear the serving target | absolute lower bound above 10 tok/s | **closed once, unresolved on the repeat** (`target-closure-20260905/`) |
+| 4B promotion | does the composed candidate beat production on the 4B by the paired rule | paired lower bound above +5% | **promoted**, +6.63% [+6.17, +7.09] (`../raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/`) |
 | platform promotion | is it worth a Raven2-wide default | one-sided 5% | **not passed** |
 
 **Component admission passed.** The 2B distill's paired interval is +1.63% to +2.04%, whose

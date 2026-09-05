@@ -1,0 +1,35 @@
+served_ab=state-changed
+model_id=qwen38-4b-distill
+replicates=4
+bound=0.05
+mean_delta=+0.1004
+ci_low=+0.0464
+ci_high=+0.1543
+comparable_pairs=4
+arm_failures=0
+unclassified=0
+cooldown_timeouts=0
+control_server_sha256=522e6367f49d5bdabf4d0cfc786b640b6766aad99b27d4f00a1c7d7d799ec8b5
+candidate_server_sha256=4844d0dcaa9e12c9a701c6fdf81d955be7ec254b39d074928108cde7bbe25e8d
+clock_state	min_sclk_share=1.0000 mclk_modes=933 arms=8
+graph_span_mean_delta	-0.0854
+token_identity	unavailable
+margin_contract	unavailable
+witness_directory	-
+ab_mode	kernel-delta
+bracket_subject	mul_mat_vec_q4_k_f32_f32
+bracket_verdict	shortened
+bracket_mean_delta	-0.1216
+bracket_ci_low	-0.1756
+bracket_ci_high	-0.0676
+bracket_pairs	4
+bracket_union_verdict	shortened
+bracket_bound	0.02
+null_pipeline	mul_mat_vec_q6_k_f32_f32
+null_verdict	state-changed
+null_union_verdict	state-changed
+null_mean_delta	-0.0253
+null_pairs	4
+module_identity	held
+response_identity	held
+response_pairs	4

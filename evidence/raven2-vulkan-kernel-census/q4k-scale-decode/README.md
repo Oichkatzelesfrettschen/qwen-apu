@@ -245,21 +245,31 @@ checkpoint whose achieved GB/s sits between them should land between +1.83% and
 kernel-delta bracket run on both classes would settle it more directly by
 reading the Q4_K pipeline's own exclusive time rather than the whole token.
 
-### The null is attributed: the composed path executes and is unchanged on this shape
+### The null belongs to the two-patch candidate; the composed stack moves the 4B
 
-`4b-attribution-20260905/` runs the census on the 4B with the composed
-candidate as P and its instrumented twin as I. Three accepted I1 arms name the
-composed shader as the executed Q4_K module (the plain shader name is the
-composed formulation in that build, at specialization `64,4,1`), owning 57% of
-the token against Q6_K at 27%; a local shortening of the size the 2B measured
-(-3.93% exclusive) would move the token by about -2.2%, which the served
-interval above excludes by more than twenty half-widths. The supported
-conclusion is selected with no local improvement on this shape, and the Q4_K
-family's 10.0 GB/s inside its own dispatches against the same class's Q6_K at
-13.1 says what bounds it is neither DRAM nor the saving the composition
-carries. The memory-boundness account below stands as an observation the
-census does not confirm: the 4B's Q4_K dispatches sit further from the
-streaming ceiling than the 2B's, not nearer it.
+The served null above measured `scale-word-select` and `superblock-loop-licm`
+over the eight-member production series (`served-ab-4b-r2-20260903T2115Z/inputs.tsv`),
+two of the five patches the composed candidate carries and neither
+activation patch. `4b-attribution-20260905/` runs the census on the 4B with
+the composed candidate as P and its instrumented twin as I: three accepted I1
+arms name the composed shader as the executed Q4_K module (the plain shader
+name is the composed formulation in that build, at specialization `64,4,1`),
+owning 57% of the token against Q6_K at 27%. `4b-kernel-delta-20260905/`
+then brackets the production census twin against the composed one on the
+4B: the composed module's exclusive time is 10.4% shorter over the three
+clean pairs (744 against 820 us per dispatch), the Q6_K null holds, and the
+graph span shortens 6.8%. The memory-boundness account above is therefore
+withdrawn as an ordering of classes: the 4B's Q4_K dispatches sit further
+from the streaming ceiling than the 2B's (10.0 against 12.5 GB/s inside the
+family, with Q6_K at 13.1 and 17.9), and the composed formulation shortens
+them by about a tenth. `served-ab-4b-composed-20260905/` then serves the two
+uninstrumented builds on the 4B under the registration's shape: production
+`70aa78bc...` at 3.076 to 3.088 tok/s against the composed candidate
+`83684f3c...` at 3.267 to 3.299, paired deltas +6.68, +6.83, +6.80, +6.21%,
+mean +6.63% with interval [+6.17, +7.09], every arm at 1100/933 and zero arm
+failures: **promoted** against the +5% bound. The composition is therefore a
+4B-class result under the class rule, where the 2B reads unresolved at +5.3%
+and +5.5% against the same bound and the 0.8B dispatches the shader never.
 
 ### The first attempt is retained, and thermal state is why it failed
 

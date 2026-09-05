@@ -1,0 +1,10 @@
+slot	arm	server_sha256	predicted_n	predicted_ms	tok_s	census_rows	sidecar	ownership	status	sclk_mode_mhz	sclk_share	mclk_mode_mhz	regime_delta	clock_invariant	below_required_fraction
+0a	W	522e6367f49d5bdabf4d0cfc786b640b6766aad99b27d4f00a1c7d7d799ec8b5	64	21799.114	2.890	57552	on	conclusive	completed	1100	1.0000	933	-	held	0.0000
+1	C	522e6367f49d5bdabf4d0cfc786b640b6766aad99b27d4f00a1c7d7d799ec8b5	64	19903.728	3.165	57552	on	conclusive	completed	1100	1.0000	933	-	held	0.0000
+2	K	4844d0dcaa9e12c9a701c6fdf81d955be7ec254b39d074928108cde7bbe25e8d	64	18287.078	3.445	57552	on	conclusive	completed	1100	1.0000	933	-	held	0.0000
+3	K	4844d0dcaa9e12c9a701c6fdf81d955be7ec254b39d074928108cde7bbe25e8d	64	18276.852	3.447	57552	on	conclusive	completed	1100	1.0000	933	-	held	0.0000
+4	C	522e6367f49d5bdabf4d0cfc786b640b6766aad99b27d4f00a1c7d7d799ec8b5	64	19703.859	3.197	57552	on	conclusive	completed	1100	1.0000	933	-	held	0.0000
+5	C	522e6367f49d5bdabf4d0cfc786b640b6766aad99b27d4f00a1c7d7d799ec8b5	64	19585.261	3.217	57552	on	conclusive	completed	1100	1.0000	933	-	held	0.0000
+6	K	4844d0dcaa9e12c9a701c6fdf81d955be7ec254b39d074928108cde7bbe25e8d	64	18069.227	3.487	57552	on	conclusive	completed	1100	1.0000	933	-	held	0.0000
+7	K	4844d0dcaa9e12c9a701c6fdf81d955be7ec254b39d074928108cde7bbe25e8d	64	18031.349	3.494	57552	on	conclusive	completed	1100	1.0000	933	-	held	0.0000
+8	C	522e6367f49d5bdabf4d0cfc786b640b6766aad99b27d4f00a1c7d7d799ec8b5	64	20750.554	3.036	57552	on	conclusive	completed	1100	1.0000	933	-	held	0.0000
