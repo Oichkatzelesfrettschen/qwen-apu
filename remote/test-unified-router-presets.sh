@@ -735,8 +735,21 @@ fi
 # `-` is a bundle declaring that no row released a formulation: the launch that
 # reads it releases nothing, and the registry that has since released one moves
 # nothing about it.
+#
+# The keyless preset is generated against a registry copy whose formulation
+# column is cleared on every row rather than against the shipped one, since a
+# release lands by writing that column: reading the shipped registry here would
+# make this arm measure a keyed preset the moment a row is promoted, which is
+# exactly the state the arm exists to hold against.
+q4k_unreleased_registry=$work/q4k-unreleased-models.tsv
+awk -F'\t' 'BEGIN { OFS = "\t" }
+    /^#/ || NF == 0 { print; next }
+    { $23 = "-"; print }' "$script_directory/models.tsv" \
+    >"$q4k_unreleased_registry"
 q4k_keyless_preset=$work/q4k-keyless.ini
-if build_presets "$q4k_keyless_preset" QWEN_WEB_AUTHORIZER_READY=0 \
+if build_presets "$q4k_keyless_preset" \
+    "QWEN_MODEL_REGISTRY=$q4k_unreleased_registry" \
+    QWEN_WEB_AUTHORIZER_READY=0 \
     >"$work/q4k-keyless-build.log" 2>"$work/q4k-keyless-build.err"; then
     :
 else
@@ -744,7 +757,7 @@ else
     cat "$work/q4k-keyless-build.err" >&2
 fi
 if grep -q 'LLAMA_ARG_VK_Q4K_VARIANT' "$q4k_keyless_preset"; then
-    printf 'the shipped registry releases a formulation; the keyless arm measures nothing\n' >&2
+    printf 'the cleared registry still produced a section key; the keyless arm measures nothing\n' >&2
     exit 1
 fi
 if run_q4k_policy_bound "$q4k_build_root/silent" "$q4k_keyless_preset" \
