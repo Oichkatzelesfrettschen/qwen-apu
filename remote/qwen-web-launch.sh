@@ -107,6 +107,24 @@ if [ -z "${QWEN_WEB_PRESETS:-}" ] && [ -n "$active_deployment_directory" ] && \
 else
     web_presets=${QWEN_WEB_PRESETS:-$state_directory/web-presets.ini}
 fi
+# The Q4_K formulation authority follows the preset this launch selected, and
+# this launch execs qwen-launch.sh with QWEN_ROUTER_PRESETS already set, which
+# reads there as a caller-named preset. Binding the authority here is what keeps
+# a bundled web preset answering from its own bundle rather than from the
+# registry the reader's checkout holds.
+if [ -z "${QWEN_BUNDLE_Q4K_POLICY:-}" ]; then
+    if [ "$web_presets" = "$deployment_web_presets" ]; then
+        if [ -f "$active_deployment_directory/q4k-policy.tsv" ]; then
+            QWEN_BUNDLE_Q4K_POLICY=$active_deployment_directory/q4k-policy.tsv
+        else
+            QWEN_BUNDLE_Q4K_POLICY=legacy
+        fi
+    else
+        QWEN_BUNDLE_Q4K_POLICY=registry
+    fi
+    export QWEN_BUNDLE_Q4K_POLICY
+fi
+printf 'web_q4k_policy_source=%s\n' "$QWEN_BUNDLE_Q4K_POLICY"
 
 # QWEN_WEB_LAN=1 is the operator's explicit decision to serve this lane on the
 # network; remote/web-lan-exposure.sh states what the decision requires and

@@ -732,10 +732,9 @@ else
     report q4k_bundle_policy_outranks_registry failed
     cat "$work/q4k-bound.err" >&2
 fi
-# `-` is the bundle assembled before the policy member existed: its generator
-# wrote no section key, so the launch that reads it releases nothing and the
-# registry that has since released a formulation moves nothing about it. This
-# is the rollback the release depends on.
+# `-` is a bundle declaring that no row released a formulation: the launch that
+# reads it releases nothing, and the registry that has since released one moves
+# nothing about it.
 q4k_keyless_preset=$work/q4k-keyless.ini
 if build_presets "$q4k_keyless_preset" QWEN_WEB_AUTHORIZER_READY=0 \
     >"$work/q4k-keyless-build.log" 2>"$work/q4k-keyless-build.err"; then
@@ -768,6 +767,42 @@ elif grep -q 'the bundled Q4_K policy releases no Q4_K formulation for that row'
 else
     report q4k_unreleasing_policy_refuses_keyed_section wrong_reason
     cat "$work/q4k-conflict.err" >&2
+fi
+# `legacy` is the bundle assembled before the policy member existed. It records
+# no release state at all, which is a different claim from a policy stating that
+# nothing was released, so it admits the keyless preset every such bundle on the
+# appliance carries -- the rollback the release depends on -- and refuses a keyed
+# section by naming the two ways to recover the selection rather than reading the
+# absence as proof that the section was never released.
+if run_q4k_policy_bound "$q4k_build_root/silent" "$q4k_keyless_preset" \
+    "$q4k_registry" legacy \
+    >"$work/q4k-unrecorded.log" 2>"$work/q4k-unrecorded.err"; then
+    report q4k_unrecorded_policy_admits_keyless_preset ok
+else
+    report q4k_unrecorded_policy_admits_keyless_preset failed
+    cat "$work/q4k-unrecorded.err" >&2
+fi
+if run_q4k_policy_bound "$q4k_build_root/admits" "$q4k_preset" \
+    "$q4k_registry" legacy \
+    >"$work/q4k-unrecorded-keyed.log" 2>"$work/q4k-unrecorded-keyed.err"; then
+    report q4k_unrecorded_policy_refuses_keyed_section admitted
+elif grep -q 'the bundle records no Q4_K formulation policy; re-assemble the bundle' \
+    "$work/q4k-unrecorded-keyed.err"; then
+    report q4k_unrecorded_policy_refuses_keyed_section ok
+else
+    report q4k_unrecorded_policy_refuses_keyed_section wrong_reason
+    cat "$work/q4k-unrecorded-keyed.err" >&2
+fi
+# `registry` states the reading an empty value already takes, so a launcher that
+# selected a preset the bundle never generated names it rather than leaving the
+# variable for a later link to fill from the active bundle.
+if run_q4k_policy_bound "$q4k_build_root/admits" "$q4k_preset" \
+    "$q4k_registry" registry \
+    >"$work/q4k-registry-word.log" 2>"$work/q4k-registry-word.err"; then
+    report q4k_registry_word_reads_the_column ok
+else
+    report q4k_registry_word_reads_the_column failed
+    cat "$work/q4k-registry-word.err" >&2
 fi
 # A section the policy never names is refused rather than read as unreleased.
 q4k_gap_policy=$work/q4k-policy-gap.tsv

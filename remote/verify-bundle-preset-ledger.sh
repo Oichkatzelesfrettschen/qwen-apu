@@ -22,19 +22,26 @@ set -eu
 # preset is generated once and outlives every later registry edit, and the
 # `q4k_variant` column moves whenever a release promotes a row: reading the
 # live column here refuses a preset that agreed with the registry it was
-# generated against, in both directions at once. A bundle assembled before that
-# column existed carries no key in any section and verifies exactly where no
-# row releases a formulation, which is what `-` states; a bundle assembled
-# after it carries its own two-column policy, and each section's resolved
-# model_id appears in that policy or the bundle is refused. The registry keeps
-# every other binding, so a depth or tier revocation still reaches an old
-# bundle while its formulation policy stays the one it was built against.
+# generated against, in both directions at once. A bundle that carries its own
+# two-column policy answers from it, and each section's resolved model_id
+# appears in that policy or the bundle is refused. The registry keeps every
+# other binding, so a depth or tier revocation still reaches an old bundle while
+# its formulation policy stays the one it was built against.
+#
+# A bundle assembled before that member existed records no policy at all, which
+# `legacy` names and which is a different statement from `-`: `-` is a policy
+# declaring that no row releases a formulation, where `legacy` is the absence of
+# any recorded release state. The two agree on a keyless preset and separate on
+# a keyed one, where `legacy` refuses and names the two ways to recover the
+# selection rather than reading the absence as proof that nothing was released.
 #
 # usage: verify-bundle-preset-ledger.sh PRESET_INI CTX_LEDGER [MODEL_REGISTRY]
 #            [Q4K_POLICY]
 # MODEL_REGISTRY defaults to QWEN_MODEL_REGISTRY, then models.tsv beside this
-# script. Q4K_POLICY defaults to QWEN_BUNDLE_Q4K_POLICY; an empty value reads
-# the registry column, and `-` releases no formulation on any row.
+# script. Q4K_POLICY defaults to QWEN_BUNDLE_Q4K_POLICY. An empty value and the
+# word `registry` both read the registry column, `-` releases no formulation on
+# any row, `legacy` states that the bundle records no policy, and any other
+# value names a policy file.
 
 if [ "$#" -lt 2 ] || [ "$#" -gt 4 ]; then
     printf 'usage: %s PRESET_INI CTX_LEDGER [MODEL_REGISTRY] [Q4K_POLICY]\n' \
@@ -57,8 +64,9 @@ done
 # rather than the file's emptiness decides what the absence means.
 q4k_policy_scratch=''
 case $q4k_policy_selector in
-    '') q4k_policy_mode='registry' ;;
+    ''|'registry') q4k_policy_mode='registry' ;;
     -) q4k_policy_mode='none' ;;
+    'legacy') q4k_policy_mode='legacy' ;;
     *)
         q4k_policy_mode='file'
         if [ ! -f "$q4k_policy_selector" ] || \
@@ -187,13 +195,15 @@ awk -F'\t' -v preset="$preset_path" -v policy_mode="$q4k_policy_mode" '
         return id
     }
     # The mode word decides which authority answers for a section: the registry
-    # column where no bundle bound a policy, no formulation at all where the
-    # bundle predates the column, and the bundled policy otherwise, where a
-    # model the policy never described refuses the bundle rather than reading
-    # as unreleased.
+    # column where no bundle bound a policy, no formulation where a policy says
+    # so or where the bundle records none, and the bundled policy otherwise,
+    # where a model the policy never described refuses the bundle rather than
+    # reading as unreleased. `none` and `legacy` answer alike and the refusal
+    # below separates them, since a section carrying a key means one thing
+    # against a policy that released nothing and another against no policy.
     function released_q4k(model_id) {
         if (policy_mode == "registry") return resolved_q4k
-        if (policy_mode == "none") return "-"
+        if (policy_mode == "none" || policy_mode == "legacy") return "-"
         if (model_id in policy_q4k) return policy_q4k[model_id]
         policy_gap = 1
         return ""
@@ -231,7 +241,10 @@ awk -F'\t' -v preset="$preset_path" -v policy_mode="$q4k_policy_mode" '
             printf "preset section [%s] serves %s, which the bundled Q4_K policy never names\n", section, model_id > "/dev/stderr"
             failed = 1
         } else if (released == "-") {
-            if (q4k_keys != 0) {
+            if (q4k_keys != 0 && policy_mode == "legacy") {
+                printf "preset section [%s] carries LLAMA_ARG_VK_Q4K_VARIANT %s where the bundle records no Q4_K formulation policy for %s; re-assemble the bundle with build-deployment-bundle.sh, or name the policy it was generated against in QWEN_BUNDLE_Q4K_POLICY\n", section, q4k_value, model_id > "/dev/stderr"
+                failed = 1
+            } else if (q4k_keys != 0) {
                 printf "preset section [%s] carries LLAMA_ARG_VK_Q4K_VARIANT %s where %s releases no Q4_K formulation for %s\n", section, q4k_value, policy_authority, model_id > "/dev/stderr"
                 failed = 1
             }

@@ -357,7 +357,8 @@ validate_router_preset_tuples() {
             if (q4k_policy_mode == "registry") {
                 expected_q4k = registry_q4k[registry_key]
                 if (expected_q4k == "") { expected_q4k = "-" }
-            } else if (q4k_policy_mode == "none") {
+            } else if (q4k_policy_mode == "none" ||
+                q4k_policy_mode == "legacy") {
                 expected_q4k = "-"
             } else if (registry_key in policy_q4k) {
                 expected_q4k = policy_q4k[registry_key]
@@ -372,7 +373,11 @@ validate_router_preset_tuples() {
                 # already refused it; comparing a count against nothing would
                 # print a second reason for one defect.
             } else if (expected_q4k == "-") {
-                if (q4k_count != 0) {
+                if (q4k_count != 0 && q4k_policy_mode == "legacy") {
+                    printf "router preset section %s carries LLAMA_ARG_VK_Q4K_VARIANT %s where the bundle records no Q4_K formulation policy; re-assemble the bundle with build-deployment-bundle.sh, or name the policy it was generated against in QWEN_BUNDLE_Q4K_POLICY\n", \
+                        section, q4k_value > "/dev/stderr"
+                    rejected = 1
+                } else if (q4k_count != 0) {
                     printf "router preset section %s carries LLAMA_ARG_VK_Q4K_VARIANT %s, %s releases no Q4_K formulation for that row\n", \
                         section, q4k_value, \
                         (q4k_policy_mode == "registry") ? "the registry row" \
@@ -480,6 +485,8 @@ validate_router_preset_tuples() {
                 q4k_policy_mode = "registry"
             } else if (q4k_policy_rows == "-") {
                 q4k_policy_mode = "none"
+            } else if (q4k_policy_rows == "legacy") {
+                q4k_policy_mode = "legacy"
             } else {
                 q4k_policy_mode = "bundle"
                 q4k_policy_count = split(q4k_policy_rows, q4k_policy_lines, "\n")
@@ -1215,19 +1222,25 @@ router_draft_pair_registry=${QWEN_DRAFT_PAIRS:-$script_directory/draft-pairs.tsv
 # tuple validator compared each section against.
 router_ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
 # The preset states one Q4_K formulation per section and outlives the registry
-# edit that releases the next one, so the deployment binds the policy the
-# preset was generated against. qwen-webui-control.sh sets this from the
-# resolved bundle the way it sets QWEN_CTX_CHECKPOINT_LEDGER; a launch reading
-# no bundle leaves it empty and the registry column answers, which is the
-# generator's and the explicit-preset recovery form's own reading.
+# edit that releases the next one, so the launch binds the policy the preset was
+# generated against. The authority follows the preset rather than the server:
+# qwen-launch.sh and qwen-web-launch.sh each set this from the bundle whose
+# preset they selected, `registry` where the preset came from the state
+# directory or the caller, and `legacy` where the bundle records no policy at
+# all. An empty value reads the registry column, which is the generator's and
+# the explicit-preset recovery form's own reading.
 router_q4k_policy_path=${QWEN_BUNDLE_Q4K_POLICY:-}
 router_q4k_policy_rows=''
 router_q4k_policy_identity=registry
 case $router_q4k_policy_path in
-    '') ;;
+    ''|registry) ;;
     -)
         router_q4k_policy_rows=-
         router_q4k_policy_identity=none
+        ;;
+    legacy)
+        router_q4k_policy_rows=legacy
+        router_q4k_policy_identity=legacy
         ;;
     *)
         if [ ! -f "$router_q4k_policy_path" ] || \
@@ -1613,6 +1626,7 @@ validate_current_router_authorities() {
         "$(case $router_q4k_policy_rows in
             '') printf registry ;;
             -) printf unreleased ;;
+            legacy) printf unrecorded ;;
             *) printf bundle ;;
         esac)" "$router_q4k_policy_identity"
     if [ "$router_web_mode" = 1 ]; then

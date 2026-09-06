@@ -60,7 +60,7 @@ fi
 bundle_manifest=$bundle_directory/bundle-manifest.tsv
 for bundle_member in bundle-manifest.tsv llama-server artifact-manifest.tsv \
     ctx-checkpoints.tsv router-presets.ini web-presets.ini \
-    web-mcp-manifest.tsv; do
+    web-mcp-manifest.tsv q4k-policy.tsv; do
     if [ -L "$bundle_directory/$bundle_member" ]; then
         printf 'bundle member is a symlink: %s\n' \
             "$bundle_directory/$bundle_member" >&2
@@ -239,35 +239,59 @@ if [ "$recomputed_maximum" -gt 0 ] && \
 fi
 # The Q4_K formulation each section carries is release state, so the bundle
 # states it rather than inheriting it from whichever registry the reader's
-# checkout holds. A `-` row is a bundle assembled before this member existed:
-# no section in it can carry LLAMA_ARG_VK_Q4K_VARIANT, since the generator that
-# writes that key writes this member too, so `-` binds a policy releasing
-# nothing and an old bundle keeps verifying across every later release. The
-# `web-mcp-manifest.tsv` row above takes the same shape for the same reason.
-q4k_policy_expected_sha256=$(awk -F'\t' \
-    '$1 == "q4k-policy.tsv" { print $2; exit }' "$bundle_manifest")
-q4k_policy_expected_sha256=${q4k_policy_expected_sha256:--}
-if [ "$q4k_policy_expected_sha256" = - ]; then
+# checkout holds. Three manifest shapes are distinct claims: no row at all is a
+# bundle assembled before this member existed, which records no policy and binds
+# `legacy`; one row of `-` is a bundle declaring that its member is absent
+# because nothing was released; one row of a digest binds the member. The
+# `web-mcp-manifest.tsv` row above takes the same optional shape, and the count
+# is read the same way, since a second row would otherwise decide the policy by
+# its position in the file.
+q4k_policy_manifest_rows=$(awk -F'\t' '$1 == "q4k-policy.tsv" { count++ }
+    END { print count + 0 }' "$bundle_manifest")
+if [ "$q4k_policy_manifest_rows" -gt 1 ]; then
+    printf 'bundle manifest carries %s rows for q4k-policy.tsv; at most one is admitted: %s\n' \
+        "$q4k_policy_manifest_rows" "$bundle_manifest" >&2
+    exit 1
+fi
+if [ "$q4k_policy_manifest_rows" -eq 0 ]; then
     if [ -e "$bundle_directory/q4k-policy.tsv" ]; then
-        printf 'bundle carries q4k-policy.tsv that its manifest records as absent\n' >&2
+        printf 'bundle carries q4k-policy.tsv that its manifest records no row for\n' >&2
         exit 1
     fi
-    q4k_policy_selector=-
+    q4k_policy_selector=legacy
 else
-    if [ ! -r "$bundle_directory/q4k-policy.tsv" ] || \
-        [ ! -f "$bundle_directory/q4k-policy.tsv" ]; then
-        printf 'bundle member is unreadable: %s\n' \
-            "$bundle_directory/q4k-policy.tsv" >&2
+    q4k_policy_expected_sha256=$(awk -F'\t' \
+        '$1 == "q4k-policy.tsv" { print $2; exit }' "$bundle_manifest")
+    # An empty second field declares nothing at all, so it is refused rather
+    # than read as either the absent member or a digest.
+    if [ -z "$q4k_policy_expected_sha256" ]; then
+        printf 'bundle manifest carries an empty q4k-policy.tsv declaration: %s\n' \
+            "$bundle_manifest" >&2
         exit 1
     fi
-    q4k_policy_actual_sha256=$(sha256sum "$bundle_directory/q4k-policy.tsv" |
-        cut -d ' ' -f 1)
-    if [ "$q4k_policy_actual_sha256" != "$q4k_policy_expected_sha256" ]; then
-        printf 'bundle member diverged: q4k-policy.tsv expected=%s found=%s\n' \
-            "$q4k_policy_expected_sha256" "$q4k_policy_actual_sha256" >&2
-        exit 1
+    if [ "$q4k_policy_expected_sha256" = - ]; then
+        if [ -e "$bundle_directory/q4k-policy.tsv" ]; then
+            printf 'bundle carries q4k-policy.tsv that its manifest records as absent\n' >&2
+            exit 1
+        fi
+        q4k_policy_selector=-
+    else
+        if [ ! -r "$bundle_directory/q4k-policy.tsv" ] || \
+            [ ! -f "$bundle_directory/q4k-policy.tsv" ]; then
+            printf 'bundle member is unreadable: %s\n' \
+                "$bundle_directory/q4k-policy.tsv" >&2
+            exit 1
+        fi
+        q4k_policy_actual_sha256=$(sha256sum \
+            "$bundle_directory/q4k-policy.tsv" | cut -d ' ' -f 1)
+        if [ "$q4k_policy_actual_sha256" != "$q4k_policy_expected_sha256" ]; then
+            printf 'bundle member diverged: q4k-policy.tsv expected=%s found=%s\n' \
+                "$q4k_policy_expected_sha256" \
+                "$q4k_policy_actual_sha256" >&2
+            exit 1
+        fi
+        q4k_policy_selector=$bundle_directory/q4k-policy.tsv
     fi
-    q4k_policy_selector=$bundle_directory/q4k-policy.tsv
 fi
 # A preset member is present exactly where the manifest digests one, and its
 # sections are re-read against the bundled ledger, the bundled formulation

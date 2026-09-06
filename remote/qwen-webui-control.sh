@@ -67,6 +67,14 @@ select_llama_server() {
     # resolves for itself. A deployment that exists and fails verification
     # refuses the start rather than silently serving whatever the build symlinks
     # name instead.
+    # The Q4_K formulation authority follows the preset rather than the server.
+    # The launcher that selected the preset states it, and a direct control
+    # start reads the registry column, since qwen-capacity-policy.sh resolves an
+    # unnamed router preset to the state directory's file, which the generator
+    # wrote against that column. Binding the active bundle's release state here
+    # would hand it to a preset the bundle never generated.
+    QWEN_BUNDLE_Q4K_POLICY=${QWEN_BUNDLE_Q4K_POLICY:-registry}
+    export QWEN_BUNDLE_Q4K_POLICY
     if [ -z "$llama_server" ]; then
         deployment_root=${QWEN_DEPLOYMENT_ROOT:-"$qwen_home_deployments"}
         deployment_resolution=$("$script_directory/resolve-active-deployment.sh" \
@@ -80,19 +88,6 @@ select_llama_server() {
                 if [ -z "${QWEN_CTX_CHECKPOINT_LEDGER:-}" ]; then
                     QWEN_CTX_CHECKPOINT_LEDGER=$active_deployment_directory/ctx-checkpoints.tsv
                     export QWEN_CTX_CHECKPOINT_LEDGER
-                fi
-                # The Q4_K formulation each preset section carries is release
-                # state, so the bundle answers for it rather than whichever
-                # registry this checkout holds; a bundle assembled before that
-                # member existed carries no section key and binds `-`, the
-                # policy releasing nothing that its preset already satisfies.
-                if [ -z "${QWEN_BUNDLE_Q4K_POLICY:-}" ]; then
-                    if [ -f "$active_deployment_directory/q4k-policy.tsv" ]; then
-                        QWEN_BUNDLE_Q4K_POLICY=$active_deployment_directory/q4k-policy.tsv
-                    else
-                        QWEN_BUNDLE_Q4K_POLICY=-
-                    fi
-                    export QWEN_BUNDLE_Q4K_POLICY
                 fi
                 QWEN_ACTIVE_DEPLOYMENT_DIRECTORY=$active_deployment_directory
                 export QWEN_ACTIVE_DEPLOYMENT_DIRECTORY

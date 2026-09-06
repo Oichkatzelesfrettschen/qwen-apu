@@ -535,21 +535,35 @@ bundle on every launch and `activate-deployment-bundle.sh` verifies a rollback
 target, so those two refusals leave no order in which a release and its rollback
 both verify. `build-deployment-bundle.sh` therefore projects `model_id` and
 `q4k_variant` out of the registry it read into `q4k-policy.tsv` and records its
-digest in `bundle-manifest.tsv`, the shape `web-mcp-manifest.tsv` already takes:
-a manifest row of `-` requires the member absent and releases nothing on every
-row, which is what a bundle assembled before the member carries, since the
-generator that writes a section key writes the policy beside it.
-`qwen-webui-control.sh` binds `QWEN_BUNDLE_Q4K_POLICY` from the resolved bundle
-the way it binds `QWEN_CTX_CHECKPOINT_LEDGER`, so `qwen-capacity-policy.sh`
-compares each section against its own release and a section resolving to a model
-the policy never names is refused rather than read as unreleased. The projection
-is that one column, because a whole-registry snapshot would also freeze
-`validated_filled_depth`, `context_ceiling`, and `tier` and leave an old bundle
-serving a depth a present-day revocation withdrew. A launch reading no bundle
-leaves the variable empty and the registry column answers, which is the
-generator's own reading; the explicit-`QWEN_LLAMA_SERVER` recovery form reads no
-bundle either, so an operator serving a preset older than the registry beside it
-states `QWEN_BUNDLE_Q4K_POLICY=-` there rather than editing the registry back.
+digest in `bundle-manifest.tsv`, the shape `web-mcp-manifest.tsv` already takes.
+Three manifest shapes are three claims and `verify-deployment-bundle.sh` reads
+them as such: exactly one digest row binds the member, exactly one row of `-`
+requires the member absent and releases nothing on every row, and no row at all
+is a bundle assembled before the member existed, which records no release state
+and binds `legacy`. A second row, an empty declaration, a member the manifest
+records no row for, and a member reached through a symlink each refuse, since
+the reader takes a row rather than the first row. `legacy` and `-` agree on a
+keyless preset -- which is every bundle on the appliance, where no manifest
+carries the row and no section carries the key -- and separate on a keyed one,
+where `legacy` refuses by naming the re-assembly and the explicit
+`QWEN_BUNDLE_Q4K_POLICY` that recover the selection rather than reading the
+absence as proof that nothing was released. The authority follows the preset
+rather than the server: `qwen-launch.sh` and `qwen-web-launch.sh` each bind
+`QWEN_BUNDLE_Q4K_POLICY` from the bundle whose preset they selected and state
+`registry` for a preset the caller named or the state directory holds, since
+binding an active bundle's release state to a preset that bundle never generated
+refuses an agreeing pair; `qwen-webui-control.sh` defaults to `registry` and
+forwards whatever a launcher stated across the tmux boundary.
+`qwen-capacity-policy.sh` then compares each section against its own release,
+refuses a section resolving to a model the policy never names rather than
+reading it as unreleased, and states the authority on its `router_q4k_policy`
+line. The projection is that one column, because a whole-registry snapshot would
+also freeze `validated_filled_depth`, `context_ceiling`, and `tier` and leave an
+old bundle serving a depth a present-day revocation withdrew. An empty value
+reads the registry column, which is the generator's own reading; the
+explicit-`QWEN_LLAMA_SERVER` recovery form reads no bundle, so an operator
+serving a preset older than the registry beside it states
+`QWEN_BUNDLE_Q4K_POLICY=-` there rather than editing the registry back.
 `write-deployment-receipt.sh` records the whole selection as
 `q4k_selection_identity` beside the build's own `q4k_variants_declared`. On the
 single-model path the policy exports the row's key as `QWEN_Q4K_VARIANT`, the
