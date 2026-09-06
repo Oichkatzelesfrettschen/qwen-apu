@@ -1740,12 +1740,23 @@ the correction allowance the page already tracked does not move.
 # The runtime root, from the appliance's own checkout
 make bootstrap                                  # lay out $QWEN_HOME (.runtime) and its marker
 make install-searxng && make verify-searxng     # the pinned instance under opt/searxng, user-owned
+make searxng-wheelhouse                         # the lock's wheels by digest under opt/searxng
+make verify-searxng-wheelhouse                  # every wheel at its pinned digest, none unnamed
 make install-ryzenadj install-image-runtime install-shaderc install-models build-llama
 make status                                     # every claimed component into $QWEN_HOME/manifest.tsv
 make doctor                                     # legacy, foreign, and transient paths, untouched
-make verify                                     # sudo policy, manifest, and the path ratchet
+make verify-layout                              # marker, schema, binding, layout, and the path ratchet
+make verify-components                          # sudo policy and every installed component identity
+make verify-live                                # transient system state, passing where a node is absent
+make verify                                     # the union of the three
+make verify-models                              # every registry model file and projector against
+                                                # the byte count and SHA-256 its fetch rule pins,
+                                                # fetching nothing
 QWEN_PURGE_LEGACY_CONFIRM=yes make purge-legacy # the enumerated predecessor paths, nothing else
-make uninstall                                  # the root minus state/ and models/
+QWEN_RUNTIME_ROOT_CONFIRM=$PWD/.runtime make uninstall
+                                                # the root minus state/ and models/; the confirm is
+                                                # required where the marker binds the root to a
+                                                # production checkout
 QWEN_RUNTIME_ROOT_CONFIRM=$PWD/.runtime make purge
 
 # Start and stop the appliance (run on the laptop)
@@ -1925,7 +1936,7 @@ QWEN_IMAGE_MCP_SERVER=remote/image-mcp/server.py \
 QWEN_IMAGE_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
 QWEN_IMAGE_STATE_DIR=$HOME/qwen-webui-state/images \
 QWEN_IMAGE_SERVICE_SOCKET=$HOME/qwen-webui-state/images/image-service.sock \
-QWEN_IMAGE_PROFILES_JSON=$HOME/qwen-webui-state/image-parameters.json \
+QWEN_IMAGE_PROFILES_JSON=$QWEN_HOME/state/image-parameters.json \
     remote/build-router-presets.sh OUT.ini
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
 remote/build-feature-roster.sh [OUTPUT_JSON]   # webui/roster.json, from the feature claim ledger
@@ -2165,6 +2176,7 @@ directly:
 remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
+remote/test-verify-models.sh
 remote/test-model-tiers.sh
 remote/test-feature-roster.sh
 node remote/test-fallback-webui-roster.mjs
@@ -2228,6 +2240,42 @@ GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
 
 `remote/test-fixtures/fake-llama-server.sh` stands in for the real server so a
 guard test runs without a GPU.
+
+A fixture that needs a loopback TCP port claims one through
+`remote/test-port-lease.sh` rather than binding port zero and closing the
+socket. That read reports a number free at the instant of the read and reserves
+nothing afterwards, so two fixtures running at once on one workstation receive
+the same number and the second listener meets EADDRINUSE; a rerun then passes
+and leaves the collision in place. `claim COUNT PORTS_FILE` starts a holder
+process that takes an exclusive flock on each port's lease file, picks every
+candidate below the kernel's own ephemeral range so the number stays off the
+set a bind to port zero returns, proves the port unbound before publishing it,
+and holds every descriptor until the fixture's own EXIT trap calls `release`.
+Each fixture's children bind their ports themselves, so the lease over the
+number rather than an inherited socket is what reserves them. `claim-run` leases
+consecutive numbers for a caller whose own children derive one port from
+another: `webui/index.html` derives the broker at the router port plus one and
+the artifact listener at plus two on a bare LAN URL, and `qwen-web-launch.sh`
+refuses a broker port that URL does not derive, so
+`test-admit-image-router.sh` takes a run of nine and gives each of its three
+launches a consecutive triple. Every claim
+resolves `QWEN_TEST_PORT_LEASE_DIR`, defaulting to `port-leases` under the gate
+scratch root `qwen-home.sh` names as `qwen_home_gate_cache`: two gate runs that
+name one directory serialize against each other and two that name different
+directories coordinate nothing, so a workstation gating two repositories at
+once sets that one variable in both.
+
+Both deadlines of a guard test are named. `test-qwen-runtime-guards.sh` runs
+every fixture server until the test itself ends it, so the monitor's
+observation of a departed server is caused by the test rather than by a fixed
+duration a loaded machine spends before the monitor's startup preflight reaches
+its first sample. `QWEN_GUARD_FIXTURE_DEADLINE_S` bounds the harness reaching
+its ready state and `QWEN_GUARD_OBSERVATION_DEADLINE_S` bounds the interval
+from the condition arriving to the guard acting on it; a failure names which
+one expired, prints the load average and the elapsed time, and retains the
+arm's log directory. The guards' own limits -- the one-second sample period and
+the two-second SIGKILL grace inside `monitor-qwen-runtime.sh` -- stay what that
+script sets.
 
 ## The HIP backend needs one variable to load a model at all
 

@@ -34,37 +34,21 @@ for tool in python3 curl jq flock tmux ss; do
     fi
 done
 
-# Binding port zero lets the kernel select an available loopback TCP port.
-# Both sockets stay open while the two numbers are read, so the pair is
-# distinct, and the fixed 18080/18571 defaults this test once carried are
-# gone: two repositories gate on this workstation at once and another
-# fixture's broker held 18571 while this cell ran. An explicit
-# QWEN_SERVER_PORT or QWEN_WEB_BROKER_PORT stays authoritative.
-free_loopback_port_pair() {
-    python3 - <<'PYTHON'
-import socket
-
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as first_socket, \
-        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as second_socket:
-    first_socket.bind(("127.0.0.1", 0))
-    second_socket.bind(("127.0.0.1", 0))
-    print(first_socket.getsockname()[1])
-    print(second_socket.getsockname()[1])
-PYTHON
-}
-free_port_pair=$(free_loopback_port_pair)
-test_server_port=${QWEN_SERVER_PORT:-$(printf '%s\n' "$free_port_pair" | sed -n 1p)}
-test_broker_port=${QWEN_WEB_BROKER_PORT:-$(printf '%s\n' "$free_port_pair" | sed -n 2p)}
-
 work=$(mktemp -d "${TMPDIR:-/tmp}/qwen-image-admission.XXXXXX")
 harness=$work/remote
 state_directory=$work/state
 output_directory=$work/output
 keep_on_failure=0
+port_lease_holder_pid=''
 cleanup() {
     if [ -x "$harness/qwen-teardown.sh" ]; then
         QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
             "$harness/qwen-teardown.sh" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$port_lease_holder_pid" ]; then
+        "$script_directory/test-port-lease.sh" release \
+            "$port_lease_holder_pid" || true
+        port_lease_holder_pid=''
     fi
     # A failed run leaves its logs where a reader can open them; the admission
     # writes the session status, the broker log, and the image service log into
@@ -77,6 +61,28 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 mkdir -p "$harness" "$state_directory" "$output_directory"
+
+# Nine consecutive leased loopback ports carry the three launches this test
+# runs, three per launch. Binding port zero and closing the socket reported a
+# number this test owned for an instant and released before the launch bound
+# it, which is how another repository's broker held the number this cell then
+# asked for; the lease is an exclusive flock a holder process keeps for this
+# script's whole run instead, and the launch's children bind the ports
+# themselves, so the lease over the number rather than an inherited socket is
+# what reserves them. The run is consecutive because webui/index.html derives
+# the broker at the router port plus one and the artifact listener at plus two
+# on a bare LAN URL, and qwen-web-launch.sh refuses a broker port the
+# advertised page URL does not derive. An explicit QWEN_SERVER_PORT or
+# QWEN_WEB_BROKER_PORT stays authoritative for the ordinary arm.
+port_lease_ports_file=$work/leased-ports
+port_lease_holder_pid=$("$script_directory/test-port-lease.sh" claim-run 9 \
+    "$port_lease_ports_file")
+test_server_port=${QWEN_SERVER_PORT:-$(sed -n 1p "$port_lease_ports_file")}
+test_broker_port=${QWEN_WEB_BROKER_PORT:-$(sed -n 2p "$port_lease_ports_file")}
+lan_server_port=$(sed -n 4p "$port_lease_ports_file")
+lan_broker_port=$(sed -n 5p "$port_lease_ports_file")
+lan_open_server_port=$(sed -n 7p "$port_lease_ports_file")
+lan_open_broker_port=$(sed -n 8p "$port_lease_ports_file")
 # image-registry.sh and the admission both resolve a retained evidence path
 # against the parent of the directory they run from, so the harness mirrors the
 # tree at that one point.
@@ -293,8 +299,8 @@ env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
     QWEN_IMAGE_RUNTIME_TEMPLATE=fixture \
     QWEN_IMAGE_MODEL_PATH="$image_model_directory" \
     QWEN_RADV_ICD="$fixture_icd" \
-    QWEN_SERVER_PORT=18082 \
-    QWEN_WEB_BROKER_PORT=18083 \
+    QWEN_SERVER_PORT=$lan_server_port \
+    QWEN_WEB_BROKER_PORT=$lan_broker_port \
     "$harness/admit-image-router.sh" "$lan_output" \
     >"$work/lan.stdout" 2>"$work/lan.stderr"
 lan_status=$?
@@ -326,7 +332,7 @@ done
 # The page turn ran against the exposed origin rather than the loopback one, so
 # the addresses the summary names are what distinguishes this arm from the
 # default run above.
-if ! grep -q '^browser_page_origin	accepted	origin=http://127.0.0.2:18082' \
+if ! grep -q "^browser_page_origin	accepted	origin=http://127.0.0.2:$lan_server_port" \
     "$lan_output/summary.tsv"; then
     keep_on_failure=1
     printf 'test-admit-image-router: the LAN page turn ran from another origin\n' >&2
@@ -370,8 +376,8 @@ env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
     QWEN_IMAGE_RUNTIME_TEMPLATE=fixture \
     QWEN_IMAGE_MODEL_PATH="$image_model_directory" \
     QWEN_RADV_ICD="$fixture_icd" \
-    QWEN_SERVER_PORT=18090 \
-    QWEN_WEB_BROKER_PORT=18091 \
+    QWEN_SERVER_PORT=$lan_open_server_port \
+    QWEN_WEB_BROKER_PORT=$lan_open_broker_port \
     "$harness/admit-image-router.sh" "$open_output" \
     >"$work/lan-open.stdout" 2>"$work/lan-open.stderr"
 open_status=$?

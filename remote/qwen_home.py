@@ -31,6 +31,7 @@ _DECLARED = {
     "searxng_source": "opt/searxng/src",
     "searxng_python": "opt/searxng/venv/bin/python",
     "web_token_key": "state/web-token.key",
+    "image_parameters": "state/image-parameters.json",
     "manifest": "manifest.tsv",
     "marker": ".qwen-runtime-root",
 }
@@ -57,3 +58,42 @@ def path(name: str) -> Path:
     except KeyError as error:
         raise KeyError(f"unknown runtime root name: {name}") from error
     return home() / relative
+
+
+def binding_state() -> str:
+    """How the root's marker binds it to a checkout.
+
+    `unmarked` is a root `make bootstrap` has yet to lay out, `bound` is a
+    marker whose tree_root resolves to the tree this module sits in, and
+    `foreign:TREE` is a root laid out beside another checkout. A python child
+    reads the same three states remote/qwen-home.sh reports, so a caller that
+    resolves the root itself refuses what the shell entry points refuse.
+    """
+    try:
+        text = path("marker").read_text(encoding="utf-8")
+    except OSError:
+        return "unmarked"
+    named = ""
+    for line in text.splitlines():
+        if line.startswith("tree_root="):
+            named = line[len("tree_root=") :]
+            break
+    if not named:
+        return "foreign:unnamed"
+    resolved = Path(named)
+    if resolved.is_dir():
+        resolved = resolved.resolve()
+    if resolved == tree_root():
+        return "bound"
+    return f"foreign:{resolved}"
+
+
+def require_binding() -> None:
+    """Raise where the root's marker names another checkout."""
+    state = binding_state()
+    if state in ("bound", "unmarked"):
+        return
+    raise RuntimeError(
+        f"{home()} is bound to {state[len('foreign:') :]} and this tree is "
+        f"{tree_root()}; run make bootstrap in the checkout the marker names"
+    )

@@ -592,6 +592,7 @@ if env $lane_launch_environment \
     QWEN_WEB_TOKEN_KEY_FILE=$token_key_file QWEN_WEB_STATE_DIR=$output_directory/web-mcp \
     QWEN_WEB_BROKER_PORT=$broker_port QWEN_WEB_AUTHORIZER_READY=1 \
     QWEN_IMAGE_PROFILES_JSON=$image_parameters QWEN_MODEL_REGISTRY=$registry \
+    QWEN_IMAGE_PARAMETERS_EXTERNAL=1 \
     QWEN_MODEL_ROOT=$model_root QWEN_MODEL_PATH=$control_model_path \
     QWEN_WEB_GRANT_PER_CLIENT_PER_MINUTE=20 \
     QWEN_WEB_IMAGE_GRANT_PER_CLIENT_PER_MINUTE=20 \

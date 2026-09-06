@@ -78,6 +78,7 @@ cc -shared -fPIC -O2 -o "$shim" "$script_directory/test-fixtures/router-child-bi
 
 router_pid=''
 curl_pids=''
+port_lease_holder_pid=''
 cleanup() {
     for pid in $curl_pids; do
         kill "$pid" 2>/dev/null || true
@@ -86,13 +87,24 @@ cleanup() {
         kill "$router_pid" 2>/dev/null || true
         wait "$router_pid" 2>/dev/null || true
     fi
+    if [ -n "$port_lease_holder_pid" ]; then
+        "$script_directory/test-port-lease.sh" release \
+            "$port_lease_holder_pid" || true
+        port_lease_holder_pid=''
+    fi
 }
 trap cleanup EXIT HUP INT TERM
 
-free_port() {
-    python3 -c 'import socket
-s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
-}
+# One leased port per case, held for this script's whole run by a holder
+# process, so a gate cell running beside this one on the same workstation is
+# refused those numbers rather than receiving one from a bind to port zero that
+# this script had already released. A case takes its own number rather than
+# reusing the previous case's, since the cancelled request leaves connections
+# whose TIME_WAIT state a listener without SO_REUSEADDR meets as EADDRINUSE.
+port_lease_ports_file=$output_directory/leased-ports
+port_lease_holder_pid=$("$script_directory/test-port-lease.sh" claim 3 \
+    "$port_lease_ports_file")
+case_index=0
 
 # wait_until DESCRIPTION COMMAND...: polls the command every 50 ms until it
 # succeeds or the deadline passes; returns 1 on the deadline.
@@ -141,6 +153,8 @@ run_case() {
     expected_a_status=$5
     expected_b_status=$6
 
+    case_index=$((case_index + 1))
+    router_port=$(sed -n "${case_index}p" "$port_lease_ports_file")
     case_directory=$output_directory/$case_name
     barrier_directory=$case_directory/barrier
     mkdir -p "$barrier_directory"
@@ -149,7 +163,6 @@ run_case() {
         printf '[%s]\nLLAMA_ARG_MODEL = %s\nLLAMA_ARG_CTX_SIZE = 256\nLLAMA_ARG_N_GPU_LAYERS = 0\nLLAMA_ARG_THREADS = 1\n\n' \
             "$section" "$model" >>"$preset"
     done
-    router_port=$(free_port)
     router_log=$case_directory/router.log
     LD_PRELOAD=$shim QWEN_ROUTER_BARRIER_DIR=$barrier_directory \
         "$server" --models-preset "$preset" --models-max 1 --host 127.0.0.1 --port "$router_port" \

@@ -15,12 +15,28 @@ fi
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 witness=$script_directory/run-kernel-delta-witness.sh
 temporary_directory=$(mktemp -d)
+port_lease_holder_pid=''
 cleanup() {
     cleanup_status=$?
+    if [ -n "$port_lease_holder_pid" ]; then
+        "$script_directory/test-port-lease.sh" release \
+            "$port_lease_holder_pid" || true
+        port_lease_holder_pid=''
+    fi
     rm -rf -- "$temporary_directory"
     exit "$cleanup_status"
 }
 trap cleanup EXIT HUP INT TERM
+
+# The witness and the served fixture each bind a loopback port of their own.
+# The fixed 18098 and 18099 this test once named are numbers another
+# repository's gate cell on this workstation can already hold, so both come
+# from a lease a holder process keeps for this script's whole run.
+port_lease_ports_file=$temporary_directory/leased-ports
+port_lease_holder_pid=$("$script_directory/test-port-lease.sh" claim 2 \
+    "$port_lease_ports_file")
+witness_port=$(sed -n 1p "$port_lease_ports_file")
+witness_server_port=$(sed -n 2p "$port_lease_ports_file")
 
 failures=0
 report() {
@@ -127,7 +143,7 @@ env PATH="$arm_root/stubs:$PATH" \
     QWEN_MODEL_REGISTRY_SCRIPT="$arm_root/model-registry.sh" \
     QWEN_MODELS_DIRECTORY="$arm_root/models" \
     QWEN_RADV_ICD="$arm_root/radeon_icd.x86_64.json" \
-    QWEN_WITNESS_PORT=18099 QWEN_SERVER_PORT=18098 \
+    QWEN_WITNESS_PORT="$witness_port" QWEN_SERVER_PORT="$witness_server_port" \
     QWEN_WITNESS_READY_SECONDS=2 \
     "$witness" "$arm_root/llama-server" "$arm_root/llama-server" model-id \
     "$arm_output" >"$temporary_directory/arm.log" 2>&1 || arm_status=$?

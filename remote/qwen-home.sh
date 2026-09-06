@@ -34,7 +34,7 @@ qwen_home_image_source qwen_home_image_runtime
 qwen_home_ryzenadj_source qwen_home_ryzenadj
 qwen_home_shaderc_root qwen_home_searxng_root qwen_home_searxng_source
 qwen_home_searxng_python qwen_home_yacy qwen_home_rocm
-qwen_home_web_token_key'
+qwen_home_web_token_key qwen_home_image_parameters'
 qwen_home_names=$(printf '%s' "$qwen_home_names" | tr '\n' ' ')
 
 # shellcheck disable=SC2034  # each name is read by the script that sources this library
@@ -85,7 +85,49 @@ qwen_home_resolve() {
     qwen_home_yacy=$qwen_home_opt/yacy
     qwen_home_rocm=$qwen_home_opt/rocm
     qwen_home_web_token_key=$qwen_home_state/web-token.key
+    qwen_home_image_parameters=$qwen_home_state/image-parameters.json
     return 0
+}
+
+# The marker binds a root to the checkout that laid it out, so a root moved
+# beside a second checkout is a root that second checkout refuses. The state
+# is `unmarked` where no marker exists, which is a root `make bootstrap` has
+# yet to lay out and every reader admits, `bound` where the marker's
+# tree_root resolves to this tree, and `foreign:TREE` where it resolves
+# elsewhere. Both sides are resolved through `cd -P` so a symlinked checkout
+# compares equal to the path it points at.
+qwen_home_binding_state() {
+    if [ ! -f "$qwen_home_marker" ]; then
+        printf 'unmarked\n'
+        return 0
+    fi
+    qwen_home_marker_tree=$(sed -n 's/^tree_root=//p' "$qwen_home_marker")
+    if [ -z "$qwen_home_marker_tree" ]; then
+        printf 'foreign:unnamed\n'
+        return 0
+    fi
+    if [ -d "$qwen_home_marker_tree" ]; then
+        qwen_home_marker_tree=$(CDPATH='' cd -- "$qwen_home_marker_tree" && pwd -P)
+    fi
+    if [ "$qwen_home_marker_tree" = "$qwen_tree_root" ]; then
+        printf 'bound\n'
+    else
+        printf 'foreign:%s\n' "$qwen_home_marker_tree"
+    fi
+}
+
+# The refusal every reader of the root shares. A launcher, the manifest, and
+# the removal actions all call it, so a root whose marker names another
+# checkout stops the read rather than serving one checkout's declaration out
+# of another checkout's tree.
+qwen_home_require_binding() {
+    qwen_home_binding=$(qwen_home_binding_state)
+    case $qwen_home_binding in
+        bound | unmarked) return 0 ;;
+    esac
+    printf '%s is bound to %s and this tree is %s; run make bootstrap in the checkout the marker names, or point QWEN_HOME at this tree'"'"'s own root\n' \
+        "$qwen_home" "${qwen_home_binding#foreign:}" "$qwen_tree_root" >&2
+    return 2
 }
 
 # A sourced library sees the caller's $0, so the caller's script_directory
