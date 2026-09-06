@@ -1307,9 +1307,15 @@ cleanup_children() {
     fi
     # The forced clock is the campaign's own transition, so it unwinds with the
     # children rather than in a trap of its own; the restore acts once and
-    # leaves the exit status where it found it.
+    # leaves the exit status where it found it. Its readback goes to descriptor
+    # 9, the campaign's original stdout, for the reason the traps this function
+    # replaces name: the wall-clock ledger below appends through a block
+    # redirection of this shell's stdout, and a signal arriving inside one sends
+    # the readback into that ledger instead of to the caller. The descriptor is
+    # opened under the same forced-policy branch that arms this restore, so it
+    # is open wherever this line runs.
     if [ "$engine_clock_policy" != auto ]; then
-        census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"
+        census_engine_clock_restore "$drm_device" "$engine_clock_snapshot" >&9
     fi
     remove_workload_lease_proof
 }

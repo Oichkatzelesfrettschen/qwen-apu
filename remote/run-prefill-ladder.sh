@@ -460,11 +460,17 @@ engine_clock_below_mclk_floor_fraction=-
 # never names a state this run did not measure.
 operating_point=governor
 sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-100}
+# The restore's readback belongs on the ladder's own stdout. The inputs record
+# below is written through a block redirection of this shell's stdout, and a
+# signal arriving inside it would send the readback into that record and hide it
+# from the caller, so the original stdout is kept on descriptor 9 and the
+# restore prints there.
+exec 9>&1
 cleanup_children() {
     stop_sidecar
     stop_server
     if [ "$engine_clock_policy" != auto ] && [ "$engine_clock_snapshot" != - ]; then
-        census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"
+        census_engine_clock_restore "$drm_device" "$engine_clock_snapshot" >&9
     fi
 }
 trap cleanup_children EXIT
