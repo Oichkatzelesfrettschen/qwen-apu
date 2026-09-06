@@ -423,6 +423,7 @@ if ! grep -q 'the activated deployment failed resolution; the control start stop
 fi
 report control_consults_deployment accepted
 
+
 # The launchers read the bundled presets from the resolved bundle directory
 # ahead of the state directory's files.
 if ! grep -q 'active_deployment_directory/router-presets.ini' \
@@ -680,8 +681,65 @@ if ! grep -q 'q4k-policy.tsv that its manifest records as absent' \
     printf 'the recorded-absent policy refusal lost its reason\n' >&2
     exit 1
 fi
-rm -rf "$legacy_bundle"
 report bundle_states_its_own_formulation_policy accepted
+
+# The greps above prove the names appear; this runs the derivation. A control
+# start reaches select_llama_server immediately after the runtime-tree check
+# and immediately before `tmux has-session`, so a fake tmux answering that the
+# session exists ends the start on its own message with the binding already
+# printed. An inverted member test or a policy read from the wrong directory
+# fails here where every fixture that hands the policy in explicitly passes.
+# The harness copies the whole runtime tree rather than the members this path
+# names: the resolver verifies each bundle through the verifier, the registry,
+# and the ledger beside it, and check-runtime-tree.sh refuses a git source
+# clone outright, so a start from the checkout stops before the derivation and
+# a partial copy measures the copy. tmux is the one substitution, and the start
+# ends at its has-session answer before the state directory, the lease, or the
+# session exist.
+control_harness=$work_directory/control-harness
+control_bin=$work_directory/control-bin
+mkdir -p "$control_harness" "$control_bin" "$work_directory/control-home"
+cp -a "$script_directory/." "$control_harness/"
+cat >"$control_bin/tmux" <<'EOF'
+#!/bin/sh
+set -eu
+case " $* " in
+    *" has-session "*) exit 0 ;;
+    *) exit 2 ;;
+esac
+EOF
+chmod +x "$control_bin/tmux"
+control_binding() {
+    PATH=$control_bin:$PATH \
+    QWEN_HOME=$work_directory/control-home \
+    QWEN_DEPLOYMENT_ROOT=$deployment_root \
+        "$control_harness/qwen-webui-control.sh" start low-async 2>/dev/null |
+        sed -n 's/^deployment_binding .*q4k_policy=//p'
+}
+# The refusal cases above left the legacy bundle carrying a member its manifest
+# records as absent; the shape this check activates is the pre-member one.
+rm -f "$legacy_bundle/q4k-policy.tsv"
+awk -F'\t' 'BEGIN { OFS = "\t" } $1 == "q4k-policy.tsv" { $2 = "-" } { print }' \
+    "$legacy_manifest" >"$legacy_manifest.next"
+mv "$legacy_manifest.next" "$legacy_manifest"
+"$activator" bundle-policy-baseline "$deployment_root" >/dev/null
+bound_policy=$(control_binding)
+if [ "$bound_policy" != \
+    "$(readlink -f "$deployment_root")/bundle-policy-baseline/q4k-policy.tsv" ]; then
+    printf 'the control start bound %s rather than the active bundle policy\n' \
+        "$bound_policy" >&2
+    exit 1
+fi
+"$activator" bundle-legacy-policy "$deployment_root" >/dev/null
+bound_policy=$(control_binding)
+if [ "$bound_policy" != - ]; then
+    printf 'the control start bound %s for a bundle recording no policy member\n' \
+        "$bound_policy" >&2
+    exit 1
+fi
+"$activator" bundle-policy-baseline "$deployment_root" >/dev/null
+rm -rf "$legacy_bundle"
+report control_binds_the_bundle_formulation_policy accepted
 
 
 # The natural bundle is restored from the consistent tamper above, so the

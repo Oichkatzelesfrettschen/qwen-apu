@@ -96,6 +96,13 @@ select_llama_server() {
                 fi
                 QWEN_ACTIVE_DEPLOYMENT_DIRECTORY=$active_deployment_directory
                 export QWEN_ACTIVE_DEPLOYMENT_DIRECTORY
+                # Which member answered for each authority is what the start
+                # serves, and the exports below cross the tmux boundary where
+                # nothing reads them back, so the binding is stated here
+                # rather than inferred from the bundle's contents afterward.
+                printf 'deployment_binding server=%s ledger=%s q4k_policy=%s\n' \
+                    "$llama_server" "$QWEN_CTX_CHECKPOINT_LEDGER" \
+                    "$QWEN_BUNDLE_Q4K_POLICY"
                 ;;
             3) ;;
             *)
