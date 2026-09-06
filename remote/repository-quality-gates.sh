@@ -325,6 +325,12 @@ gate_cell test-recount-isa derive \
 gate_cell test-build-spirv-shader-pack derive \
     'remote/test-build-spirv-shader-pack.sh remote/build-spirv-shader-pack.sh' \
     remote/test-build-spirv-shader-pack.sh
+gate_cell test-build-llama-e5 derive \
+    'remote/test-build-llama-e5.sh remote/build-llama-e5.sh remote/shaderc-toolchain.tsv' \
+    remote/test-build-llama-e5.sh
+gate_cell test-run-e5-module-proof derive \
+    'remote/test-run-e5-module-proof.sh remote/run-e5-module-proof.sh remote/raven2-shader-lab/recount-isa.sh' \
+    remote/test-run-e5-module-proof.sh
 gate_cell test-web-presets derive remote/test-web-presets.sh \
     remote/test-web-presets.sh
 gate_cell test-qwen-capacity-policy derive remote/test-qwen-capacity-policy.sh \
