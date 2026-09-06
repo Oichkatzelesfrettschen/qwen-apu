@@ -17,27 +17,96 @@ set -eu
 # another ledger therefore fails assembly and activation rather than serving
 # a count the bundled ledger never stated for that model.
 #
+# The Q4_K formulation a section carries is release state where the checkpoint
+# count is bundled state, so a fourth input names the authority for it. A
+# preset is generated once and outlives every later registry edit, and the
+# `q4k_variant` column moves whenever a release promotes a row: reading the
+# live column here refuses a preset that agreed with the registry it was
+# generated against, in both directions at once. A bundle that carries its own
+# two-column policy answers from it, and each section's resolved model_id
+# appears in that policy or the bundle is refused. The registry keeps every
+# other binding, so a depth or tier revocation still reaches an old bundle while
+# its formulation policy stays the one it was built against.
+#
+# A bundle assembled before that member existed records no policy at all, which
+# `legacy` names and which is a different statement from `-`: `-` is a policy
+# declaring that no row releases a formulation, where `legacy` is the absence of
+# any recorded release state. The two agree on a keyless preset and separate on
+# a keyed one, where `legacy` refuses and names the two ways to recover the
+# selection rather than reading the absence as proof that nothing was released.
+#
 # usage: verify-bundle-preset-ledger.sh PRESET_INI CTX_LEDGER [MODEL_REGISTRY]
+#            [Q4K_POLICY]
 # MODEL_REGISTRY defaults to QWEN_MODEL_REGISTRY, then models.tsv beside this
-# script.
+# script. Q4K_POLICY defaults to QWEN_BUNDLE_Q4K_POLICY. An empty value and the
+# word `registry` both read the registry column, `-` releases no formulation on
+# any row, `legacy` states that the bundle records no policy, and any other
+# value names a policy file.
 
-if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
-    printf 'usage: %s PRESET_INI CTX_LEDGER [MODEL_REGISTRY]\n' "$0" >&2
+if [ "$#" -lt 2 ] || [ "$#" -gt 4 ]; then
+    printf 'usage: %s PRESET_INI CTX_LEDGER [MODEL_REGISTRY] [Q4K_POLICY]\n' \
+        "$0" >&2
     exit 2
 fi
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 preset_path=$1
 ledger_path=$2
 registry_path=${3:-${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}}
+q4k_policy_selector=${4:-${QWEN_BUNDLE_Q4K_POLICY:-}}
 for required in "$preset_path" "$ledger_path" "$registry_path"; do
     if [ ! -r "$required" ]; then
         printf 'preset ledger check input is unreadable: %s\n' "$required" >&2
         exit 1
     fi
 done
+# The awk program reads a policy file at a fixed argument position under every
+# mode, so the two modes that name no file read an empty one and the mode word
+# rather than the file's emptiness decides what the absence means.
+q4k_policy_scratch=''
+case $q4k_policy_selector in
+    ''|'registry') q4k_policy_mode='registry' ;;
+    -) q4k_policy_mode='none' ;;
+    'legacy') q4k_policy_mode='legacy' ;;
+    *)
+        q4k_policy_mode='file'
+        if [ ! -f "$q4k_policy_selector" ] || \
+            [ ! -r "$q4k_policy_selector" ]; then
+            printf 'Q4_K formulation policy is unreadable: %s\n' \
+                "$q4k_policy_selector" >&2
+            exit 1
+        fi
+        ;;
+esac
+q4k_policy_path=$q4k_policy_selector
+if [ "$q4k_policy_mode" != 'file' ]; then
+    q4k_policy_scratch=$(mktemp) || exit 1
+    trap 'rm -f "$q4k_policy_scratch"' EXIT HUP INT TERM
+    q4k_policy_path=$q4k_policy_scratch
+fi
 
-awk -F'\t' -v preset="$preset_path" '
+awk -F'\t' -v preset="$preset_path" -v policy_mode="$q4k_policy_mode" '
     FILENAME == ARGV[1] {
+        if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) next
+        if (NF != 2 || $1 == "") {
+            printf "Q4_K policy row is malformed: %s\n", $0 > "/dev/stderr"
+            failed = 1
+            next
+        }
+        if ($1 in policy_q4k) {
+            printf "Q4_K policy names %s twice\n", $1 > "/dev/stderr"
+            failed = 1
+            next
+        }
+        if ($2 !~ /^(-|production\/4|e4\/[248]|e4-scale\/[248]|e4-scale-licm\/[248])$/) {
+            printf "Q4_K policy row %s carries an invalid formulation: %s\n", \
+                $1, $2 > "/dev/stderr"
+            failed = 1
+            next
+        }
+        policy_q4k[$1] = $2
+        next
+    }
+    FILENAME == ARGV[2] {
         if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) next
         if ($1 == "" || $3 == "") {
             printf "registry row is malformed: %s\n", $0 > "/dev/stderr"
@@ -55,7 +124,7 @@ awk -F'\t' -v preset="$preset_path" '
         }
         next
     }
-    FILENAME == ARGV[2] {
+    FILENAME == ARGV[3] {
         if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) next
         if (NF < 2 || $2 !~ /^(0|[1-9][0-9]*)$/) {
             printf "ledger row is malformed: %s\n", $0 > "/dev/stderr"
@@ -125,7 +194,21 @@ awk -F'\t' -v preset="$preset_path" '
         }
         return id
     }
-    function close_section(    model_id, expected) {
+    # The mode word decides which authority answers for a section: the registry
+    # column where no bundle bound a policy, no formulation where a policy says
+    # so or where the bundle records none, and the bundled policy otherwise,
+    # where a model the policy never described refuses the bundle rather than
+    # reading as unreleased. `none` and `legacy` answer alike and the refusal
+    # below separates them, since a section carrying a key means one thing
+    # against a policy that released nothing and another against no policy.
+    function released_q4k(model_id) {
+        if (policy_mode == "registry") return resolved_q4k
+        if (policy_mode == "none" || policy_mode == "legacy") return "-"
+        if (model_id in policy_q4k) return policy_q4k[model_id]
+        policy_gap = 1
+        return ""
+    }
+    function close_section(    model_id, expected, released) {
         if (keys != 1) {
             printf "preset section [%s] carries %d LLAMA_ARG_CTX_CHECKPOINTS keys; exactly one is required\n", section, keys > "/dev/stderr"
             failed = 1
@@ -152,18 +235,30 @@ awk -F'\t' -v preset="$preset_path" '
             printf "preset section [%s] carries checkpoint count %s where the bundled ledger states %s for %s\n", section, count, expected, model_id > "/dev/stderr"
             failed = 1
         }
-        if (resolved_q4k == "-") {
-            if (q4k_keys != 0) {
-                printf "preset section [%s] carries LLAMA_ARG_VK_Q4K_VARIANT %s where the registry releases no Q4_K formulation for %s\n", section, q4k_value, model_id > "/dev/stderr"
+        policy_gap = 0
+        released = released_q4k(model_id)
+        if (policy_gap) {
+            printf "preset section [%s] serves %s, which the bundled Q4_K policy never names\n", section, model_id > "/dev/stderr"
+            failed = 1
+        } else if (released == "-") {
+            if (q4k_keys != 0 && policy_mode == "legacy") {
+                printf "preset section [%s] carries LLAMA_ARG_VK_Q4K_VARIANT %s where the bundle records no Q4_K formulation policy for %s; re-assemble the bundle with build-deployment-bundle.sh, or name the policy it was generated against in QWEN_BUNDLE_Q4K_POLICY\n", section, q4k_value, model_id > "/dev/stderr"
+                failed = 1
+            } else if (q4k_keys != 0) {
+                printf "preset section [%s] carries LLAMA_ARG_VK_Q4K_VARIANT %s where %s releases no Q4_K formulation for %s\n", section, q4k_value, policy_authority, model_id > "/dev/stderr"
                 failed = 1
             }
         } else if (q4k_keys != 1) {
-            printf "preset section [%s] carries %d LLAMA_ARG_VK_Q4K_VARIANT keys where the registry releases %s for %s\n", section, q4k_keys, resolved_q4k, model_id > "/dev/stderr"
+            printf "preset section [%s] carries %d LLAMA_ARG_VK_Q4K_VARIANT keys where %s releases %s for %s\n", section, q4k_keys, policy_authority, released, model_id > "/dev/stderr"
             failed = 1
-        } else if (q4k_value != resolved_q4k) {
-            printf "preset section [%s] carries Q4_K formulation %s where the registry releases %s for %s\n", section, q4k_value, resolved_q4k, model_id > "/dev/stderr"
+        } else if (q4k_value != released) {
+            printf "preset section [%s] carries Q4_K formulation %s where %s releases %s for %s\n", section, q4k_value, policy_authority, released, model_id > "/dev/stderr"
             failed = 1
         }
+    }
+    BEGIN {
+        policy_authority = (policy_mode == "registry") ? "the registry" : \
+            "the bundled Q4_K policy"
     }
     END {
         if (section != "") close_section()
@@ -172,6 +267,7 @@ awk -F'\t' -v preset="$preset_path" '
             failed = 1
         }
         if (failed) exit 1
-        printf "preset_ledger_agreement=accepted sections=%d\n", sections
+        printf "preset_ledger_agreement=accepted sections=%d q4k_policy=%s\n", \
+            sections, policy_mode
     }
-' "$registry_path" "$ledger_path" "$preset_path"
+' "$q4k_policy_path" "$registry_path" "$ledger_path" "$preset_path"

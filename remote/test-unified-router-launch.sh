@@ -119,6 +119,7 @@ set -eu
     printf 'QWEN_IMAGE_PROFILES_JSON=%s\n' "${QWEN_IMAGE_PROFILES_JSON:-unset}"
     printf 'QWEN_IMAGE_TOKEN_KEY_FILE=%s\n' "${QWEN_IMAGE_TOKEN_KEY_FILE:-unset}"
     printf 'QWEN_REQUIRED_VULKAN_MIB=%s\n' "${QWEN_REQUIRED_VULKAN_MIB:-unset}"
+    printf 'QWEN_BUNDLE_Q4K_POLICY=%s\n' "${QWEN_BUNDLE_Q4K_POLICY:-unset}"
 } >"$QWEN_LAUNCH_RECORD"
 printf 'state=running recorder=1\n' >"$QWEN_WEBUI_STATE_DIRECTORY/session.status"
 EOF
@@ -613,6 +614,75 @@ if QWEN_MODEL_REGISTRY=$bundle_registry \
 else
     report launch_accepts_the_image_bundle_record bundle_failed
     cat "$work/bundle.err" "$work/activate.err" >&2
+fi
+
+# The Q4_K formulation authority follows the preset rather than the presence of
+# an active bundle. The launcher is the link that knows which preset it selected,
+# so the three cases are read out of what it forwarded: the bundle's own preset
+# binds the bundle's policy, a caller-named preset the bundle never generated
+# reads the registry column its generator wrote it against, and a caller who
+# states the authority keeps it. Binding the active bundle's release state to an
+# explicit preset refuses a pair that agrees.
+# The bundle carries the tool-free roster, since the authority the arms read is
+# a property of the preset's origin and holds whatever lane the sections arm.
+plain_policy_member=$bundle_root/bundle-plain/q4k-policy.tsv
+# env takes its options ahead of its assignments, so each arm states its own
+# argument list rather than appending to a shared one.
+policy_launch() {
+    QWEN_MODEL_REGISTRY=$bundle_registry \
+    QWEN_CTX_CHECKPOINT_LEDGER=$bundle_ledger \
+        run_launch "$tool_free_preset" env "$@" \
+        QWEN_DEPLOYMENT_ROOT="$bundle_root"
+}
+if QWEN_MODEL_REGISTRY=$bundle_registry \
+    QWEN_MODEL_ROOT=$model_root \
+    QWEN_BUNDLE_ROUTER_PRESETS=$tool_free_preset \
+    "$script_directory/build-deployment-bundle.sh" bundle-plain \
+        "$bundle_server" "$bundle_manifest" "$bundle_ledger" "$bundle_root" \
+    >"$work/plain-bundle.log" 2>"$work/plain-bundle.err" &&
+    QWEN_MODEL_REGISTRY=$bundle_registry \
+    "$script_directory/activate-deployment-bundle.sh" bundle-plain \
+        "$bundle_root" >"$work/plain-activate.log" 2>"$work/plain-activate.err"
+then
+    outcome=ok
+    if policy_launch -u QWEN_ROUTER_PRESETS -u QWEN_LLAMA_SERVER \
+        -u QWEN_BIND_HOST \
+        >"$work/policy-bundled.log" 2>"$work/policy-bundled.err"; then
+        grep -qx "QWEN_BUNDLE_Q4K_POLICY=$plain_policy_member" "$record" ||
+            outcome=bundled_preset_lost_its_policy
+        grep -qx "router_q4k_policy_source=$plain_policy_member" \
+            "$work/policy-bundled.log" || outcome=source_unstated
+    else
+        outcome=bundled_launch_refused
+        cat "$work/policy-bundled.err" >&2
+    fi
+    # The same bundle stays active while the caller names its own preset, which
+    # is the arm an unconditional binding got wrong: the bundle's release state
+    # would refuse a preset that bundle never generated.
+    if policy_launch -u QWEN_LLAMA_SERVER -u QWEN_BIND_HOST \
+        >"$work/policy-explicit.log" 2>"$work/policy-explicit.err"; then
+        grep -qx 'QWEN_BUNDLE_Q4K_POLICY=registry' "$record" ||
+            outcome=explicit_preset_inherited_the_bundle
+    else
+        outcome=explicit_preset_launch_refused
+        cat "$work/policy-explicit.err" >&2
+    fi
+    if policy_launch -u QWEN_LLAMA_SERVER -u QWEN_BIND_HOST \
+        QWEN_BUNDLE_Q4K_POLICY=legacy \
+        >"$work/policy-stated.log" 2>"$work/policy-stated.err"; then
+        grep -qx 'QWEN_BUNDLE_Q4K_POLICY=legacy' "$record" ||
+            outcome=stated_policy_replaced
+    else
+        outcome=stated_policy_launch_refused
+        cat "$work/policy-stated.err" >&2
+    fi
+    report launch_binds_the_policy_of_the_preset_it_selected "$outcome"
+    QWEN_MODEL_REGISTRY=$bundle_registry \
+        "$script_directory/activate-deployment-bundle.sh" bundle-imaged \
+        "$bundle_root" >"$work/plain-restore.log" 2>&1 || true
+else
+    report launch_binds_the_policy_of_the_preset_it_selected bundle_failed
+    cat "$work/plain-bundle.err" "$work/plain-activate.err" >&2
 fi
 
 # An image row moved to refused after generation revokes the lane, and the

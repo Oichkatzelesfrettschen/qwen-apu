@@ -149,6 +149,26 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
     else
         source_router_presets=${QWEN_ROUTER_PRESETS:-"$state_directory/router-presets.ini"}
     fi
+    # The Q4_K formulation authority follows the preset rather than the server:
+    # the bundle answers for the preset it carries, and a preset named by the
+    # caller or generated into the state directory answers from the registry it
+    # was generated against, since binding the active bundle's release state to
+    # a preset that bundle never generated refuses an agreeing pair. A caller
+    # who knows better states QWEN_BUNDLE_Q4K_POLICY, which qwen-web-launch.sh
+    # does for the preset it selects before it execs this launcher.
+    if [ -z "${QWEN_BUNDLE_Q4K_POLICY:-}" ]; then
+        if [ "$source_router_presets" = "$deployment_router_presets" ]; then
+            if [ -f "$active_deployment_directory/q4k-policy.tsv" ]; then
+                QWEN_BUNDLE_Q4K_POLICY=$active_deployment_directory/q4k-policy.tsv
+            else
+                QWEN_BUNDLE_Q4K_POLICY=legacy
+            fi
+        else
+            QWEN_BUNDLE_Q4K_POLICY=registry
+        fi
+        export QWEN_BUNDLE_Q4K_POLICY
+    fi
+    printf 'router_q4k_policy_source=%s\n' "$QWEN_BUNDLE_Q4K_POLICY"
     if [ ! -r "$source_router_presets" ]; then
         printf 'router presets are unreadable: %s\n' "$source_router_presets" >&2
         exit 2

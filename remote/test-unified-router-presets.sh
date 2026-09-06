@@ -702,6 +702,135 @@ else
     cat "$work/q4k-drift.err" >&2
 fi
 
+# A deployment bundle carries the formulation policy its preset was generated
+# against, so the launch reads that policy rather than whichever registry the
+# checkout holds. Without it the release and its rollback refuse in opposite
+# directions: the keyed preset against the registry it predates, and the
+# keyless preset against the registry that has since released a formulation.
+run_q4k_policy_bound() {
+    QWEN_MODEL_REGISTRY=$3 \
+    QWEN_MODEL_ROOT=$model_root \
+    QWEN_QUARANTINE_REGISTRY=$quarantine_registry \
+    QWEN_CTX_CHECKPOINT_LEDGER=$ctx_ledger \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$work/q4k-bound-policy.out \
+    QWEN_BUNDLE_Q4K_POLICY=$4 \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$2 QWEN_ROUTER_MAX=1 \
+        "$policy" "$1/llama-server" \
+        "$model_root/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf" 8192 18080
+}
+q4k_bundle_policy=$work/q4k-policy.tsv
+awk -F'\t' 'BEGIN { OFS = "\t" }
+    /^[[:space:]]*($|#)/ { next }
+    $1 == "" { next }
+    { print $1, ($23 == "") ? "-" : $23 }' "$q4k_registry" >"$q4k_bundle_policy"
+if run_q4k_policy_bound "$q4k_build_root/admits" "$q4k_preset" \
+    "$script_directory/models.tsv" "$q4k_bundle_policy" \
+    >"$work/q4k-bound.log" 2>"$work/q4k-bound.err"; then
+    report q4k_bundle_policy_outranks_registry ok
+else
+    report q4k_bundle_policy_outranks_registry failed
+    cat "$work/q4k-bound.err" >&2
+fi
+# `-` is a bundle declaring that no row released a formulation: the launch that
+# reads it releases nothing, and the registry that has since released one moves
+# nothing about it.
+#
+# The keyless preset is generated against a registry copy whose formulation
+# column is cleared on every row rather than against the shipped one, since a
+# release lands by writing that column: reading the shipped registry here would
+# make this arm measure a keyed preset the moment a row is promoted, which is
+# exactly the state the arm exists to hold against.
+q4k_unreleased_registry=$work/q4k-unreleased-models.tsv
+awk -F'\t' 'BEGIN { OFS = "\t" }
+    /^#/ || NF == 0 { print; next }
+    { $23 = "-"; print }' "$script_directory/models.tsv" \
+    >"$q4k_unreleased_registry"
+q4k_keyless_preset=$work/q4k-keyless.ini
+if build_presets "$q4k_keyless_preset" \
+    "QWEN_MODEL_REGISTRY=$q4k_unreleased_registry" \
+    QWEN_WEB_AUTHORIZER_READY=0 \
+    >"$work/q4k-keyless-build.log" 2>"$work/q4k-keyless-build.err"; then
+    :
+else
+    report q4k_keyless_preset_generated failed
+    cat "$work/q4k-keyless-build.err" >&2
+fi
+if grep -q 'LLAMA_ARG_VK_Q4K_VARIANT' "$q4k_keyless_preset"; then
+    printf 'the cleared registry still produced a section key; the keyless arm measures nothing\n' >&2
+    exit 1
+fi
+if run_q4k_policy_bound "$q4k_build_root/silent" "$q4k_keyless_preset" \
+    "$q4k_registry" - \
+    >"$work/q4k-legacy.log" 2>"$work/q4k-legacy.err"; then
+    report q4k_unreleasing_policy_admits_keyless_preset ok
+else
+    report q4k_unreleasing_policy_admits_keyless_preset failed
+    cat "$work/q4k-legacy.err" >&2
+fi
+# A bundled policy that releases nothing refuses a keyed section, so a policy
+# and the preset beside it state one release rather than two.
+if run_q4k_policy_bound "$q4k_build_root/admits" "$q4k_preset" \
+    "$q4k_registry" - \
+    >"$work/q4k-conflict.log" 2>"$work/q4k-conflict.err"; then
+    report q4k_unreleasing_policy_refuses_keyed_section admitted
+elif grep -q 'the bundled Q4_K policy releases no Q4_K formulation for that row' \
+    "$work/q4k-conflict.err"; then
+    report q4k_unreleasing_policy_refuses_keyed_section ok
+else
+    report q4k_unreleasing_policy_refuses_keyed_section wrong_reason
+    cat "$work/q4k-conflict.err" >&2
+fi
+# `legacy` is the bundle assembled before the policy member existed. It records
+# no release state at all, which is a different claim from a policy stating that
+# nothing was released, so it admits the keyless preset every such bundle on the
+# appliance carries -- the rollback the release depends on -- and refuses a keyed
+# section by naming the two ways to recover the selection rather than reading the
+# absence as proof that the section was never released.
+if run_q4k_policy_bound "$q4k_build_root/silent" "$q4k_keyless_preset" \
+    "$q4k_registry" legacy \
+    >"$work/q4k-unrecorded.log" 2>"$work/q4k-unrecorded.err"; then
+    report q4k_unrecorded_policy_admits_keyless_preset ok
+else
+    report q4k_unrecorded_policy_admits_keyless_preset failed
+    cat "$work/q4k-unrecorded.err" >&2
+fi
+if run_q4k_policy_bound "$q4k_build_root/admits" "$q4k_preset" \
+    "$q4k_registry" legacy \
+    >"$work/q4k-unrecorded-keyed.log" 2>"$work/q4k-unrecorded-keyed.err"; then
+    report q4k_unrecorded_policy_refuses_keyed_section admitted
+elif grep -q 'the bundle records no Q4_K formulation policy; re-assemble the bundle' \
+    "$work/q4k-unrecorded-keyed.err"; then
+    report q4k_unrecorded_policy_refuses_keyed_section ok
+else
+    report q4k_unrecorded_policy_refuses_keyed_section wrong_reason
+    cat "$work/q4k-unrecorded-keyed.err" >&2
+fi
+# `registry` states the reading an empty value already takes, so a launcher that
+# selected a preset the bundle never generated names it rather than leaving the
+# variable for a later link to fill from the active bundle.
+if run_q4k_policy_bound "$q4k_build_root/admits" "$q4k_preset" \
+    "$q4k_registry" registry \
+    >"$work/q4k-registry-word.log" 2>"$work/q4k-registry-word.err"; then
+    report q4k_registry_word_reads_the_column ok
+else
+    report q4k_registry_word_reads_the_column failed
+    cat "$work/q4k-registry-word.err" >&2
+fi
+# A section the policy never names is refused rather than read as unreleased.
+q4k_gap_policy=$work/q4k-policy-gap.tsv
+grep -v '^qwen38-2b-distill	' "$q4k_bundle_policy" >"$q4k_gap_policy"
+if run_q4k_policy_bound "$q4k_build_root/admits" "$q4k_preset" \
+    "$q4k_registry" "$q4k_gap_policy" \
+    >"$work/q4k-gap.log" 2>"$work/q4k-gap.err"; then
+    report q4k_policy_gap_refused admitted
+elif grep -q 'which the bundled Q4_K policy never names' "$work/q4k-gap.err"; then
+    report q4k_policy_gap_refused ok
+else
+    report q4k_policy_gap_refused wrong_reason
+    cat "$work/q4k-gap.err" >&2
+fi
+
 # The router guard re-derives the key set from the preset it has just verified,
 # so a requirement that missed a section is refused at the exec boundary rather
 # than serving a formulation no build authority admitted.

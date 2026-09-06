@@ -423,6 +423,7 @@ if ! grep -q 'the activated deployment failed resolution; the control start stop
 fi
 report control_consults_deployment accepted
 
+
 # The launchers read the bundled presets from the resolved bundle directory
 # ahead of the state directory's files.
 if ! grep -q 'active_deployment_directory/router-presets.ini' \
@@ -535,6 +536,332 @@ if ! grep -q 'releases no Q4_K formulation for qwen-08b' \
     exit 1
 fi
 report preset_bound_to_row_formulation accepted
+
+# The formulation authority travels with the bundle, so a release that promotes
+# a row leaves every already-assembled bundle verifiable. The registry column
+# alone would refuse in both directions at once -- an old keyless preset against
+# a registry that now releases a formulation, and a new keyed preset against the
+# registry it was generated before -- which leaves no order in which a release
+# and its rollback both verify. A `-` policy is the pre-member bundle: its
+# generator wrote no section key because it wrote no policy either.
+printf '[qwen-2b]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 2\n' \
+    "$model_root" >"$bound_preset"
+if ! QWEN_BUNDLE_Q4K_POLICY=- "$preset_check" "$bound_preset" \
+    "$positive_ledger" "$q4k_registry" \
+    >/dev/null 2>"$work_directory/q4k-policy-keyless.stderr"; then
+    printf 'a bundle predating the policy member was refused against a registry that released a formulation\n' >&2
+    cat "$work_directory/q4k-policy-keyless.stderr" >&2
+    exit 1
+fi
+# A bundled policy answers where the registry disagrees, in both directions.
+q4k_policy=$work_directory/q4k-policy.tsv
+printf 'qwen-2b\te4-scale/4\nqwen-08b\t-\n' >"$q4k_policy"
+printf '[qwen-2b]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 2\nLLAMA_ARG_VK_Q4K_VARIANT = e4-scale/4\n' \
+    "$model_root" >"$bound_preset"
+if ! "$preset_check" "$bound_preset" "$positive_ledger" "$QWEN_MODEL_REGISTRY" \
+    "$q4k_policy" >/dev/null 2>"$work_directory/q4k-policy-ahead.stderr"; then
+    printf 'a keyed section was refused against its own bundled policy\n' >&2
+    cat "$work_directory/q4k-policy-ahead.stderr" >&2
+    exit 1
+fi
+# A policy that disagrees with the preset beside it refuses, so the member
+# states the release rather than decorating it.
+printf 'qwen-2b\t-\nqwen-08b\t-\n' >"$q4k_policy"
+if "$preset_check" "$bound_preset" "$positive_ledger" "$q4k_registry" \
+    "$q4k_policy" >/dev/null 2>"$work_directory/q4k-policy-conflict.stderr"; then
+    printf 'a section keyed against its own unreleasing policy escaped the preset check\n' >&2
+    exit 1
+fi
+if ! grep -q 'the bundled Q4_K policy releases no Q4_K formulation for qwen-2b' \
+    "$work_directory/q4k-policy-conflict.stderr"; then
+    printf 'the bundled-policy conflict refusal lost its reason\n' >&2
+    cat "$work_directory/q4k-policy-conflict.stderr" >&2
+    exit 1
+fi
+# A model the policy never names is refused rather than read as unreleased, so
+# a policy written against a narrower registry cannot silently admit a section.
+printf 'qwen-08b\t-\n' >"$q4k_policy"
+if "$preset_check" "$bound_preset" "$positive_ledger" "$q4k_registry" \
+    "$q4k_policy" >/dev/null 2>"$work_directory/q4k-policy-gap.stderr"; then
+    printf 'a section outside the bundled policy escaped the preset check\n' >&2
+    exit 1
+fi
+if ! grep -q 'which the bundled Q4_K policy never names' \
+    "$work_directory/q4k-policy-gap.stderr"; then
+    printf 'the policy-gap refusal lost its reason\n' >&2
+    cat "$work_directory/q4k-policy-gap.stderr" >&2
+    exit 1
+fi
+report formulation_policy_travels_with_the_bundle accepted
+
+# The assembled bundle states its own policy, and a bundle that predates the
+# member keeps verifying after the registry moves under it. The second half is
+# the regression: without the member the activator refuses the rollback target
+# the release depends on.
+if ! QWEN_BUNDLE_ROUTER_PRESETS=$positive_preset \
+    "$builder" bundle-policy-baseline "$natural_server" "$natural_manifest" \
+    "$positive_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/policy-baseline.stderr"; then
+    printf 'the policy baseline bundle failed to assemble\n' >&2
+    cat "$work_directory/policy-baseline.stderr" >&2
+    exit 1
+fi
+if [ ! -r "$deployment_root/bundle-policy-baseline/q4k-policy.tsv" ]; then
+    printf 'the assembled bundle carries no Q4_K policy member\n' >&2
+    exit 1
+fi
+if ! awk -F'\t' '$1 == "q4k-policy.tsv" && $2 ~ /^[0-9a-f]{64}$/ { found = 1 }
+    END { exit !found }' \
+    "$deployment_root/bundle-policy-baseline/bundle-manifest.tsv"; then
+    printf 'the bundle manifest carries no digest row for q4k-policy.tsv\n' >&2
+    exit 1
+fi
+released_registry=$work_directory/released-models.tsv
+awk -F'\t' 'BEGIN { OFS = "\t" }
+    { for (field = NF + 1; field <= 23; field++) { $field = "-" }
+      if ($1 == "qwen-2b") { $23 = "e4-scale-licm/4" }
+      print }' "$QWEN_MODEL_REGISTRY" >"$released_registry"
+if ! QWEN_MODEL_REGISTRY=$released_registry "$verifier" "$deployment_root" \
+    bundle-policy-baseline >/dev/null 2>"$work_directory/released-verify.stderr"; then
+    printf 'a bundle assembled before a release was refused after the registry released a formulation\n' >&2
+    cat "$work_directory/released-verify.stderr" >&2
+    exit 1
+fi
+if ! QWEN_BUNDLE_ROUTER_PRESETS=$positive_preset \
+    "$builder" bundle-legacy-policy "$natural_server" "$natural_manifest" \
+    "$positive_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/legacy-assemble.stderr"; then
+    printf 'the legacy policy bundle failed to assemble\n' >&2
+    cat "$work_directory/legacy-assemble.stderr" >&2
+    exit 1
+fi
+legacy_bundle=$deployment_root/bundle-legacy-policy
+legacy_manifest=$legacy_bundle/bundle-manifest.tsv
+legacy_policy_digest=$(awk -F'\t' '$1 == "q4k-policy.tsv" { print $2; exit }' \
+    "$legacy_manifest")
+printf 'qwen-2b\te4/8\n' >"$legacy_bundle/q4k-policy.tsv"
+if QWEN_MODEL_REGISTRY=$released_registry "$verifier" "$deployment_root" \
+    bundle-legacy-policy >/dev/null 2>"$work_directory/legacy-digest.stderr"; then
+    printf 'a policy member diverging from its recorded digest escaped verification\n' >&2
+    exit 1
+fi
+if ! grep -q 'bundle member diverged: q4k-policy.tsv' \
+    "$work_directory/legacy-digest.stderr"; then
+    printf 'the diverged-policy refusal lost its reason\n' >&2
+    exit 1
+fi
+# Two bundles assembled from one registry record one policy, so the digest is a
+# property of the registry rather than of the assembly.
+cp "$deployment_root/bundle-policy-baseline/q4k-policy.tsv" \
+    "$legacy_bundle/q4k-policy.tsv"
+if [ "$(sha256sum "$legacy_bundle/q4k-policy.tsv" | cut -d ' ' -f 1)" != \
+    "$legacy_policy_digest" ]; then
+    printf 'two bundles assembled from one registry recorded different policies\n' >&2
+    exit 1
+fi
+# A manifest row of `-` declares the member absent: the bundle states that no
+# row released a formulation, and it verifies after the registry moves.
+rm -f "$legacy_bundle/q4k-policy.tsv"
+awk -F'\t' 'BEGIN { OFS = "\t" } $1 == "q4k-policy.tsv" { $2 = "-" } { print }' \
+    "$legacy_manifest" >"$legacy_manifest.next"
+mv "$legacy_manifest.next" "$legacy_manifest"
+if ! QWEN_MODEL_REGISTRY=$released_registry "$verifier" "$deployment_root" \
+    bundle-legacy-policy >/dev/null 2>"$work_directory/legacy-verify.stderr"; then
+    printf 'a bundle declaring its policy member absent was refused after the registry released a formulation\n' >&2
+    cat "$work_directory/legacy-verify.stderr" >&2
+    exit 1
+fi
+cp "$deployment_root/bundle-policy-baseline/q4k-policy.tsv" \
+    "$legacy_bundle/q4k-policy.tsv"
+if QWEN_MODEL_REGISTRY=$released_registry "$verifier" "$deployment_root" \
+    bundle-legacy-policy >/dev/null 2>"$work_directory/legacy-present.stderr"; then
+    printf 'a bundle carrying a policy its manifest records as absent escaped verification\n' >&2
+    exit 1
+fi
+if ! grep -q 'q4k-policy.tsv that its manifest records as absent' \
+    "$work_directory/legacy-present.stderr"; then
+    printf 'the recorded-absent policy refusal lost its reason\n' >&2
+    exit 1
+fi
+# No row at all is a different claim from a row of `-`: the bundle predates the
+# member and records no release state, which is the shape every deployment on
+# the appliance already holds. It verifies, and the preset check reads it as
+# `legacy` rather than as a policy declaring that nothing was released.
+rm -f "$legacy_bundle/q4k-policy.tsv"
+awk -F'\t' '$1 != "q4k-policy.tsv" { print }' "$legacy_manifest" \
+    >"$legacy_manifest.next"
+mv "$legacy_manifest.next" "$legacy_manifest"
+if ! QWEN_MODEL_REGISTRY=$released_registry "$verifier" "$deployment_root" \
+    bundle-legacy-policy >/dev/null 2>"$work_directory/legacy-unrecorded.stderr"; then
+    printf 'a bundle recording no policy row was refused after the registry released a formulation\n' >&2
+    cat "$work_directory/legacy-unrecorded.stderr" >&2
+    exit 1
+fi
+cp "$deployment_root/bundle-policy-baseline/q4k-policy.tsv" \
+    "$legacy_bundle/q4k-policy.tsv"
+if QWEN_MODEL_REGISTRY=$released_registry "$verifier" "$deployment_root" \
+    bundle-legacy-policy >/dev/null 2>"$work_directory/legacy-orphan.stderr"; then
+    printf 'a bundle carrying a policy member its manifest records no row for escaped verification\n' >&2
+    exit 1
+fi
+if ! grep -q 'q4k-policy.tsv that its manifest records no row for' \
+    "$work_directory/legacy-orphan.stderr"; then
+    printf 'the unrecorded-member refusal lost its reason\n' >&2
+    exit 1
+fi
+rm -f "$legacy_bundle/q4k-policy.tsv"
+# A symlink is refused ahead of the manifest, so an external target and a
+# dangling one meet the same rule the other members already carry.
+ln -s "$deployment_root/bundle-policy-baseline/q4k-policy.tsv" \
+    "$legacy_bundle/q4k-policy.tsv"
+if QWEN_MODEL_REGISTRY=$released_registry "$verifier" "$deployment_root" \
+    bundle-legacy-policy >/dev/null 2>"$work_directory/legacy-symlink.stderr"; then
+    printf 'a policy member symlinked to an external target escaped verification\n' >&2
+    exit 1
+fi
+if ! grep -q 'bundle member is a symlink' \
+    "$work_directory/legacy-symlink.stderr"; then
+    printf 'the symlinked-policy refusal lost its reason\n' >&2
+    exit 1
+fi
+rm -f "$legacy_bundle/q4k-policy.tsv"
+ln -s "$legacy_bundle/absent-policy.tsv" "$legacy_bundle/q4k-policy.tsv"
+if QWEN_MODEL_REGISTRY=$released_registry "$verifier" "$deployment_root" \
+    bundle-legacy-policy >/dev/null 2>"$work_directory/legacy-dangling.stderr"; then
+    printf 'a dangling policy symlink escaped verification\n' >&2
+    exit 1
+fi
+if ! grep -q 'bundle member is a symlink' \
+    "$work_directory/legacy-dangling.stderr"; then
+    printf 'the dangling-policy refusal lost its reason\n' >&2
+    exit 1
+fi
+rm -f "$legacy_bundle/q4k-policy.tsv"
+# The reader takes a row rather than the first row, so two declarations refuse
+# under either ordering and an empty declaration states nothing at all.
+cp "$deployment_root/bundle-policy-baseline/q4k-policy.tsv" \
+    "$legacy_bundle/q4k-policy.tsv"
+for duplicate_order in digest-first absent-first; do
+    if [ "$duplicate_order" = digest-first ]; then
+        duplicate_rows="$legacy_policy_digest
+-"
+    else
+        duplicate_rows="-
+$legacy_policy_digest"
+    fi
+    awk -F'\t' -v rows="$duplicate_rows" 'BEGIN { OFS = "\t" }
+        $1 == "q4k-policy.tsv" { next }
+        { print }
+        END {
+            count = split(rows, values, "\n")
+            for (row_index = 1; row_index <= count; row_index++) {
+                print "q4k-policy.tsv", values[row_index]
+            }
+        }' "$legacy_manifest" >"$legacy_manifest.next"
+    mv "$legacy_manifest.next" "$legacy_manifest"
+    if QWEN_MODEL_REGISTRY=$released_registry "$verifier" "$deployment_root" \
+        bundle-legacy-policy >/dev/null \
+        2>"$work_directory/legacy-duplicate.stderr"; then
+        printf 'two q4k-policy.tsv manifest rows escaped verification under %s\n' \
+            "$duplicate_order" >&2
+        exit 1
+    fi
+    if ! grep -q 'rows for q4k-policy.tsv; at most one is admitted' \
+        "$work_directory/legacy-duplicate.stderr"; then
+        printf 'the duplicate-declaration refusal lost its reason under %s\n' \
+            "$duplicate_order" >&2
+        exit 1
+    fi
+done
+awk -F'\t' 'BEGIN { OFS = "\t" }
+    $1 == "q4k-policy.tsv" { next }
+    { print }
+    END { printf "q4k-policy.tsv\t\n" }' "$legacy_manifest" \
+    >"$legacy_manifest.next"
+mv "$legacy_manifest.next" "$legacy_manifest"
+if QWEN_MODEL_REGISTRY=$released_registry "$verifier" "$deployment_root" \
+    bundle-legacy-policy >/dev/null 2>"$work_directory/legacy-empty.stderr"; then
+    printf 'an empty q4k-policy.tsv declaration escaped verification\n' >&2
+    exit 1
+fi
+if ! grep -q 'empty q4k-policy.tsv declaration' \
+    "$work_directory/legacy-empty.stderr"; then
+    printf 'the empty-declaration refusal lost its reason\n' >&2
+    exit 1
+fi
+report bundle_states_its_own_formulation_policy accepted
+
+# The greps above prove the names appear; this runs the derivation. A control
+# start reaches select_llama_server immediately after the runtime-tree check
+# and immediately before `tmux has-session`, so a fake tmux answering that the
+# session exists ends the start on its own message with the binding already
+# printed. The formulation authority follows the preset rather than the server,
+# and a direct control start names no preset: qwen-capacity-policy.sh resolves
+# an unnamed router preset to the state directory's file, which the generator
+# wrote against the registry column, so binding the active bundle's release
+# state here would hold a preset that bundle never generated to it. The start
+# therefore reads `registry` whatever bundle is active, and preserves a policy
+# the caller states, which is how qwen-launch.sh and qwen-web-launch.sh hand
+# down the authority for the preset they did select.
+# The harness copies the whole runtime tree rather than the members this path
+# names: the resolver verifies each bundle through the verifier, the registry,
+# and the ledger beside it, and check-runtime-tree.sh refuses a git source
+# clone outright, so a start from the checkout stops before the derivation and
+# a partial copy measures the copy. tmux is the one substitution, and the start
+# ends at its has-session answer before the state directory, the lease, or the
+# session exist.
+control_harness=$work_directory/control-harness
+control_bin=$work_directory/control-bin
+mkdir -p "$control_harness" "$control_bin" "$work_directory/control-home"
+cp -a "$script_directory/." "$control_harness/"
+cat >"$control_bin/tmux" <<'EOF'
+#!/bin/sh
+set -eu
+case " $* " in
+    *" has-session "*) exit 0 ;;
+    *) exit 2 ;;
+esac
+EOF
+chmod +x "$control_bin/tmux"
+control_binding() {
+    PATH=$control_bin:$PATH \
+    QWEN_HOME=$work_directory/control-home \
+    QWEN_DEPLOYMENT_ROOT=$deployment_root \
+        env "$@" "$control_harness/qwen-webui-control.sh" start low-async \
+        2>/dev/null |
+        sed -n 's/^deployment_binding .*q4k_policy=//p'
+}
+# The refusal cases above left the legacy bundle carrying a member its manifest
+# records as absent; the shape this check activates is the pre-member one.
+rm -f "$legacy_bundle/q4k-policy.tsv"
+awk -F'\t' 'BEGIN { OFS = "\t" } $1 == "q4k-policy.tsv" { next } { print }' \
+    "$legacy_manifest" >"$legacy_manifest.next"
+mv "$legacy_manifest.next" "$legacy_manifest"
+for active_bundle in bundle-policy-baseline bundle-legacy-policy; do
+    "$activator" "$active_bundle" "$deployment_root" >/dev/null
+    bound_policy=$(control_binding)
+    if [ "$bound_policy" != registry ]; then
+        printf 'the control start bound %s under %s where the preset it names is the state directory file\n' \
+            "$bound_policy" "$active_bundle" >&2
+        exit 1
+    fi
+done
+"$activator" bundle-policy-baseline "$deployment_root" >/dev/null
+stated_policy=$(readlink -f "$deployment_root")/bundle-policy-baseline/q4k-policy.tsv
+bound_policy=$(control_binding "QWEN_BUNDLE_Q4K_POLICY=$stated_policy")
+if [ "$bound_policy" != "$stated_policy" ]; then
+    printf 'the control start replaced the stated policy %s with %s\n' \
+        "$stated_policy" "$bound_policy" >&2
+    exit 1
+fi
+bound_policy=$(control_binding QWEN_BUNDLE_Q4K_POLICY=legacy)
+if [ "$bound_policy" != legacy ]; then
+    printf 'the control start replaced a stated legacy policy with %s\n' \
+        "$bound_policy" >&2
+    exit 1
+fi
+rm -r "$legacy_bundle"
+report control_start_defers_the_formulation_authority accepted
 
 
 # The natural bundle is restored from the consistent tamper above, so the

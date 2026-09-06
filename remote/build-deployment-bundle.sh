@@ -227,6 +227,30 @@ if [ -n "$web_presets_path" ]; then
         cut -d ' ' -f 1)
 fi
 
+# The formulation each preset section releases is projected out of the registry
+# the generator read and travels with the bundle, so a later registry edit moves
+# what the appliance serves next rather than what this bundle claims. The
+# projection is the `q4k_variant` column alone: a full registry copy would also
+# freeze `validated_filled_depth`, `context_ceiling`, and `tier`, which would
+# leave an old bundle serving a depth a present-day revocation withdrew.
+bundle_registry_path=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
+if [ ! -r "$bundle_registry_path" ]; then
+    printf 'bundle registry is unreadable: %s\n' "$bundle_registry_path" >&2
+    exit 1
+fi
+awk -F'\t' 'BEGIN { OFS = "\t" }
+    /^[[:space:]]*($|#)/ { next }
+    $1 == "" { next }
+    { print $1, ($23 == "") ? "-" : $23 }' \
+    "$bundle_registry_path" >"$staging_directory/q4k-policy.tsv"
+if [ ! -s "$staging_directory/q4k-policy.tsv" ]; then
+    printf 'bundle registry produced no Q4_K policy rows: %s\n' \
+        "$bundle_registry_path" >&2
+    exit 1
+fi
+q4k_policy_sha256=$(sha256sum "$staging_directory/q4k-policy.tsv" |
+    cut -d ' ' -f 1)
+
 # A merged router preset names one MCP configuration per web section, and that
 # configuration is session state rather than release state: its contents name
 # QWEN_WEB_STATE_DIR, the broker signing key, and the per-profile budgets, and
@@ -385,6 +409,7 @@ fi
     printf 'router-presets.ini\t%s\n' "$router_presets_sha256"
     printf 'web-presets.ini\t%s\n' "$web_presets_sha256"
     printf 'web-mcp-manifest.tsv\t%s\n' "$web_mcp_manifest_sha256"
+    printf 'q4k-policy.tsv\t%s\n' "$q4k_policy_sha256"
 } >"$staging_directory/bundle-manifest.tsv"
 
 # The staged bundle passes the same verification an activation applies,

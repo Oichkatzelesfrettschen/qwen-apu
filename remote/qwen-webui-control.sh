@@ -67,6 +67,14 @@ select_llama_server() {
     # resolves for itself. A deployment that exists and fails verification
     # refuses the start rather than silently serving whatever the build symlinks
     # name instead.
+    # The Q4_K formulation authority follows the preset rather than the server.
+    # The launcher that selected the preset states it, and a direct control
+    # start reads the registry column, since qwen-capacity-policy.sh resolves an
+    # unnamed router preset to the state directory's file, which the generator
+    # wrote against that column. Binding the active bundle's release state here
+    # would hand it to a preset the bundle never generated.
+    QWEN_BUNDLE_Q4K_POLICY=${QWEN_BUNDLE_Q4K_POLICY:-registry}
+    export QWEN_BUNDLE_Q4K_POLICY
     if [ -z "$llama_server" ]; then
         deployment_root=${QWEN_DEPLOYMENT_ROOT:-"$qwen_home_deployments"}
         deployment_resolution=$("$script_directory/resolve-active-deployment.sh" \
@@ -83,6 +91,13 @@ select_llama_server() {
                 fi
                 QWEN_ACTIVE_DEPLOYMENT_DIRECTORY=$active_deployment_directory
                 export QWEN_ACTIVE_DEPLOYMENT_DIRECTORY
+                # Which member answered for each authority is what the start
+                # serves, and the exports below cross the tmux boundary where
+                # nothing reads them back, so the binding is stated here
+                # rather than inferred from the bundle's contents afterward.
+                printf 'deployment_binding server=%s ledger=%s q4k_policy=%s\n' \
+                    "$llama_server" "$QWEN_CTX_CHECKPOINT_LEDGER" \
+                    "$QWEN_BUNDLE_Q4K_POLICY"
                 ;;
             3) ;;
             *)
@@ -413,6 +428,7 @@ case $action in
                               QWEN_APPROVED_MODEL_BYTES \
                               QWEN_MODEL_REGISTRY QWEN_QUARANTINE_REGISTRY \
                               QWEN_VALIDATED_TUPLES QWEN_CTX_CHECKPOINT_LEDGER \
+                              QWEN_BUNDLE_Q4K_POLICY \
                               QWEN_ACTIVE_DEPLOYMENT_DIRECTORY \
                               QWEN_PIPELINE_CENSUS QWEN_PERF_LOGGER \
                               QWEN_FORCE_INTEGER_DOT \

@@ -523,8 +523,47 @@ checkpoint requirement, and `qwen-router-exec-guard.sh` re-derives the key set
 from the preset whose digest it just verified and requires it to equal what the
 policy bound, so a derivation that missed a section is caught rather than
 served. `verify-bundle-preset-ledger.sh` binds each section's key to the
-registry row its model file resolves to, so assembly and activation refuse a
-bundle whose preset names a formulation the registry does not release, and
+formulation released for the row its model file resolves to, so assembly and
+activation refuse a bundle whose preset names one the release never stated.
+That release is bundled rather than read live. The registry's `q4k_variant`
+column moves whenever a promotion lands, and a preset outlives the edit, so
+reading the live column refuses in both directions at once: an already-assembled
+bundle whose sections carry no key fails against a registry that has since
+released one, and a bundle carrying the released key fails against the registry
+it was generated before. `resolve-active-deployment.sh` verifies the active
+bundle on every launch and `activate-deployment-bundle.sh` verifies a rollback
+target, so those two refusals leave no order in which a release and its rollback
+both verify. `build-deployment-bundle.sh` therefore projects `model_id` and
+`q4k_variant` out of the registry it read into `q4k-policy.tsv` and records its
+digest in `bundle-manifest.tsv`, the shape `web-mcp-manifest.tsv` already takes.
+Three manifest shapes are three claims and `verify-deployment-bundle.sh` reads
+them as such: exactly one digest row binds the member, exactly one row of `-`
+requires the member absent and releases nothing on every row, and no row at all
+is a bundle assembled before the member existed, which records no release state
+and binds `legacy`. A second row, an empty declaration, a member the manifest
+records no row for, and a member reached through a symlink each refuse, since
+the reader takes a row rather than the first row. `legacy` and `-` agree on a
+keyless preset -- which is every bundle on the appliance, where no manifest
+carries the row and no section carries the key -- and separate on a keyed one,
+where `legacy` refuses by naming the re-assembly and the explicit
+`QWEN_BUNDLE_Q4K_POLICY` that recover the selection rather than reading the
+absence as proof that nothing was released. The authority follows the preset
+rather than the server: `qwen-launch.sh` and `qwen-web-launch.sh` each bind
+`QWEN_BUNDLE_Q4K_POLICY` from the bundle whose preset they selected and state
+`registry` for a preset the caller named or the state directory holds, since
+binding an active bundle's release state to a preset that bundle never generated
+refuses an agreeing pair; `qwen-webui-control.sh` defaults to `registry` and
+forwards whatever a launcher stated across the tmux boundary.
+`qwen-capacity-policy.sh` then compares each section against its own release,
+refuses a section resolving to a model the policy never names rather than
+reading it as unreleased, and states the authority on its `router_q4k_policy`
+line. The projection is that one column, because a whole-registry snapshot would
+also freeze `validated_filled_depth`, `context_ceiling`, and `tier` and leave an
+old bundle serving a depth a present-day revocation withdrew. An empty value
+reads the registry column, which is the generator's own reading; the
+explicit-`QWEN_LLAMA_SERVER` recovery form reads no bundle, so an operator
+serving a preset older than the registry beside it states
+`QWEN_BUNDLE_Q4K_POLICY=-` there rather than editing the registry back.
 `write-deployment-receipt.sh` records the whole selection as
 `q4k_selection_identity` beside the build's own `q4k_variants_declared`. On the
 single-model path the policy exports the row's key as `QWEN_Q4K_VARIANT`, the
@@ -2143,7 +2182,7 @@ QWEN_BUNDLE_ROUTER_PRESETS=OUT.ini \
 remote/activate-deployment-bundle.sh NAME|rollback [ROOT]
 remote/verify-deployment-bundle.sh ROOT NAME
 remote/resolve-active-deployment.sh [ROOT]     # the one bundle a launch reads
-remote/verify-bundle-preset-ledger.sh PRESET LEDGER [REGISTRY]
+remote/verify-bundle-preset-ledger.sh PRESET LEDGER [REGISTRY] [Q4K_POLICY]
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
