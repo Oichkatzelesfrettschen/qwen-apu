@@ -373,8 +373,10 @@ validate_router_preset_tuples() {
                 # print a second reason for one defect.
             } else if (expected_q4k == "-") {
                 if (q4k_count != 0) {
-                    printf "router preset section %s carries LLAMA_ARG_VK_Q4K_VARIANT %s, the released policy names no Q4_K formulation for that row\n", \
-                        section, q4k_value > "/dev/stderr"
+                    printf "router preset section %s carries LLAMA_ARG_VK_Q4K_VARIANT %s, %s releases no Q4_K formulation for that row\n", \
+                        section, q4k_value, \
+                        (q4k_policy_mode == "registry") ? "the registry row" \
+                            : "the bundled Q4_K policy" > "/dev/stderr"
                     rejected = 1
                 }
             } else if (q4k_count != 1) {
