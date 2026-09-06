@@ -14,7 +14,10 @@ only over row ids both arms actually graded -- the pairing count travels next
 to the delta so a partial pairing cannot read as a full-suite gain. A
 `failed` arm's partial record still folds into the report, labelled `failed`
 rather than `completed`, so a reader sees what ran before the row that broke
-it rather than losing the arm's evidence to a nonzero exit status.
+it rather than losing the arm's evidence to a nonzero exit status. A `failed`
+arm that raised ahead of its row loop wrote no record at all; that row folds
+in with its web-on columns reading `-` and `record_absent` on its reason,
+since refusing the report would discard every other model's completed arm.
 
 usage: summarize-conversational-suite.py MANIFEST_TSV OUTPUT_DIRECTORY
 """
@@ -119,24 +122,38 @@ def build_row(manifest_row):
     on = None
     paired_count = 0
     paired_delta_mean = None
-    # web_on_json is written whenever the web-on arm ran at all, whether it
+    # web_on_json is named whenever the web-on arm started, whether it
     # finished (`completed`) or exited on a transport error partway through
     # (`failed`) -- run-conversational-web-arm.py writes its output file
-    # after the row loop regardless of the arm's own exit status. `-` means
-    # the arm never ran (`unavailable`), which is the only case with nothing
-    # to fold in.
+    # after the row loop regardless of the arm's own exit status, so a `-`
+    # is the arm that never ran (`unavailable`) and an absent file is the arm
+    # that raised ahead of the loop.
     if manifest_row["web_on_json"] != "-":
+        on_document = None
         try:
             on_document = load_json(manifest_row["web_on_json"])
         except OSError as error:
-            raise SystemExit(
-                f"{manifest_row['model_id']}: web_on_status={status!r} names "
-                f"{manifest_row['web_on_json']!r}, which is unreadable: {error}")
-        on = summarize_on_arm(on_document)
-        shared_ids = sorted(set(off["by_id"]) & set(on["by_id"]))
-        deltas = [int(on["by_id"][i]) - int(off["by_id"][i]) for i in shared_ids]
-        paired_count = len(deltas)
-        paired_delta_mean = statistics.fmean(deltas) if deltas else None
+            # An arm that raised ahead of its row loop -- the page driver
+            # absent, unreadable, or refused by its own mode bit -- leaves no
+            # record to fold, and a refusal there discards every other model's
+            # completed arm over one model's transport failure. A `failed` arm
+            # therefore folds in with its web-on columns reading `-` and its
+            # reason naming the absent record; a `completed` arm claims a
+            # record and keeps the refusal.
+            if status != "failed":
+                raise SystemExit(
+                    f"{manifest_row['model_id']}: web_on_status={status!r} names "
+                    f"{manifest_row['web_on_json']!r}, which is unreadable: {error}")
+            reason = manifest_row["web_on_reason"]
+            manifest_row = dict(manifest_row)
+            manifest_row["web_on_reason"] = (
+                "record_absent" if reason == "-" else reason + ",record_absent")
+        if on_document is not None:
+            on = summarize_on_arm(on_document)
+            shared_ids = sorted(set(off["by_id"]) & set(on["by_id"]))
+            deltas = [int(on["by_id"][i]) - int(off["by_id"][i]) for i in shared_ids]
+            paired_count = len(deltas)
+            paired_delta_mean = statistics.fmean(deltas) if deltas else None
 
     row = {
         "model_id": manifest_row["model_id"],

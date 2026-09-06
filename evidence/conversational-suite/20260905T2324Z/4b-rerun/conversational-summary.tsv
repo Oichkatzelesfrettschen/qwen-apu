@@ -1,0 +1,2 @@
+model_id	web_off_rows	web_off_correct_on_completed	web_off_mean_wall	web_off_p90_wall	web_on_status	web_on_reason	web_on_rows	web_on_correct_on_completed	web_on_mean_wall	web_on_p90_wall	tool_proposal_rate	approvals	results_produced	paired_count	paired_delta_mean
+qwen38-4b-distill	94	0.747	33.71	38.52	failed	-	65	0.746	185.58	189.59	0.015	1	0	65	-0.046
