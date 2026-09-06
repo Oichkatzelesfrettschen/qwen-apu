@@ -427,12 +427,27 @@ checkpoint_patch_sha256=$(printf '%s\n' "$classifier_output" |
 # claim. A tree carrying the multiplexed shader without the host reader, or the
 # reader without the shader, admits no key and reads `-`, since one half alone
 # would answer every key with the default.
+# The value is a comma-separated set whose elements are the admitted ALGORITHM/ROWS
+# keys, with `route=arg:LLAMA_ARG_VK_Q4K_VARIANT` beside them where the build also
+# carries the per-row argument; run-served-binary-ab.sh matches an arm's key against
+# one whole element, so the route token names a capability without ever matching a
+# key. `production/4` joins the set where the shader carries the pinned commit's own
+# formulation as Q4K_VARIANT 3 and the host reader selects it, since that is the
+# module an unkeyed launch of such a build creates.
 q4k_shader_source=$source_directory/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
 q4k_host_source=$source_directory/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+q4k_arg_source=$source_directory/common/arg.cpp
+q4k_server_source=$source_directory/tools/server/server.cpp
 q4k_variants=-
 if grep -q '^#ifndef Q4K_VARIANT$' "$q4k_shader_source" 2>/dev/null &&
     grep -q 'getenv("GGML_VK_Q4K_VARIANT")' "$q4k_host_source" 2>/dev/null; then
     q4k_variants=e4/2,e4/4,e4/8,e4-scale/2,e4-scale/4,e4-scale/8,e4-scale-licm/2,e4-scale-licm/4,e4-scale-licm/8
+    if grep -q '^#if Q4K_VARIANT == 3$' "$q4k_shader_source" 2>/dev/null &&
+        grep -q 'arr_dmmv_q4_k_prod_f32_f32_data' "$q4k_host_source" 2>/dev/null &&
+        grep -q 'LLAMA_ARG_VK_Q4K_VARIANT' "$q4k_arg_source" 2>/dev/null &&
+        grep -q 'GGML_VK_Q4K_VARIANT", params.vk_q4k_variant' "$q4k_server_source" 2>/dev/null; then
+        q4k_variants=production/4,$q4k_variants,route=arg:LLAMA_ARG_VK_Q4K_VARIANT
+    fi
 fi
 
 # The ordered production series, digested the way verify-llama-patch-series.sh

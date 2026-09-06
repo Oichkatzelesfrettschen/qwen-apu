@@ -1918,6 +1918,12 @@ remote/image-review.py --router-origin URL --artifact-origin URL --model ID \
 remote/run-vision-review-control.sh ROUTER_ORIGIN ARTIFACT_ORIGIN MODEL \
     SHA256_A SHA256_B PROMPT_HASH OUTPUT_DIR --constraint NAME=DESCRIPTION
                                                 # real, withheld, swapped, and a closing real arm
+remote/build-llama-e5.sh SOURCE [PREFIX_ROOT]   # the census-instrumented int24
+                                                # binary under the pinned shaderc
+remote/run-e5-module-proof.sh OUT SERVER MODEL RADV_PREFIX
+                                                # the executed OpSDotKHR module
+                                                # and the isolated driver, before
+                                                # any rate
 remote/run-graph-alias-ab.sh OUTPUT_DIR [MODEL_ID...]
                                                 # token identity across the graph optimizer
 remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
@@ -2163,6 +2169,8 @@ remote/test-gguf-tokenizer-identity.py
 remote/test-admit-candidate-static.py
 remote/test-one-token-admission.sh
 remote/test-fetch-candidate-artifact.sh
+remote/test-build-llama-e5.sh
+remote/test-run-e5-module-proof.sh
 remote/test-run-graph-alias-ab.sh
 remote/test-run-ctx-checkpoint-sweep.sh
 python3 remote/test-summarize-kernel-census.py
@@ -2181,6 +2189,42 @@ GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
 
 `remote/test-fixtures/fake-llama-server.sh` stands in for the real server so a
 guard test runs without a GPU.
+
+A fixture that needs a loopback TCP port claims one through
+`remote/test-port-lease.sh` rather than binding port zero and closing the
+socket. That read reports a number free at the instant of the read and reserves
+nothing afterwards, so two fixtures running at once on one workstation receive
+the same number and the second listener meets EADDRINUSE; a rerun then passes
+and leaves the collision in place. `claim COUNT PORTS_FILE` starts a holder
+process that takes an exclusive flock on each port's lease file, picks every
+candidate below the kernel's own ephemeral range so the number stays off the
+set a bind to port zero returns, proves the port unbound before publishing it,
+and holds every descriptor until the fixture's own EXIT trap calls `release`.
+Each fixture's children bind their ports themselves, so the lease over the
+number rather than an inherited socket is what reserves them. `claim-run` leases
+consecutive numbers for a caller whose own children derive one port from
+another: `webui/index.html` derives the broker at the router port plus one and
+the artifact listener at plus two on a bare LAN URL, and `qwen-web-launch.sh`
+refuses a broker port that URL does not derive, so
+`test-admit-image-router.sh` takes a run of nine and gives each of its three
+launches a consecutive triple. Every claim
+resolves `QWEN_TEST_PORT_LEASE_DIR`, defaulting to `port-leases` under the gate
+scratch root `qwen-home.sh` names as `qwen_home_gate_cache`: two gate runs that
+name one directory serialize against each other and two that name different
+directories coordinate nothing, so a workstation gating two repositories at
+once sets that one variable in both.
+
+Both deadlines of a guard test are named. `test-qwen-runtime-guards.sh` runs
+every fixture server until the test itself ends it, so the monitor's
+observation of a departed server is caused by the test rather than by a fixed
+duration a loaded machine spends before the monitor's startup preflight reaches
+its first sample. `QWEN_GUARD_FIXTURE_DEADLINE_S` bounds the harness reaching
+its ready state and `QWEN_GUARD_OBSERVATION_DEADLINE_S` bounds the interval
+from the condition arriving to the guard acting on it; a failure names which
+one expired, prints the load average and the elapsed time, and retains the
+arm's log directory. The guards' own limits -- the one-second sample period and
+the two-second SIGKILL grace inside `monitor-qwen-runtime.sh` -- stay what that
+script sets.
 
 ## The HIP backend needs one variable to load a model at all
 

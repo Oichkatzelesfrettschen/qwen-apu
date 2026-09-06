@@ -22,7 +22,15 @@ fi
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 failures=0
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT HUP INT TERM
+port_lease_holder_pid=''
+release_port_lease() {
+    if [ -n "$port_lease_holder_pid" ]; then
+        "$script_directory/test-port-lease.sh" release \
+            "$port_lease_holder_pid" || true
+        port_lease_holder_pid=''
+    fi
+}
+trap 'release_port_lease; rm -rf "$work"' EXIT HUP INT TERM
 
 report() {
     printf '%s=%s\n' "$1" "$2"
@@ -118,7 +126,13 @@ chmod +x "$harness/qwen-webui-control.sh"
 
 # The launcher waits for /health on the listener it reports, so the harness
 # answers that route from a standard-library server for the duration of a run.
-health_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+# The health server binds the port in its own process, so the reservation is
+# a lease over the number: a holder keeps an exclusive flock on the lease file
+# until this script exits, which a probe-and-release read never did.
+port_lease_ports_file=$work/leased-ports
+port_lease_holder_pid=$("$script_directory/test-port-lease.sh" claim 1 \
+    "$port_lease_ports_file")
+health_port=$(sed -n 1p "$port_lease_ports_file")
 python3 - "$health_port" "$work/health.pid" <<'PY' &
 import http.server
 import socketserver
@@ -142,7 +156,7 @@ with socketserver.TCPServer(("127.0.0.1", port), Health) as server:
     server.serve_forever()
 PY
 health_server_pid=$!
-trap 'kill "$health_server_pid" 2>/dev/null; rm -rf "$work"' EXIT HUP INT TERM
+trap 'kill "$health_server_pid" 2>/dev/null; release_port_lease; rm -rf "$work"' EXIT HUP INT TERM
 health_attempt=0
 while [ "$health_attempt" -lt 100 ]; do
     if curl --silent --fail "http://127.0.0.1:$health_port/health" \

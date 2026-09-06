@@ -1,0 +1,293 @@
+The Q4_K mat-vec formulation becomes a property of the model a child serves rather than of
+the process it runs in. `Q4K_VARIANT` 3 compiles from the pinned commit's own shader text --
+the packed16 scale decode, the top-tested superblock loop, and the sixteen-fma minimum term
+the activation group-sum member replaced -- so its module is bit-identical to the module a
+build of the pinned commit creates, and `ggml_vk_load_shaders` selects it whenever
+`GGML_VK_Q4K_VARIANT` is absent. A release carrying every formulation therefore serves the
+production kernel to every row that names nothing, and a row-scoped arm moves that row alone.
+
+The route is `--vk-q4k-variant KEY` with `LLAMA_ARG_VK_Q4K_VARIANT` as its `set_env`, so the
+key reaches a child through its own preset section the way the six tuple keys do. A router
+argv would push one value onto every section through `common_preset::merge`, and a process
+environment variable would reach every child from the router's `environ` snapshot, so neither
+carries a per-row claim; `tools/server/server.cpp` sets `GGML_VK_Q4K_VARIANT` from the parsed
+value in its non-router branch alone, ahead of `common_params_print_info` and therefore ahead
+of the first `ggml_vk_get_device` call that `ggml_vk_load_shaders` runs inside. `setenv`
+overwrites, so the section's key wins over an ambient one.
+
+`production` admits `/4` alone. `NUM_ROWS` reaches the shader as specialization constant 1
+and the dispatch as the pipeline's workgroup denominator, `evidence/q4k-scale-decode/`
+reproduces the four-row ISA of every arm and no receipt measures the pinned formulation at
+two or eight rows, and the census decode ledger records `constants=64,4,1`. A name or a row
+count outside the admitted set ends the load through the existing `GGML_ABORT` rather than
+serving the default under an arm's name.
+
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 86f8610a5..e71e10015 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -1691,6 +1691,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.n_ctx_checkpoints = value;
+         }
+     ).set_env("LLAMA_ARG_CTX_CHECKPOINTS").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
++    add_opt(common_arg(
++        {"--vk-q4k-variant"}, "ALGORITHM/ROWS",
++        "Vulkan Q4_K mat-vec formulation this model creates its pipeline from: production, e4, "
++        "e4-scale, or e4-scale-licm over /2, /4, or /8, with production admitted at /4 alone "
++        "(default: production at the backend's own row count). The value reaches the backend as "
++        "GGML_VK_Q4K_VARIANT ahead of device initialization and replaces an ambient one, so a "
++        "preset section names the arm for its own model rather than for every model a router serves.",
++        [](common_params & params, const std::string & value) {
++            params.vk_q4k_variant = value;
++        }
++    ).set_env("LLAMA_ARG_VK_Q4K_VARIANT").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
+     add_opt(common_arg(
+         {"-cms", "--checkpoint-min-step"}, "N",
+         string_format("minimum spacing between context checkpoints in tokens (default: %d, 0 = no minimum)", params.checkpoint_min_step),
+diff --git a/common/common.h b/common/common.h
+index de49dac9f..97f28ef01 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -615,6 +615,10 @@ struct common_params {
+     int32_t checkpoint_min_step = 8192;  // minimum spacing between context checkpoints
+     int32_t cache_ram_mib       = 8192;  // -1 = no limit, 0 - disable, 1 = 1 MiB, etc.
+ 
++    // the Q4_K mat-vec formulation this model's own child creates its pipeline from, as
++    // ALGORITHM/ROWS; empty leaves the Vulkan backend on its own production default
++    std::string vk_q4k_variant = "";                                                                        // NOLINT
++
+     std::string hostname      = "127.0.0.1";
+     std::string public_path   = "";                                                                         // NOLINT
+     std::string api_prefix    = "";                                                                         // NOLINT
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 708a2e327..2c06752b3 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -6316,7 +6316,12 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+     // algorithms are the post-E4 control, that control with the four-byte-aligned scale read,
+     // and that read under the bottom-tested superblock loop; evidence/q4k-scale-decode/
+     // carries the compile receipt each name reproduces.
+-    uint32_t q4k_variant = 2;
++    // 3 selects the module that compiles from the pinned commit's own shader text, so a
++    // launch naming no key creates the pipeline the pinned build creates and a row that
++    // names an arm moves that row's shader alone. The row count stays at whatever this
++    // branch selected, which is 4 on AMD_GCN and is the count the census decode ledger
++    // records as constants=64,4,1.
++    uint32_t q4k_variant = 3;
+     uint32_t rm_kq_q4k = rm_kq;
+     const char * q4k_variant_key = getenv("GGML_VK_Q4K_VARIANT");
+     if (q4k_variant_key != nullptr && q4k_variant_key[0] != '\0') {
+@@ -6324,7 +6329,9 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+         const size_t separator = requested.rfind('/');
+         const std::string algorithm = requested.substr(0, separator == std::string::npos ? requested.size() : separator);
+         const std::string rows = separator == std::string::npos ? std::string() : requested.substr(separator + 1);
+-        if (algorithm == "e4") {
++        if (algorithm == "production") {
++            q4k_variant = 3;
++        } else if (algorithm == "e4") {
+             q4k_variant = 0;
+         } else if (algorithm == "e4-scale") {
+             q4k_variant = 1;
+@@ -6333,7 +6340,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+         } else {
+             // A name answered with the default would serve one arm under another arm's name,
+             // which is the confusion the sealed key exists to remove.
+-            GGML_ABORT("GGML_VK_Q4K_VARIANT is e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s", q4k_variant_key);
++            GGML_ABORT("GGML_VK_Q4K_VARIANT is production, e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s", q4k_variant_key);
+         }
+         if (rows == "2") {
+             rm_kq_q4k = 2;
+@@ -6344,20 +6351,30 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+         } else {
+             GGML_ABORT("GGML_VK_Q4K_VARIANT states its row count as /2, /4, or /8: %s", q4k_variant_key);
+         }
++        // production names the served formulation rather than an arm, and the four-row shape
++        // is the one whose ISA the retained receipts reproduce, so the other two shapes stay
++        // unadmitted under that name until a receipt measures them.
++        if (q4k_variant == 3 && rm_kq_q4k != 4) {
++            GGML_ABORT("GGML_VK_Q4K_VARIANT admits production at /4 alone: %s", q4k_variant_key);
++        }
+         GGML_LOG_INFO("ggml_vulkan: q4k_variant=%s q4k_rows=%u\n", q4k_variant_key, rm_kq_q4k);
+     }
+     const void ** q4k_dmmv_f32_f32_data =
+         q4k_variant == 0 ? arr_dmmv_q4_k_v0_f32_f32_data :
+-        q4k_variant == 1 ? arr_dmmv_q4_k_v1_f32_f32_data : arr_dmmv_q4_k_f32_f32_data;
++        q4k_variant == 1 ? arr_dmmv_q4_k_v1_f32_f32_data :
++        q4k_variant == 3 ? arr_dmmv_q4_k_prod_f32_f32_data : arr_dmmv_q4_k_f32_f32_data;
+     const uint64_t * q4k_dmmv_f32_f32_len =
+         q4k_variant == 0 ? arr_dmmv_q4_k_v0_f32_f32_len :
+-        q4k_variant == 1 ? arr_dmmv_q4_k_v1_f32_f32_len : arr_dmmv_q4_k_f32_f32_len;
++        q4k_variant == 1 ? arr_dmmv_q4_k_v1_f32_f32_len :
++        q4k_variant == 3 ? arr_dmmv_q4_k_prod_f32_f32_len : arr_dmmv_q4_k_f32_f32_len;
+     const void ** q4k_dmmv_f16_f32_data =
+         q4k_variant == 0 ? arr_dmmv_q4_k_v0_f16_f32_data :
+-        q4k_variant == 1 ? arr_dmmv_q4_k_v1_f16_f32_data : arr_dmmv_q4_k_f16_f32_data;
++        q4k_variant == 1 ? arr_dmmv_q4_k_v1_f16_f32_data :
++        q4k_variant == 3 ? arr_dmmv_q4_k_prod_f16_f32_data : arr_dmmv_q4_k_f16_f32_data;
+     const uint64_t * q4k_dmmv_f16_f32_len =
+         q4k_variant == 0 ? arr_dmmv_q4_k_v0_f16_f32_len :
+-        q4k_variant == 1 ? arr_dmmv_q4_k_v1_f16_f32_len : arr_dmmv_q4_k_f16_f32_len;
++        q4k_variant == 1 ? arr_dmmv_q4_k_v1_f16_f32_len :
++        q4k_variant == 3 ? arr_dmmv_q4_k_prod_f16_f32_len : arr_dmmv_q4_k_f16_f32_len;
+ 
+     const bool use_subgroups = device->subgroup_arithmetic;
+     // Ensure a subgroup size >= 16 is available
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
+index 3c8602aab..b7e46fb90 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
+@@ -16,19 +16,28 @@ layout (binding = 5) readonly buffer SIDEPLANE {vec4 data_sideplane_v4[];};
+ #endif
+ 
+ // One module per Q4_K mat-vec formulation, selected at compile time so that a build embeds
+-// every one of them and the host picks the pipeline. 0 is the post-E4 control the key names
+-// e4, 1 adds the four-byte-aligned scale read as e4-scale, and 2 adds the bottom-tested
+-// superblock loop on top of it as e4-scale-licm.
++// every one of them and the host picks the pipeline. 3 is the pinned commit's own
++// formulation the key names production, 0 is the post-E4 control the key names e4, 1 adds
++// the four-byte-aligned scale read as e4-scale, and 2 adds the bottom-tested superblock
++// loop on top of it as e4-scale-licm.
++// Q4K_PINNED_SMIN separates the two halves of the post-E4 control: 3 keeps the pinned
++// sixteen-fma minimum term where every other value takes the hoisted group sums, so the
++// production module compiles from the pinned commit's own text and its SPIR-V equals the
++// module the census ledger records as executed.
+ // evidence/q4k-scale-decode/ carries the compile receipt each value reproduces.
+ #ifndef Q4K_VARIANT
+ #define Q4K_VARIANT 2
+ #endif
+ 
++#if Q4K_VARIANT == 0 || Q4K_VARIANT == 3
++#define Q4K_PACKED16_SCALES 1
++#endif
++
+ layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+ 
+ FLOAT_TYPE temp[NUM_COLS][NUM_ROWS];
+ 
+-#if Q4K_VARIANT == 0
++#ifdef Q4K_PACKED16_SCALES
+ void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im, const uint q_offset, const uint y_offset, const uint i, const uint num_blocks_per_row, const uint first_row, const uint num_rows) {
+ #else
+ void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im, const uint scale_shift, const uint scale_shift_c, const uint q_offset, const uint y_offset, const uint i, const uint num_blocks_per_row, const uint first_row, const uint num_rows) {
+@@ -36,6 +45,7 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im,
+     const uint y1_idx = i * QUANT_K + y_offset;
+     const uint y2_idx = y1_idx + 128;
+ 
++#if Q4K_VARIANT != 3
+     // The minimum term is four scales against the sums of four 32-element groups of the
+     // activation vector, so each group sum belongs to the column and every row reads it.
+     FLOAT_TYPE by_group_sum[NUM_COLS][4];
+@@ -65,13 +75,14 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im,
+         by_group_sum[j][2] = FLOAT_TYPE(by20.x)  + FLOAT_TYPE(by20.y)  + FLOAT_TYPE(by20.z)  + FLOAT_TYPE(by20.w);
+         by_group_sum[j][3] = FLOAT_TYPE(by232.x) + FLOAT_TYPE(by232.y) + FLOAT_TYPE(by232.z) + FLOAT_TYPE(by232.w);
+     }
++#endif
+ #endif
+ 
+     [[unroll]] for (uint n = 0; n < num_rows; ++n) {
+         const uint ib0 = a_offset + (first_row+n)*num_blocks_per_row;
+         const FLOAT_TYPEV2 dm = FLOAT_TYPEV2(data_a[ib0 + i].dm);
+ 
+-#if Q4K_VARIANT == 0
++#ifdef Q4K_PACKED16_SCALES
+         const uint32_t scale0_u32 = data_a_packed16[ib0 + i].scales[v_im    ];
+         const uint32_t scale4_u32 = data_a_packed16[ib0 + i].scales[v_im + 2];
+         const uint32_t scale8_u32 = data_a_packed16[ib0 + i].scales[v_im + 4];
+@@ -148,8 +159,16 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im,
+             const FLOAT_TYPE sy = fma(FLOAT_TYPE(by132.x),     q4_4,  fma(FLOAT_TYPE(by132.y), q4_5,  fma(FLOAT_TYPE(by132.z), q4_6,  FLOAT_TYPE(by132.w) * q4_7)));
+             const FLOAT_TYPE sz = fma(FLOAT_TYPE(by20.x),      q4_8,  fma(FLOAT_TYPE(by20.y),  q4_9,  fma(FLOAT_TYPE(by20.z),  q4_10, FLOAT_TYPE(by20.w) *  q4_11)));
+             const FLOAT_TYPE sw = fma(FLOAT_TYPE(by232.x),     q4_12, fma(FLOAT_TYPE(by232.y), q4_13, fma(FLOAT_TYPE(by232.z), q4_14, FLOAT_TYPE(by232.w) * q4_15)));
++#if Q4K_VARIANT == 3
++            const FLOAT_TYPE smin =
++                fma(FLOAT_TYPE(by10.x), sc2, fma(FLOAT_TYPE(by132.x), sc3, fma(FLOAT_TYPE(by20.x), sc6, fma(FLOAT_TYPE(by232.x), sc7,
++                fma(FLOAT_TYPE(by10.y), sc2, fma(FLOAT_TYPE(by132.y), sc3, fma(FLOAT_TYPE(by20.y), sc6, fma(FLOAT_TYPE(by232.y), sc7,
++                fma(FLOAT_TYPE(by10.z), sc2, fma(FLOAT_TYPE(by132.z), sc3, fma(FLOAT_TYPE(by20.z), sc6, fma(FLOAT_TYPE(by232.z), sc7,
++                fma(FLOAT_TYPE(by10.w), sc2, fma(FLOAT_TYPE(by132.w), sc3, fma(FLOAT_TYPE(by20.w), sc6,     FLOAT_TYPE(by232.w) * sc7)))))))))))))));
++#else
+             const FLOAT_TYPE smin =
+                 fma(by_group_sum[j][0], sc2, fma(by_group_sum[j][1], sc3, fma(by_group_sum[j][2], sc6, by_group_sum[j][3] * sc7)));
++#endif
+             temp[j][n] = fma(dm.x, fma(sx, sc0, fma(sy, sc1, fma(sz, sc4, sw * sc5))), fma(-dm.y, smin, temp[j][n]));
+         }
+     }
+@@ -184,7 +203,7 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
+         }
+     }
+ 
+-#if Q4K_VARIANT == 0
++#ifdef Q4K_PACKED16_SCALES
+     [[unroll]] for (uint i = ix; i < num_blocks_per_row; i += it_size)
+         calc_superblock(a_offset, b_offset, v_im, q_offset, y_offset, i, num_blocks_per_row, first_row, num_rows);
+ #else
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+index 74b325c3d..5c14f7267 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -770,13 +770,17 @@ void process_shaders() {
+         }
+ 
+         // Q4_K carries one module per formulation of its scale decode and superblock loop, so a
+-        // build embeds all three and GGML_VK_Q4K_VARIANT picks the pipeline at creation time.
+-        // Q4K_VARIANT 2 is the shader's own default and reaches the names above; 0 and 1 take a
+-        // suffix of their own. The MUL_MAT_ID and q8_1 families keep the default under every key,
+-        // since the experiment measures the dense decode mat-vec.
++        // build embeds all four and GGML_VK_Q4K_VARIANT picks the pipeline at creation time.
++        // Q4K_VARIANT 2 is the shader's own default and reaches the names above; 0, 1, and 3
++        // take a suffix of their own. 3 is the pinned commit's own formulation and its suffix
++        // is _prod, so a launch that names no key creates the module the pinned build creates
++        // and a row that names one leaves every other row on it. The MUL_MAT_ID and q8_1
++        // families keep the default under every key, since the experiment measures the dense
++        // decode mat-vec.
+         if (tname == "q4_k") {
+-            for (const std::string& q4k_variant : {"0", "1"}) {
+-                const std::string suffix = "_v" + q4k_variant;
++            for (const auto& q4k_arm : {std::make_pair("0", "_v0"), std::make_pair("1", "_v1"), std::make_pair("3", "_prod")}) {
++                const std::string q4k_variant = q4k_arm.first;
++                const std::string suffix = q4k_arm.second;
+                 const std::map<std::string, std::string> variant_dict =
+                     merge_maps(base_dict, {{"Q4K_VARIANT", q4k_variant}});
+                 string_to_spv("mul_mat_vec_" + tname + suffix + "_f32_f32", shader, merge_maps(variant_dict, {{data_a_key, "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));
+@@ -1333,7 +1337,7 @@ void write_output_files() {
+     // The Q4_K variant families index by reduction the way the default family does, so the
+     // pipeline creation reads one array per variant and the selection is a pointer swap.
+     for (const std::string& btype : {"f16", "f32"}) {
+-    for (const std::string& q4k_variant : {"v0", "v1"}) {
++    for (const std::string& q4k_variant : {"v0", "v1", "prod"}) {
+         const std::string tname = "q4_k_" + q4k_variant;
+         hdr << "extern const void * arr_dmmv_"   << tname << "_" << btype << "_f32_data[3];\n";
+         hdr << "extern const uint64_t arr_dmmv_" << tname << "_" << btype << "_f32_len[3];\n";
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 0d5ba74d3..3a06fe58d 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -14,6 +14,7 @@
+ 
+ #include <atomic>
+ #include <clocale>
++#include <cstdlib>
+ #include <exception>
+ #include <signal.h>
+ #include <thread> // for std::thread::hardware_concurrency
+@@ -136,6 +137,22 @@ int llama_server(common_params & params, int argc, char ** argv) {
+                                && params.model.hf_repo.empty()
+                                && params.model.docker_repo.empty();
+ 
++    // The Q4_K mat-vec formulation is a property of the model this process serves, so it
++    // travels as this child's own argument and reaches the backend through its environment:
++    // ggml_vk_load_shaders reads GGML_VK_Q4K_VARIANT inside ggml_vk_get_device, which the
++    // first Vulkan buffer-type or device request reaches, and both the device enumeration
++    // below and the model load further down come after this point. setenv overwrites, so the
++    // argument the section states wins over an ambient value the router's environ snapshot
++    // carried. The router itself loads no model and sets nothing, which is what keeps one
++    // section's arm off every other section.
++    if (!is_router_server && !params.vk_q4k_variant.empty()) {
++#ifdef _WIN32
++        _putenv_s("GGML_VK_Q4K_VARIANT", params.vk_q4k_variant.c_str());
++#else
++        setenv("GGML_VK_Q4K_VARIANT", params.vk_q4k_variant.c_str(), 1);
++#endif
++    }
++
+     // skip device enumeration so the CUDA primary context stays uncreated
+     common_params_print_info(params, !is_router_server);
+ 
