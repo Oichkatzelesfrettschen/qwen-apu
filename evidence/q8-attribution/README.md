@@ -21,6 +21,9 @@ close every open half on the appliance.
 | `shape-and-receipts.md` | the SPIR-V-layer facts this host closes, the comparison table against the retained Q4_K receipt with the device-only fields marked pending, and the per-superblock normalization trap between `QUANT_K=32` and `QUANT_K=256` |
 | `fixed-cost-decomposition.md` | the mechanism account for the 0.8B's flat-rate-across-bytes signature, the census fields that read it, and five falsifiable predictions registered before the attribution arm runs |
 | `device-commands.md` | the exact laptop-side command sequence that reproduces the SPIR-V, compiles it through ACO, fills the comparison table, and runs the attribution arm |
+| `split-q8-mat-vec-shapes.py` | the Q8_0 mat-vec family re-keyed by tensor shape, over one accepted I1 arm's raw census record |
+| `device-20260905/shape-selection.md` | the thirteen shapes with their exclusive times, the arm-to-arm agreement, and the shape the first Q8 experiment aims at |
+| `q8-kernel-delta-design.md` | the registered row-count mechanism on that shape, its shader-lab falsifier, its bracket falsifier, and the planning figure |
 | `spirv/` | the two compiled Q8_0 mat-vec SPIR-V modules (`SHMEM` and `SUBGROUP` reduction), their disassembly, their `--spirv-only` receipts, and a manifest of their digests |
 
 ## What is settled here and what is not

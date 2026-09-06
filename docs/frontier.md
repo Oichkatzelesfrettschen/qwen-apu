@@ -113,13 +113,35 @@ outside it.
 - Result: `evidence/q8-attribution/device-20260905/`. Run 2026-09-05: a
   canary and a 25-arm calibration at 1100/933 on the production server and
   its census twin; four I1 arms put `mul_mat_vec_q8_0_f32_f32` at 66.7% of
-  the 0.8B token (38.4 of 57.5 ms per graph, 187 dispatches at 186 us),
-  streaming at 20.9 GB/s inside its own dispatches, with every other
-  pipeline under 4% and 17% of the token outside every dispatch. The
-  fixed-cost account is refuted on four of its five registered predictions.
-  The controls read unresolved and incomplete and license no instrument
-  bound. The ending condition is met; the first Q8-specific experiment is a
-  kernel-delta bracket inside the Q8_0 mat-vec body.
+  the 0.8B token (38.4 of 57.5 ms per graph over 187 dispatches, above the
+  2B's Q4_K family alone at 49.5% and below the 2B's and 4B's two K-quant
+  families together at 85.0% and 84.4%), with every other pipeline under 4%
+  and 33% of the token outside the mat-vec family. Logical streamed bytes
+  over that family's own interval give 20.9 GB/s, a comparison figure rather
+  than a memory-controller read. A per-arm bridge closes the token from
+  exclusive bracket through ambiguous overlap, queue span, retirement span,
+  and served time. The registered fixed-cost account is refuted on four of
+  its five predictions. The controls read unresolved and incomplete and
+  license no instrument bound, so the record is diagnostic attribution with
+  unbounded instrument perturbation. The ending condition is met; the first
+  Q8-specific experiment is a kernel-delta bracket inside the Q8_0 mat-vec
+  body, where reaching a 50 ms token asks a 19.6% local reduction of that
+  family.
+- Next action: `evidence/q8-attribution/q8-kernel-delta-design.md` registers
+  that bracket. The shape split in
+  `evidence/q8-attribution/device-20260905/shape-selection.md` re-keys the
+  four accepted I1 arms' brackets by tensor and puts the tied output
+  projection `token_embd.weight` at 12.719 of the family's 38.355 ms per
+  graph -- one dispatch of 124160 workgroups, 33.16% of the family and
+  22.12% of the token, agreeing across arms within 0.12%. The candidate
+  builds the Q8_0 `_f32_f32` mat-vec at four rows per workgroup, the
+  `2*rm_stdq` every other legacy quant already uses, against a 44-to-56-VGPR
+  band with zero spills in the shader lab and a 5% fall in that shape's own
+  exclusive interval under `QWEN_CENSUS_AB_MODE=kernel-delta`. The lab arm
+  runs `remote/raven2-shader-lab/q8-mat-vec-receipt.sh --allow-device` on the
+  appliance, since gfx902 register allocation comes from RADV's own ACO
+  backend, and costs one pipeline creation rather than a teardown window; the
+  bracket needs a served window after the 4B series decision.
 
 ## E5: the standard packed dot through OpSDotKHR and ACO
 
@@ -129,9 +151,13 @@ outside it.
   (manual int24, the negative control), E5-S0 (stock ACO), and E5-S1
   (target-aware ACO) and withholds a performance conclusion against the
   floating baseline.
-- Remaining: workstation input closure first, then on the device in registered
-  order: pipeline selection and executed ISA, integer-lowering arithmetic,
-  activation-quantization numerics, timing of quantizer plus consumer together.
+- Remaining: `remote/run-e5-module-proof.sh`, after `remote/build-llama-e5.sh`
+  builds the census-instrumented int24 binary under the pinned shaderc prefix.
+  It proves that the executed Q4_K mat-vec module digest equals the OpSDotKHR
+  module the pack compiled and reports the appliance's own ACO lowering; a
+  refuted identity closes the rung as a completed negative and the
+  integer-lowering arithmetic, activation-quantization numerics, and combined
+  quantizer-plus-consumer timing follow only past it.
 - Device: one window, after the attributions, only where the workstation
   closure holds.
 - Ends when: a rung is admitted or rejected; the first decisive falsifier
