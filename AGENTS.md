@@ -2229,6 +2229,7 @@ python3 remote/test-census-controls.py
 python3 remote/test-sample-clock-sidecar.py
 python3 remote/test-summarize-perf-logger-slice.py
 remote/test-census-sha256.sh
+remote/test-q8-mat-vec-receipt.sh
 remote/test-compute-state-lease.sh
 remote/test-power-envelope.sh
 remote/test-run-raven2-vulkan-kernel-census.sh
