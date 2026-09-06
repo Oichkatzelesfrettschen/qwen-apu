@@ -670,7 +670,8 @@ What a checkpoint can do is a claim per feature, and `remote/feature-claims.tsv`
 carries it as `subject_id`, `feature`, `status`, `evidence`, `note`. The feature
 decides the namespace the subject resolves in: `text-chat`, `vision`,
 `tool-selection`, `guarded-tool-execution`, `long-context`,
-`context-checkpoints`, and `quarantine` name a `remote/models.tsv` id,
+`context-checkpoints`, `quarantine`, and `q4k-formulation` name a
+`remote/models.tsv` id,
 `draft-pair-speculation` a `remote/draft-pairs.tsv` pair_id, `web-search` a
 `remote/web-profiles.tsv` profile_id, and `image-generation` and `image-review`
 a `remote/image-profiles.tsv` profile_id, so one namespace per feature keeps the

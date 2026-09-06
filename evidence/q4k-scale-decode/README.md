@@ -787,6 +787,99 @@ matching a key. A pinned tree reads `-`, a tree carrying the multiplexed shader 
 `arr_dmmv_q4_k_prod_*` selection, the argument, and the server's `setenv` reads
 `production/4` ahead of those nine with the route token after them.
 
+## The release: `qwen38-4b-distill` at `e4-scale-licm/4`
+
+The release is one registry row and one build. `remote/models.tsv` carries `q4k_variant`
+`e4-scale-licm/4` on `qwen38-4b-distill` and `-` on every other row, so
+`qwen-capacity-policy.sh` selects the composed formulation for that checkpoint and every
+other row executes the production module the pinned build creates unkeyed. The release build
+carries the nine-member production series beside the five Q4_K stack members the composed
+served comparison measured -- `llama-vulkan-q4k-activation-group-sums.patch`,
+`llama-vulkan-q4k-activation-sideplane.patch`, `llama-vulkan-q4k-scale-word-select.patch`,
+`llama-vulkan-q4k-superblock-loop-licm.patch`, and
+`llama-vulkan-q4k-variant-select.patch` -- and `llama-vulkan-q4k-row-select.patch`, the
+member that adds the fourth formulation, the `production` name over it, and the
+`--vk-q4k-variant` argument the preset section carries. All six sit at `candidate` in
+`remote/llama-patch-series.tsv`; moving them to `production` changes the series digest every
+retained receipt binds, so this release names them from the candidate stage and every
+receipt written before it stays bound to the series it was measured under.
+
+`build-llama-preset.sh` writes `q4k_variants` from that source, so the release build's
+artifact manifest declares `production/4` ahead of the nine experiment keys with
+`route=arg:LLAMA_ARG_VK_Q4K_VARIANT` after them. A build declaring `-` admits no key, and
+`qwen-capacity-policy.sh` refuses the 4B launch against one rather than serving the
+production module under a row claiming a formulation: the bytes the active bundle serves
+declare `-`, so this row flip and the release build land together or the 4B row launches
+under neither.
+
+The measured result the release rests on is
+`../raven2-vulkan-kernel-census/q4k-scale-decode/served-ab-4b-composed-20260905/`: +6.63%
+[+6.17, +7.09] over four mirrored pairs against the production control, one selected clock
+pair on every arm and zero arm failures. It is artifact-scoped. The 2B reads unresolved
+twice at +5.3% and +5.5% against the same bound and the 0.8B dispatches this shader never,
+so the class rule leaves the platform default where it is and gives this one checkpoint the
+release.
+
+**The witness is what activation waits on.** Neither serving executable in that comparison
+carries a correctness witness: its `summary.tsv` reads `token_identity` and
+`margin_contract` `unavailable`, and the one retained 4B witness names the earlier two-patch
+build. The release executable is witnessed by a keyed run over one binary, the control
+naming the production module through the multiplexer rather than an empty key that a
+released row would answer with its own formulation:
+
+```sh
+QWEN_WITNESS_CONTROL_EXPERIMENT_KEY=production/4 \
+QWEN_WITNESS_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4 \
+    remote/run-kernel-delta-witness.sh RELEASE RELEASE qwen38-4b-distill OUT
+```
+
+witness: `release-witness/4b-margin-summary.tsv` and `release-witness/4b-summary.tsv`, from the
+appliance run of 2026-09-06 against release executable `92015c149b3f4ffe...`. Six prompts, four
+samples each, `production/4` as control and `e4-scale-licm/4` as candidate inside that one
+binary. Token identity held on every prompt and every sample, with no divergence recorded.
+Under the registered `margin` contract at a 0.1 nat near-tie and 0.5 retention, all 3072
+scored positions read: 0 unread, 0 retention failures, 0 nonpositive candidate margins, 32
+near-tie positions, and a minimum retention of 0.937445 on `accumulator` against a 0.5 bound.
+The maximum absolute log-probability delta is 0.0112959, which is why the contract is `margin`
+rather than the retired `logprob-bound` rule E4 refuted at 1e-3 nat while every token id held.
+
+**The unpromoted rows rest on a second witness.** `ggml_vk_load_shaders()` initializes
+`q4k_variant` to 3, which selects the module compiled from the pinned commit's own shader text,
+so a launch naming no key creates the production pipeline and every row releasing no
+formulation runs it. The row-select patch rewrites that shader text, so the release build's
+production module cannot equal the deployed build's by bytes and behavior alone carries the
+claim. Both roles therefore run unkeyed -- the deployed production server `70aa78bc0eed708c...`
+as control, the release executable as candidate, on `qwen38-2b-distill`, the serving default:
+`release-witness/2b-unkeyed-margin-summary.tsv` and `release-witness/2b-unkeyed-summary.tsv`.
+
+That arm reads bit-identical. Token identity held on all six prompts, the maximum absolute
+log-probability delta is 0.000e+00, and minimum retention is exactly 1 wherever a margin was
+scored. What it establishes is the observed reply rather than the internal tensors: the two
+executables produced equal token ids and equal printed selected log probabilities on these six
+prompts at these settings. 3068 positions were scored; at four positions of `accumulator` the
+reply carried no per-position top-logprob record, so no margin was computed on either side
+while the token ids at those positions still compared equal. One 2B arm is evidence about the
+2B, so the release guarantee for an unpromoted row is the conjunction of four facts rather
+than this one alone: the unkeyed selector reaches the production formulation, no unpromoted
+preset section carries a released key, the exact release executable satisfies this witness, and
+the promoted 4B row is bound to its own correctness and performance evidence.
+
+Both arms ran under `QWEN_WITNESS_CONTRACT=margin QWEN_WITNESS_N_PROBS=2` against harness
+`6577058f85e8166f...` and summarizer `7a7952d784a80368...`.
+
+**What this release had to close before it could activate.** `verify-bundle-preset-ledger.sh`
+resolved the formulation from the reader's own `q4k_variant` column, which made the flip and
+the bundle that serves it unsequenceable: the already-deployed bundle's keyless sections
+refused against the flipped registry, and this release's keyed sections refused against the
+registry they precede. `resolve-active-deployment.sh` verifies the active bundle on every
+launch and `activate-deployment-bundle.sh` verifies a rollback target, so those two refusals
+left no order in which the release and its rollback both verified. Measured on the appliance:
+`main-7f8f2ed-r1` accepted on all 16 sections against the shipped registry and refused on
+three against one releasing `e4-scale-licm/4` for `qwen38-4b-distill`. The bundled
+`q4k-policy.tsv` carries the release each preset was generated against, and the same bundle
+under a `-` policy accepts on all 16 sections, so the rollback target stays verifiable across
+this release and every later one.
+
 ## The appliance arms, and the preimage chain that orders them
 
 The three patches sit at `candidate` in `remote/llama-patch-series.tsv`. The scale-word-select's

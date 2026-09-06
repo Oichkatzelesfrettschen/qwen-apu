@@ -1967,7 +1967,7 @@ b5c7eae0387c359641f27a89bfbd1fb5ec963648d6fc284371fab7a45462204c  evidence/q4k-i
 f0f0e9e60961ca4404789a65d9b017226249fc5a8a4a046225df71c963b41fc6  evidence/q4k-isa-attribution/receipts/receipt-diff-float-packed-f16.tsv
 e885b81d5c08e7e9d9b67dcaa0f4448d840e77020c739967a97015d087b1cb5c  evidence/q4k-isa-attribution/salu-attribution.tsv
 f638889924957da856fe81d8ac44e4f545368d1ad356a87e4b7e4387bc4acf01  evidence/q4k-isa-attribution/shape-sweep.tsv
-fe98e1c5d25ffdfd6e276bd38267d5b879e93611a644f883ee48d7530f1ab297  evidence/q4k-scale-decode/README.md
+7e5380c59a5a72c1c896eef181e64fbd5cacb4efbfb005071f4d72cc6bbe758d  evidence/q4k-scale-decode/README.md
 3c9887d967515158ae8fe79f0d3343c25ae6eae976e04545af8a72ab02538dd6  evidence/q4k-scale-decode/arm-receipts-num-rows-4.tsv
 7ec0c201e58b74a35abd700e134549633284bb0539989b46ea225d17c7bcb1cd  evidence/q4k-scale-decode/arm-receipts-num-rows-8.tsv
 5913b20a2f01ea7b7d5800f3196b9ec8588e2b50f186df7c772797853bb9430b  evidence/q4k-scale-decode/phase-attribution.tsv
@@ -2190,6 +2190,10 @@ aaee1e950ef52c4368f26dc10ccdd55e5007ab6c89cb31135702ed5573a67515  evidence/q4k-s
 e4c864f669bfb9a3476b68bb40cdd5fe685abdc1a74b651b803e03218deef422  evidence/q4k-scale-decode/receipts/variant-select-e4-scale-rows8/shaderstats.txt
 4f6af7e89f29cb36e4ef4f591872f74398f4201ba8e24be1888f70e09a229fd8  evidence/q4k-scale-decode/receipts/variant-select-e4-scale-rows8/spirv.dis
 e3fdc5fd8604ef7340ba5f89f9d9c4b83351dc761243ef4707f20927614c8814  evidence/q4k-scale-decode/receipts/variant-select-e4-scale-rows8/stats.tsv
+9ba45b4319bae1a1e70db4d312d921fc87f49ddd9e4a39bcfa7611edafbd5829  evidence/q4k-scale-decode/release-witness/2b-unkeyed-margin-summary.tsv
+4c720c852f0005eafde14ec9a15f291ee57c5ba05c0981df06d4981fe5c93d98  evidence/q4k-scale-decode/release-witness/2b-unkeyed-summary.tsv
+811249cec2d979fe978f5d56e0133b7fc5bbaf75b61a91e099480ea1714e9203  evidence/q4k-scale-decode/release-witness/4b-margin-summary.tsv
+d16a4aa0346af03be9f3b2a528a7ec241a462c12c1e5855c6552d5c4dd5cb94e  evidence/q4k-scale-decode/release-witness/4b-summary.tsv
 696e83a7bc2a3ab9fb5c4a7a0c09c22d63e5e9c9b7dd146ef1b881b5c06141d7  evidence/q4k-scale-decode/salu-attribution.tsv
 373b858db6e80a92b41b2292ef322203508485e0ecc17ee23864837b183aa148  evidence/q4k-scale-decode/scale-select-equivalence.py
 aa637f541d05d8b0009c767e523f1b2ac31433a353ef862c66154d8023fdf2ee  evidence/q4k-scale-decode/target-closure-20260905/README.md

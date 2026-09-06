@@ -90,9 +90,14 @@ roster_json=$(printf '%s\n' "$quarantine_subjects" | awk -F'\t' \
         return 0
     }
     BEGIN {
+        # q4k-formulation names the Q4_K mat-vec formulation a row is released
+        # under, so its subject is a remote/models.tsv id the way every other
+        # model-scope feature names one: the release is the q4k_variant field of
+        # that row, and the claim states what a served comparison measured.
         split("text-chat vision tool-selection guarded-tool-execution " \
-              "long-context context-checkpoints quarantine", model_features, " ")
-        model_feature_count = 7
+              "long-context context-checkpoints quarantine " \
+              "q4k-formulation", model_features, " ")
+        model_feature_count = 8
         for (i = 1; i <= model_feature_count; i++) {
             feature_scope[model_features[i]] = "model"
         }
