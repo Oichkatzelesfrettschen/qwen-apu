@@ -81,6 +81,19 @@ select_llama_server() {
                     QWEN_CTX_CHECKPOINT_LEDGER=$active_deployment_directory/ctx-checkpoints.tsv
                     export QWEN_CTX_CHECKPOINT_LEDGER
                 fi
+                # The Q4_K formulation each preset section carries is release
+                # state, so the bundle answers for it rather than whichever
+                # registry this checkout holds; a bundle assembled before that
+                # member existed carries no section key and binds `-`, the
+                # policy releasing nothing that its preset already satisfies.
+                if [ -z "${QWEN_BUNDLE_Q4K_POLICY:-}" ]; then
+                    if [ -f "$active_deployment_directory/q4k-policy.tsv" ]; then
+                        QWEN_BUNDLE_Q4K_POLICY=$active_deployment_directory/q4k-policy.tsv
+                    else
+                        QWEN_BUNDLE_Q4K_POLICY=-
+                    fi
+                    export QWEN_BUNDLE_Q4K_POLICY
+                fi
                 QWEN_ACTIVE_DEPLOYMENT_DIRECTORY=$active_deployment_directory
                 export QWEN_ACTIVE_DEPLOYMENT_DIRECTORY
                 ;;
@@ -413,6 +426,7 @@ case $action in
                               QWEN_APPROVED_MODEL_BYTES \
                               QWEN_MODEL_REGISTRY QWEN_QUARANTINE_REGISTRY \
                               QWEN_VALIDATED_TUPLES QWEN_CTX_CHECKPOINT_LEDGER \
+                              QWEN_BUNDLE_Q4K_POLICY \
                               QWEN_ACTIVE_DEPLOYMENT_DIRECTORY \
                               QWEN_PIPELINE_CENSUS QWEN_PERF_LOGGER \
                               QWEN_FORCE_INTEGER_DOT \

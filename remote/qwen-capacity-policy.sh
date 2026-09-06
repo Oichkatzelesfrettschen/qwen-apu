@@ -43,11 +43,22 @@ cors_origins=${QWEN_CORS_ORIGINS:-localhost}
 # nine draft keys against the pair row, and a section outside the ledger
 # carrying any draft key is refused, because a draft the ledger never admitted
 # loads a second checkpoint no resident-set arithmetic counted.
+#
+# The Q4_K formulation is release state rather than live state, so ${11} names
+# the authority for it: empty reads the registry column, which is what a
+# generator run and a preset named on the command line get; `-` releases
+# nothing on every row, which is what a bundle assembled before the column
+# existed carries; and rows of `model_id<TAB>q4k_variant` are the policy a
+# bundle states for itself. A section resolving to a model the policy never
+# names is refused rather than read as unreleased. Every other rule still
+# reads the live registry, so a depth or tier revocation reaches a persisted
+# preset while its formulation stays the one it was generated against.
 validate_router_preset_tuples() {
     printf '%s\n' "$4" | awk -F'\t' -v model_root="$3" \
         -v include_quarantine="$5" -v web_profile_sections="${6:-0}" \
         -v web_depth_override="${7:-0}" -v draft_pair_ledger="${8:-}" \
-        -v ctx_checkpoint_ledger="${9:-}" -v web_section_list="${10:-}" '
+        -v ctx_checkpoint_ledger="${9:-}" -v web_section_list="${10:-}" \
+        -v q4k_policy_rows="${11:-}" '
         # The merged preset holds registry sections and web sections in one
         # file, so the web rules are selected per section rather than per file.
         # $6 states that every section is a web profile, which is what
@@ -343,11 +354,26 @@ validate_router_preset_tuples() {
             # a key on a `-` row would serve a formulation the registry never
             # released for that checkpoint. The value is compared as well as
             # the count, since a preset persists across a registry edit.
-            expected_q4k = registry_q4k[registry_key]
-            if (expected_q4k == "") { expected_q4k = "-" }
-            if (expected_q4k == "-") {
+            if (q4k_policy_mode == "registry") {
+                expected_q4k = registry_q4k[registry_key]
+                if (expected_q4k == "") { expected_q4k = "-" }
+            } else if (q4k_policy_mode == "none") {
+                expected_q4k = "-"
+            } else if (registry_key in policy_q4k) {
+                expected_q4k = policy_q4k[registry_key]
+            } else {
+                printf "router preset section %s serves %s, which the bundled Q4_K policy never names\n", \
+                    section, registry_key > "/dev/stderr"
+                rejected = 1
+                expected_q4k = ""
+            }
+            if (expected_q4k == "") {
+                # The bundled policy named no formulation for this section and
+                # already refused it; comparing a count against nothing would
+                # print a second reason for one defect.
+            } else if (expected_q4k == "-") {
                 if (q4k_count != 0) {
-                    printf "router preset section %s carries LLAMA_ARG_VK_Q4K_VARIANT %s, the registry row releases no Q4_K formulation\n", \
+                    printf "router preset section %s carries LLAMA_ARG_VK_Q4K_VARIANT %s, the released policy names no Q4_K formulation for that row\n", \
                         section, q4k_value > "/dev/stderr"
                     rejected = 1
                 }
@@ -447,6 +473,21 @@ validate_router_preset_tuples() {
                  web_section_index++) {
                 if (web_section_names[web_section_index] == "") continue
                 web_sections[web_section_names[web_section_index]] = 1
+            }
+            if (q4k_policy_rows == "") {
+                q4k_policy_mode = "registry"
+            } else if (q4k_policy_rows == "-") {
+                q4k_policy_mode = "none"
+            } else {
+                q4k_policy_mode = "bundle"
+                q4k_policy_count = split(q4k_policy_rows, q4k_policy_lines, "\n")
+                for (q4k_policy_index = 1;
+                     q4k_policy_index <= q4k_policy_count; q4k_policy_index++) {
+                    if (q4k_policy_lines[q4k_policy_index] == "") continue
+                    split(q4k_policy_lines[q4k_policy_index], q4k_policy_fields,
+                        "\t")
+                    policy_q4k[q4k_policy_fields[1]] = q4k_policy_fields[2]
+                }
             }
             reset_tuple()
         }
@@ -1171,6 +1212,48 @@ router_draft_pair_registry=${QWEN_DRAFT_PAIRS:-$script_directory/draft-pairs.tsv
 # the same default, so the path this launch hashes is the path whose rows the
 # tuple validator compared each section against.
 router_ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
+# The preset states one Q4_K formulation per section and outlives the registry
+# edit that releases the next one, so the deployment binds the policy the
+# preset was generated against. qwen-webui-control.sh sets this from the
+# resolved bundle the way it sets QWEN_CTX_CHECKPOINT_LEDGER; a launch reading
+# no bundle leaves it empty and the registry column answers, which is the
+# generator's and the explicit-preset recovery form's own reading.
+router_q4k_policy_path=${QWEN_BUNDLE_Q4K_POLICY:-}
+router_q4k_policy_rows=''
+router_q4k_policy_identity=registry
+case $router_q4k_policy_path in
+    '') ;;
+    -)
+        router_q4k_policy_rows=-
+        router_q4k_policy_identity=none
+        ;;
+    *)
+        if [ ! -f "$router_q4k_policy_path" ] || \
+            [ ! -r "$router_q4k_policy_path" ]; then
+            printf 'the bundled Q4_K formulation policy is unreadable: %s\n' \
+                "$router_q4k_policy_path" >&2
+            exit 2
+        fi
+        router_q4k_policy_rows=$(awk -F'\t' '
+            /^[[:space:]]*($|#)/ { next }
+            {
+                if (NF != 2 || $1 == "" ||
+                    $2 !~ /^(-|production\/4|e4\/[248]|e4-scale\/[248]|e4-scale-licm\/[248])$/) {
+                    printf "the bundled Q4_K formulation policy carries a malformed row: %s\n", \
+                        $0 > "/dev/stderr"
+                    exit 1
+                }
+                printf "%s\t%s\n", $1, $2
+            }' "$router_q4k_policy_path") || exit 2
+        if [ -z "$router_q4k_policy_rows" ]; then
+            printf 'the bundled Q4_K formulation policy carries no rows: %s\n' \
+                "$router_q4k_policy_path" >&2
+            exit 2
+        fi
+        router_q4k_policy_identity=$(sha256sum "$router_q4k_policy_path" |
+            cut -d ' ' -f 1)
+        ;;
+esac
 router_model_root=${QWEN_MODEL_ROOT:-"$qwen_home_models"}
 router_web_profiles_environment=${QWEN_WEB_PROFILES:-}
 router_web_profiles=$script_directory/web-profiles.tsv
@@ -1516,11 +1599,20 @@ validate_current_router_authorities() {
         "$router_model_root" "$router_quarantine_rows" \
         "$quarantine_override_from_preset" "$web_presets_from_preset" \
         "$web_depth_override_from_preset" "$router_draft_pair_rows" \
-        "$router_ctx_checkpoint_rows" "$web_sections_from_preset"; then
+        "$router_ctx_checkpoint_rows" "$web_sections_from_preset" \
+        "$router_q4k_policy_rows"; then
         printf 'router presets do not carry complete admitted tuples: %s\n' \
             "$router_presets" >&2
         return 1
     fi
+    # Which authority answered for the formulation is part of what this launch
+    # serves, so the receipt reads it rather than inferring it from the preset.
+    printf 'router_q4k_policy source=%s identity=%s\n' \
+        "$(case $router_q4k_policy_rows in
+            '') printf registry ;;
+            -) printf unreleased ;;
+            *) printf bundle ;;
+        esac)" "$router_q4k_policy_identity"
     if [ "$router_web_mode" = 1 ]; then
         verify_web_profiles_identity || return 1
         if [ ! -r "$router_web_profiles" ]; then
