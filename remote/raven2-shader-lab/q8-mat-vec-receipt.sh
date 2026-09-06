@@ -19,8 +19,13 @@ set -eu
 # `mul_mat_vec_base.glsl` declares it `layout (constant_id = 1) const uint
 # NUM_ROWS = 1`, so one SPIR-V module serves every row count and the value
 # reaches ACO through the pipeline's specialization rather than through the
-# glslc frontend: a control and a candidate differ by this argument alone and
-# share a module digest. That also bounds where an arm runs. lab.sh applies no
+# glslc frontend. A pair therefore can differ by this argument alone, which is
+# a prerequisite on the caller rather than a property this script enforces:
+# each invocation reads whatever SPV_DIRECTORY and variant selection it is
+# given, so a control and a candidate share a module digest exactly where the
+# caller names one directory and one variant set for both, and the retained
+# receipts' own digest fields are what a reader checks. That also bounds where
+# an arm runs. lab.sh applies no
 # specialization under --spirv-only, so two --spirv-only receipts taken at
 # different row counts are the same bytes under two arm labels, and a
 # --num-rows away from the served 2 requires --allow-device rather than
@@ -94,11 +99,23 @@ case $num_rows in
     exit 2
     ;;
 esac
+# A specialization constant is a uint32, and a decimal wider than the shell's
+# own arithmetic makes `test -gt` fail rather than answer. That failure inside
+# an `if` condition returns non-zero without tripping errexit, so an unbounded
+# value would read as "no refusal needed" and reach the pipeline; the width is
+# checked as a string first and the range only afterward.
+if [ "${#num_rows}" -gt 10 ] || [ "$num_rows" -gt 4294967295 ]; then
+    printf '%s: --num-rows exceeds the uint32 a specialization constant holds: %s\n' \
+        "$0" "$num_rows" >&2
+    exit 2
+fi
 # lab.sh reaches ACO through pipeline creation, so the specialization exists
 # only in device mode. A --spirv-only run at another row count writes the
 # control's own bytes under a candidate's name, which is a receipt that reads
-# like an arm and measures nothing.
-if [ "$num_rows" -ne "$served_num_rows" ] && [ "$allow_device" -eq 0 ]; then
+# like an arm and measures nothing. Both values are canonical decimals by the
+# rules above, so string inequality is numeric inequality and the safety branch
+# needs no arithmetic that a malformed value could break.
+if [ "$num_rows" != "$served_num_rows" ] && [ "$allow_device" -eq 0 ]; then
     printf '%s: --num-rows %s applies specialization constant 1, which reaches the compiler at pipeline creation alone; pass --allow-device on the Raven2 appliance, since --spirv-only would write the served %s receipt under this row count\n' \
         "$0" "$num_rows" "$served_num_rows" >&2
     exit 2
