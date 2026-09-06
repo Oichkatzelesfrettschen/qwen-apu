@@ -116,7 +116,17 @@ def tool_result_produced(history):
 
 def run_row(page_driver, chromium, origin, profile_id, prompt, broker_origin,
             api_key_file, load_timeout, dialog_timeout, turn_timeout):
-    argv = [
+    # remote/web-mcp/drive-fallback-page.py is tracked at mode 644, so an
+    # exec of the path raises PermissionError and ends the arm on its first
+    # row; remote/admit-image-router.sh already names python3 ahead of the
+    # same path. The interpreter prefix reaches a driver the filesystem
+    # refuses to execute alone, so a driver an operator points at through
+    # --page-driver keeps whatever its own shebang names where it carries the
+    # execute bit.
+    argv = []
+    if not os.access(page_driver, os.X_OK):
+        argv.append(sys.executable)
+    argv += [
         page_driver, "--origin", origin, "--prompt", prompt, "--model", profile_id,
         "--dialog-optional", "--load-timeout", str(load_timeout),
         "--dialog-timeout", str(dialog_timeout), "--turn-timeout", str(turn_timeout),

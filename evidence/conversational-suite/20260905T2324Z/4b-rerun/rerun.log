@@ -1,0 +1,22 @@
+arm=qwen38-4b-distill leg=web-off thinking=off max_tokens=1024
+category=vision passed=0/10 truncated=0 empty=10
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=6/10 truncated=0 empty=0
+tool_stages rows=10 called=8 parsed=10 names=10 arguments=9
+served_models=qwen38-4b-distill requested_model=qwen38-4b-distill
+quality_suite=failed passed=56/94 completion_rate=0.798 empty_answer_rate=0.202 transport_errors=19 attribution_failures=0 wall_seconds=2528.3
+arm=qwen38-4b-distill leg=web-off status=failed
+arm=qwen38-4b-distill leg=web-on profile=web-open max_fetches=2
+category=screen passed=5/5 empty=0
+category=termination passed=5/5 empty=0
+category=web_current passed=2/10 empty=1
+category=word_problem passed=5/10 empty=0
+skipped_rows=29 (image/tools attachment kinds)
+conversational_web_arm=failed passed=44/65 tool_proposal_rate=0.015384615384615385 approvals=1 results_produced=0 transport_errors=5
+arm=qwen38-4b-distill leg=web-on status=failed
+
+conversational_summary=written rows=1 tsv=$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run-4b/conversational-summary.tsv md=$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run-4b/conversational-summary.md
+
+model_id	web_off_rows	web_off_correct_on_completed	web_off_mean_wall	web_off_p90_wall	web_on_status	web_on_reason	web_on_rows	web_on_correct_on_completed	web_on_mean_wall	web_on_p90_wall	tool_proposal_rate	approvals	results_produced	paired_count	paired_delta_mean
+qwen38-4b-distill	94	0.747	33.71	38.52	failed	-	65	0.746	185.58	189.59	0.015	1	0	65	-0.046
+conversational_suite=failed arms=1 failed=2 output=$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run-4b

@@ -1,0 +1,2 @@
+model_id	web_off_json	web_on_status	web_on_reason	web_on_json
+qwen38-4b-distill	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run-4b/qwen38-4b-distill.web-off.json	failed	-	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run-4b/qwen38-4b-distill.web-on.json

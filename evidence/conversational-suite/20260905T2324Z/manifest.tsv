@@ -1,0 +1,14 @@
+model_id	web_off_json	web_on_status	web_on_reason	web_on_json
+qwen38-4b-distill	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen38-4b-distill.web-off.json	failed	-	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen38-4b-distill.web-on.json
+qwen38-2b-distill	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen38-2b-distill.web-off.json	unavailable	execution_policy_refused	-
+qwen35-4b-base	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen35-4b-base.web-off.json	unavailable	execution_policy_refused	-
+qwen35-08b	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen35-08b.web-off.json	unavailable	execution_policy_refused	-
+qwen35-2b	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen35-2b.web-off.json	unavailable	execution_policy_refused	-
+lfm25-vl-16b	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/lfm25-vl-16b.web-off.json	unavailable	execution_policy_refused	-
+qwen35-08b-f16	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen35-08b-f16.web-off.json	unavailable	no_web_profile	-
+qwen38-2b-uncensored	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen38-2b-uncensored.web-off.json	unavailable	no_web_profile	-
+qwen35-2b-hauhau	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen35-2b-hauhau.web-off.json	unavailable	no_web_profile	-
+qwen35-2b-unredacted	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen35-2b-unredacted.web-off.json	unavailable	no_web_profile	-
+qwen35-2b-heretic	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen35-2b-heretic.web-off.json	unavailable	no_web_profile	-
+qwen35-08b-unsloth-unc	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen35-08b-unsloth-unc.web-off.json	unavailable	no_web_profile	-
+qwenseer-2b	$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwenseer-2b.web-off.json	unavailable	no_web_profile	-

@@ -1,0 +1,138 @@
+arm=qwen38-4b-distill leg=web-off thinking=off max_tokens=1024
+category=vision passed=0/10 truncated=0 empty=10
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=6/10 truncated=0 empty=0
+tool_stages rows=10 called=8 parsed=10 names=10 arguments=9
+served_models=qwen38-4b-distill requested_model=qwen38-4b-distill
+quality_suite=failed passed=56/94 completion_rate=0.798 empty_answer_rate=0.202 transport_errors=19 attribution_failures=0 wall_seconds=2912.9
+arm=qwen38-4b-distill leg=web-off status=failed
+arm=qwen38-4b-distill leg=web-on profile=web-open max_fetches=2
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 1026, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+  File "/usr/lib/python3.12/subprocess.py", line 1955, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+PermissionError: [Errno 13] Permission denied: '$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/tree/remote/web-mcp/drive-fallback-page.py'
+arm=qwen38-4b-distill leg=web-on status=failed
+
+arm=qwen38-2b-distill leg=web-off thinking=off max_tokens=1024
+category=vision passed=0/10 truncated=0 empty=10
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=4/10 truncated=0 empty=0
+tool_stages rows=10 called=1 parsed=10 names=3 arguments=2
+served_models=qwen38-2b-distill requested_model=qwen38-2b-distill
+quality_suite=failed passed=40/94 completion_rate=0.777 empty_answer_rate=0.202 transport_errors=19 attribution_failures=0 wall_seconds=1768.0
+arm=qwen38-2b-distill leg=web-off status=failed
+arm=qwen38-2b-distill leg=web-on status=unavailable reason=execution_policy_refused detail=profile web-reader execution_policy=refused
+
+arm=qwen35-4b-base leg=web-off thinking=off max_tokens=1024
+category=vision passed=10/10 truncated=0 empty=0
+category=web_current passed=1/10 truncated=0 empty=0
+category=word_problem passed=6/10 truncated=0 empty=0
+tool_stages rows=10 called=8 parsed=10 names=10 arguments=10
+served_models=qwen35-4b-base requested_model=qwen35-4b-base
+quality_suite=completed passed=78/94 completion_rate=1.000 empty_answer_rate=0.000 transport_errors=0 attribution_failures=0 wall_seconds=3794.3
+arm=qwen35-4b-base leg=web-off status=completed
+arm=qwen35-4b-base leg=web-on status=unavailable reason=execution_policy_refused detail=profile web-vision execution_policy=refused
+
+arm=qwen35-08b leg=web-off thinking=off max_tokens=1024
+category=vision passed=0/10 truncated=0 empty=10
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=1/10 truncated=0 empty=0
+tool_stages rows=10 called=8 parsed=10 names=10 arguments=9
+served_models=qwen35-08b requested_model=qwen35-08b
+quality_suite=failed passed=40/94 completion_rate=0.798 empty_answer_rate=0.202 transport_errors=19 attribution_failures=0 wall_seconds=428.9
+arm=qwen35-08b leg=web-off status=failed
+arm=qwen35-08b leg=web-on status=unavailable reason=execution_policy_refused detail=profile web-lookup execution_policy=refused
+
+arm=qwen35-2b leg=web-off thinking=off max_tokens=1024
+category=vision passed=10/10 truncated=0 empty=0
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=3/10 truncated=0 empty=0
+tool_stages rows=10 called=8 parsed=10 names=10 arguments=9
+served_models=qwen35-2b requested_model=qwen35-2b
+quality_suite=completed passed=64/94 completion_rate=1.000 empty_answer_rate=0.000 transport_errors=0 attribution_failures=0 wall_seconds=1388.5
+arm=qwen35-2b leg=web-off status=completed
+arm=qwen35-2b leg=web-on status=unavailable reason=execution_policy_refused detail=profile web-compact execution_policy=refused
+
+arm=lfm25-vl-16b leg=web-off thinking=off max_tokens=1024
+category=vision passed=9/10 truncated=0 empty=0
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=8/10 truncated=0 empty=0
+tool_stages rows=10 called=8 parsed=10 names=9 arguments=8
+served_models=lfm25-vl-16b requested_model=lfm25-vl-16b
+quality_suite=completed passed=69/94 completion_rate=1.000 empty_answer_rate=0.000 transport_errors=0 attribution_failures=0 wall_seconds=1406.8
+arm=lfm25-vl-16b leg=web-off status=completed
+arm=lfm25-vl-16b leg=web-on status=unavailable reason=execution_policy_refused detail=profile web-fast-vl execution_policy=refused
+
+arm=qwen35-08b-f16 leg=web-off thinking=off max_tokens=1024
+category=vision passed=0/10 truncated=0 empty=10
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=1/10 truncated=0 empty=0
+tool_stages rows=10 called=8 parsed=10 names=10 arguments=9
+served_models=qwen35-08b-f16 requested_model=qwen35-08b-f16
+quality_suite=failed passed=40/94 completion_rate=0.798 empty_answer_rate=0.202 transport_errors=19 attribution_failures=0 wall_seconds=497.5
+arm=qwen35-08b-f16 leg=web-off status=failed
+arm=qwen35-08b-f16 leg=web-on status=unavailable reason=no_web_profile detail=no row in the ledger names this model_id
+
+arm=qwen38-2b-uncensored leg=web-off thinking=off max_tokens=1024
+category=vision passed=0/10 truncated=0 empty=10
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=5/10 truncated=0 empty=0
+tool_stages rows=10 called=1 parsed=10 names=3 arguments=2
+served_models=qwen38-2b-uncensored requested_model=qwen38-2b-uncensored
+quality_suite=failed passed=41/94 completion_rate=0.787 empty_answer_rate=0.202 transport_errors=19 attribution_failures=0 wall_seconds=1739.9
+arm=qwen38-2b-uncensored leg=web-off status=failed
+arm=qwen38-2b-uncensored leg=web-on status=unavailable reason=no_web_profile detail=no row in the ledger names this model_id
+
+arm=qwen35-2b-hauhau leg=web-off thinking=off max_tokens=1024
+category=vision passed=0/10 truncated=0 empty=10
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=4/10 truncated=0 empty=0
+tool_stages rows=10 called=8 parsed=10 names=10 arguments=9
+served_models=qwen35-2b-hauhau requested_model=qwen35-2b-hauhau
+quality_suite=failed passed=43/94 completion_rate=0.798 empty_answer_rate=0.202 transport_errors=19 attribution_failures=0 wall_seconds=1079.2
+arm=qwen35-2b-hauhau leg=web-off status=failed
+arm=qwen35-2b-hauhau leg=web-on status=unavailable reason=no_web_profile detail=no row in the ledger names this model_id
+
+arm=qwen35-2b-unredacted leg=web-off thinking=off max_tokens=1024
+category=vision passed=0/10 truncated=0 empty=10
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=3/10 truncated=0 empty=0
+tool_stages rows=10 called=8 parsed=10 names=10 arguments=9
+served_models=qwen35-2b-unredacted requested_model=qwen35-2b-unredacted
+quality_suite=failed passed=45/94 completion_rate=0.787 empty_answer_rate=0.202 transport_errors=19 attribution_failures=0 wall_seconds=1053.4
+arm=qwen35-2b-unredacted leg=web-off status=failed
+arm=qwen35-2b-unredacted leg=web-on status=unavailable reason=no_web_profile detail=no row in the ledger names this model_id
+
+arm=qwen35-2b-heretic leg=web-off thinking=off max_tokens=1024
+category=vision passed=0/10 truncated=0 empty=10
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=9/10 truncated=0 empty=0
+tool_stages rows=10 called=3 parsed=10 names=5 arguments=5
+served_models=qwen35-2b-heretic requested_model=qwen35-2b-heretic
+quality_suite=failed passed=48/94 completion_rate=0.787 empty_answer_rate=0.202 transport_errors=19 attribution_failures=0 wall_seconds=2035.1
+arm=qwen35-2b-heretic leg=web-off status=failed
+arm=qwen35-2b-heretic leg=web-on status=unavailable reason=no_web_profile detail=no row in the ledger names this model_id
+
+arm=qwen35-08b-unsloth-unc leg=web-off thinking=off max_tokens=1024
+category=vision passed=0/10 truncated=0 empty=10
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=5/10 truncated=0 empty=0
+tool_stages rows=10 called=8 parsed=10 names=10 arguments=9
+served_models=qwen35-08b-unsloth-unc requested_model=qwen35-08b-unsloth-unc
+quality_suite=failed passed=44/94 completion_rate=0.798 empty_answer_rate=0.202 transport_errors=19 attribution_failures=0 wall_seconds=492.3
+arm=qwen35-08b-unsloth-unc leg=web-off status=failed
+arm=qwen35-08b-unsloth-unc leg=web-on status=unavailable reason=no_web_profile detail=no row in the ledger names this model_id
+
+arm=qwenseer-2b leg=web-off thinking=off max_tokens=1024
+category=vision passed=0/10 truncated=0 empty=10
+category=web_current passed=0/10 truncated=0 empty=0
+category=word_problem passed=6/10 truncated=1 empty=0
+tool_stages rows=10 called=8 parsed=10 names=10 arguments=9
+served_models=qwenseer-2b requested_model=qwenseer-2b
+quality_suite=failed passed=49/94 completion_rate=0.787 empty_answer_rate=0.202 transport_errors=19 attribution_failures=0 wall_seconds=1258.0
+arm=qwenseer-2b leg=web-off status=failed
+arm=qwenseer-2b leg=web-on status=unavailable reason=no_web_profile detail=no row in the ledger names this model_id
+
+qwen38-4b-distill: web_on_status='failed' names '$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen38-4b-distill.web-on.json', which is unreadable: [Errno 2] No such file or directory: '$HOME/Github/qwen-apu/.runtime/results/conversational-20260905T1900Z/run/qwen38-4b-distill.web-on.json'
