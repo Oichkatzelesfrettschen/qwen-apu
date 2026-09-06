@@ -80,7 +80,7 @@ reset_fixture
 # models_fixture; model-registry.sh runs unstubbed, since it is a pure reader
 # over this one row.
 registry_fixture=$temporary_directory/models.tsv
-printf 'fake-model\trole\tfake-model.gguf\tfetch.sh\t4096\t8192\t16384\tf16\tf16\ton\tnone\t-\t1.0\t1.0\t0/0\tcandidate\t128\t32\t-\t-\t-\trefused\n' \
+printf 'fake-model\trole\tfake-model.gguf\tfetch.sh\t4096\t8192\t16384\tf16\tf16\ton\tnone\t-\t1.0\t1.0\t0/0\tcandidate\t128\t32\t-\t-\t-\trefused\t-\n' \
     >"$registry_fixture"
 : >"$models_fixture/fake-model.gguf"
 

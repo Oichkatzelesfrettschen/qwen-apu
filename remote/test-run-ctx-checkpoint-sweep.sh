@@ -44,7 +44,7 @@ mkdir -p "$models_directory/Fake-GGUF"
 # A registry with one row whose ceiling admits the test depth.
 {
     sed -n '/^#/p' "$script_directory/models.tsv"
-    printf 'fake-2b\tfast-text\tFake-GGUF/fake.gguf\tnone.sh\t24576\t32768\t131072\tq8_0\tq4_0\ton\tnone\t-\t-\t-\t-\tcandidate\t128\t32\t32768\t-\t-\trefused\n'
+    printf 'fake-2b\tfast-text\tFake-GGUF/fake.gguf\tnone.sh\t24576\t32768\t131072\tq8_0\tq4_0\ton\tnone\t-\t-\t-\t-\tcandidate\t128\t32\t32768\t-\t-\trefused\t-\n'
 } >"$registry"
 
 state_directory=$temporary_directory/state
@@ -134,7 +134,8 @@ fi
 # one is refused before any launch, and the launch chain's guards need the
 # harness at nice 0 or below, so a harness started at nice 5 is refused.
 unvalidated_registry=$temporary_directory/unvalidated-models.tsv
-sed 's/\t32768\t-\t-\trefused$/\t-\t-\t-\trefused/' "$registry" >"$unvalidated_registry"
+sed 's/\t32768\t-\t-\trefused\t-$/\t-\t-\t-\trefused\t-/' "$registry" \
+    >"$unvalidated_registry"
 harness_registry=$unvalidated_registry
 if run_harness unvalidated fake-2b "$temporary_directory/unvalidated" \
         >/dev/null 2>"$temporary_directory/unvalidated.stderr"; then
@@ -260,7 +261,7 @@ grep -F 'checkpoint spacing must be positive integers' \
 # the output directory or launch chain changes state.
 active_fixture=context-reservation
 shallow_registry=$temporary_directory/shallow-models.tsv
-sed 's/\t32768\t-\t-\trefused$/\t2100\t-\t-\trefused/' \
+sed 's/\t32768\t-\t-\trefused\t-$/\t2100\t-\t-\trefused\t-/' \
     "$registry" >"$shallow_registry"
 harness_registry=$shallow_registry
 : >"$launch_log"

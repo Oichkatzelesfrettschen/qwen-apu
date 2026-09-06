@@ -1625,7 +1625,7 @@ fi
 model_registry=$work/models.tsv
 {
     printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tprojector_fetch_script\tdecode_tok_s\tprefill_tok_s\tquality\ttier\tbatch\tubatch\tvalidated_filled_depth\tvalidation_evidence\traw_tool_selection\tguarded_tool_execution\n'
-    printf 'fixture-production\tfixture-role\tFixture-GGUF/production.gguf\tdownload-fixture.sh\t8192\t16384\t32768\tq8_0\tq4_0\ton\tnone\t-\t1.00\t1.00\tuntested\tproduction\t128\t32\t16384\tevidence/fixture.md\t9/10\trefused\n'
+    printf 'fixture-production\tfixture-role\tFixture-GGUF/production.gguf\tdownload-fixture.sh\t8192\t16384\t32768\tq8_0\tq4_0\ton\tnone\t-\t1.00\t1.00\tuntested\tproduction\t128\t32\t16384\tevidence/fixture.md\t9/10\trefused\t-\n'
 } >"$model_registry"
 
 quarantine_registry=$work/quarantine.tsv
@@ -1798,7 +1798,7 @@ fi
 write_lowered_registry() {
     {
         printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tprojector_fetch_script\tdecode_tok_s\tprefill_tok_s\tquality\ttier\tbatch\tubatch\tvalidated_filled_depth\tvalidation_evidence\traw_tool_selection\tguarded_tool_execution\n'
-        printf 'fixture-production\tfixture-role\tFixture-GGUF/production.gguf\tdownload-fixture.sh\t8192\t16384\t32768\tq8_0\tq4_0\ton\tnone\t-\t1.00\t1.00\tuntested\tproduction\t128\t32\t%s\tevidence/fixture.md\t9/10\trefused\n' \
+        printf 'fixture-production\tfixture-role\tFixture-GGUF/production.gguf\tdownload-fixture.sh\t8192\t16384\t32768\tq8_0\tq4_0\ton\tnone\t-\t1.00\t1.00\tuntested\tproduction\t128\t32\t%s\tevidence/fixture.md\t9/10\trefused\t-\n' \
             "$1"
     } >"$2"
 }

@@ -162,8 +162,8 @@ chmod 0755 "$harness/model-memory-preflight.sh" \
 model_registry=$work/models.tsv
 {
     printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tprojector_fetch_script\tdecode_tok_s\tprefill_tok_s\tquality\ttier\tbatch\tubatch\tvalidated_filled_depth\tvalidation_evidence\traw_tool_selection\tguarded_tool_execution\n'
-    printf 'image-admission-fixture\tfixture-role\tFixture-GGUF/fixture.gguf\tdownload-fixture.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t1.00\t1.00\tuntested\tcandidate\t128\t32\t4096\tevidence/image-appliance/design.md\t9/10\trefused\n'
-    printf 'image-review-fixture\tfixture-role\tFixture-Vision-GGUF/vision.gguf\tdownload-fixture.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\trequired\tdownload-fixture-mmproj.sh\t1.00\t1.00\tuntested\tcandidate\t128\t32\t4096\tevidence/image-appliance/design.md\t8/10\trefused\n'
+    printf 'image-admission-fixture\tfixture-role\tFixture-GGUF/fixture.gguf\tdownload-fixture.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t1.00\t1.00\tuntested\tcandidate\t128\t32\t4096\tevidence/image-appliance/design.md\t9/10\trefused\t-\n'
+    printf 'image-review-fixture\tfixture-role\tFixture-Vision-GGUF/vision.gguf\tdownload-fixture.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\trequired\tdownload-fixture-mmproj.sh\t1.00\t1.00\tuntested\tcandidate\t128\t32\t4096\tevidence/image-appliance/design.md\t8/10\trefused\t-\n'
 } >"$model_registry"
 # The context checkpoint ledger joins against the model registry, so the
 # fixture registry names an empty ledger and both emitted sections carry the

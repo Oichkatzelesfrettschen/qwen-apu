@@ -44,7 +44,7 @@ printf '#!/bin/sh\n' >"$fetch_directory/test-fixture-unpinned.sh"
 : >"$registry"
 printf '# fixture registry\n' >>"$registry"
 add_row() {
-    printf '%s\trole\t%s\t%s\t4096\t4096\t4096\tf16\tf16\ton\tnone\t-\t-\t-\t-\tproduction\t128\t32\t-\t-\t-\trefused\n' \
+    printf '%s\trole\t%s\t%s\t4096\t4096\t4096\tf16\tf16\ton\tnone\t-\t-\t-\t-\tproduction\t128\t32\t-\t-\t-\trefused\t-\n' \
         "$1" "$2" "$3" >>"$registry"
 }
 add_row good good/good.gguf test-fixture-good.sh
@@ -55,7 +55,7 @@ add_row loose unpinned/loose.gguf test-fixture-unpinned.sh
 # A row whose id the pin ledger also carries and which requires a projector:
 # the model file takes the ledger pin and the projector takes its own script's,
 # so the projector is never measured against the model's bytes.
-printf 'vision\trole\tvision/vision.gguf\ttest-fixture-unpinned.sh\t4096\t4096\t4096\tf16\tf16\ton\trequired\ttest-fixture-projector.sh\t-\t-\t-\tproduction\t128\t32\t-\t-\t-\trefused\n' >>"$registry"
+printf 'vision\trole\tvision/vision.gguf\ttest-fixture-unpinned.sh\t4096\t4096\t4096\tf16\tf16\ton\trequired\ttest-fixture-projector.sh\t-\t-\t-\tproduction\t128\t32\t-\t-\t-\trefused\t-\n' >>"$registry"
 mkdir -p "$models/vision"
 printf 'vision-model-bytes\n' >"$models/vision/vision.gguf"
 printf 'projector-bytes\n' >"$models/vision/projector.gguf"
