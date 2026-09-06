@@ -11,11 +11,17 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 driver=$script_directory/run-quality-roster.sh
 work_directory=$(mktemp -d)
 server_pid=
+port_lease_holder_pid=''
 
 cleanup() {
     if [ -n "$server_pid" ]; then
         kill "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
+    fi
+    if [ -n "$port_lease_holder_pid" ]; then
+        "$script_directory/test-port-lease.sh" release \
+            "$port_lease_holder_pid" || true
+        port_lease_holder_pid=''
     fi
     rm -rf "$work_directory"
 }
@@ -107,14 +113,13 @@ beta	text	models/beta.gguf	fetch-beta.sh	8192	8192	32768	q8_0	q4_0	on	none	-	9.0
 gamma	text	models/gamma.gguf	fetch-gamma.sh	8192	8192	32768	q8_0	q4_0	on	none	-	9.0	60.0	-	quarantine	128	32	-	-	unmeasured	refused
 TSV
 
-port=$(python3 -c '
-import socket
-
-probe = socket.socket()
-probe.bind(("127.0.0.1", 0))
-print(probe.getsockname()[1])
-probe.close()
-')
+# start_fixture restarts the server on this one port several times, so the
+# number is held across every gap by a lease holder rather than re-probed: a
+# probe reports what was free at the read and owns nothing afterwards.
+port_lease_ports_file=$work_directory/leased-ports
+port_lease_holder_pid=$("$script_directory/test-port-lease.sh" claim 1 \
+    "$port_lease_ports_file")
+port=$(sed -n 1p "$port_lease_ports_file")
 
 start_fixture() {
     if [ -n "$server_pid" ]; then

@@ -16,26 +16,30 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 work_directory=$(mktemp -d)
+port_lease_holder_pid=''
+yacy_port=''
 cleanup() {
     QWEN_YACY_INSTALL_DIRECTORY="$work_directory/yacy" \
         QWEN_YACY_PID_FILE="$work_directory/yacy/yacy.pid" \
         QWEN_YACY_LOG_FILE="$work_directory/yacy/yacy.log" \
         QWEN_YACY_PORT=$yacy_port \
         "$yacy_control" stop >/dev/null 2>&1 || true
+    if [ -n "$port_lease_holder_pid" ]; then
+        "$script_directory/test-port-lease.sh" release \
+            "$port_lease_holder_pid" || true
+        port_lease_holder_pid=''
+    fi
     rm -rf "$work_directory"
 }
 trap cleanup EXIT
 
-free_port() {
-    python3 -c '
-import socket
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.bind(("127.0.0.1", 0))
-print(s.getsockname()[1])
-s.close()
-'
-}
-yacy_port=$(free_port)
+# The fake listener binds the port itself, so the test holds a lease over the
+# number rather than the socket: a holder process keeps an exclusive flock on
+# the port's lease file for this script's whole run.
+port_lease_ports_file=$work_directory/leased-ports
+port_lease_holder_pid=$("$script_directory/test-port-lease.sh" claim 1 \
+    "$port_lease_ports_file")
+yacy_port=$(sed -n 1p "$port_lease_ports_file")
 
 mkdir -p "$work_directory/yacy"
 

@@ -12,7 +12,15 @@ set -eu
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 installer=$script_directory/install-searxng.sh
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT HUP INT TERM
+port_lease_holder_pid=''
+release_port_lease() {
+    if [ -n "$port_lease_holder_pid" ]; then
+        "$script_directory/test-port-lease.sh" release \
+            "$port_lease_holder_pid" || true
+        port_lease_holder_pid=''
+    fi
+}
+trap 'release_port_lease; rm -rf "$work"' EXIT HUP INT TERM
 failures=0
 report() {
     if [ "$2" = ok ]; then printf 'ok %s\n' "$1"; else printf 'FAIL %s: %s\n' "$1" "$2"; failures=$((failures + 1)); fi
@@ -78,7 +86,13 @@ if "$installer" install >"$work/commit.log" 2>&1; then report absent_commit_refu
 write_pins "$pinned" "$requirements_sha256"
 
 # ---- verify through the launch path with a stand-in listener ----
-port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
+# The stand-in listener binds this port itself, so a lease over the number
+# rather than a socket is what reserves it: a holder process keeps an exclusive
+# flock on the port's lease file until this script exits.
+port_lease_ports_file=$work/leased-ports
+port_lease_holder_pid=$("$script_directory/test-port-lease.sh" claim 1 \
+    "$port_lease_ports_file")
+port=$(sed -n 1p "$port_lease_ports_file")
 mkdir -p "$work/site"; printf '{}' >"$work/site/healthz"; printf '{"results": []}' >"$work/site/search"
 if QWEN_SEARXNG_PORT=$port \
     QWEN_SEARXNG_LAUNCH_COMMAND="python3 -m http.server $port --bind 127.0.0.1 --directory $work/site" \
