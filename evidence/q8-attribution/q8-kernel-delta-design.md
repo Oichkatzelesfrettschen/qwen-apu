@@ -95,19 +95,36 @@ lab rather than run.
 SPIR-V at this device's own specialization, and
 `remote/raven2-shader-lab/q8-mat-vec-receipt.sh` runs `lab.sh` and `depth.py`
 over it under the naming `evidence/raven2-vulkan-kernel-census/e1/` uses.
-Both run at `{64, 4, 1}` by taking the candidate constants, and both roles
-compile from one source tree so the delta is the specialization alone.
+`--num-rows` states the count: the control runs at the served `{64, 2, 1}` and
+the candidate at `{64, 4, 1}`, and both roles read one SPIR-V module so the
+delta is the specialization alone.
 
-The layer decides where the arm runs. `--spirv-only` closes the module
-identity anywhere, including this workstation, because `spirv-dis` and the
-SHA-256 need no driver. The VGPR, spill, occupancy, and instruction counts
-come out of RADV's ACO backend targeting gfx902 under
-`RADV_DEBUG=shaderstats`, and `q8-mat-vec-receipt.sh`'s own header states
-that a host without a gfx902 part produces another vendor's ISA under a
-receipt that looks the same, which is why `--allow-device` exists. The lab
+One module serves both because `mul_mat_vec_base.glsl:90` declares
+`layout (constant_id = 1) const uint NUM_ROWS = 1`. The row count therefore
+reaches the compiler at pipeline creation rather than through the glslc
+frontend, and the two arms share a module digest by construction.
+
+That decides where the arm runs, and it is a stronger constraint than the
+gfx902 backend alone. `--spirv-only` closes the module identity anywhere,
+including this workstation, because `spirv-dis` and the SHA-256 need no
+driver -- and it applies no specialization at all, so a `--spirv-only` pair
+taken at two row counts is one set of bytes under two arm labels.
+`q8-mat-vec-receipt.sh` refuses a `--num-rows` away from the served 2 without
+`--allow-device` for that reason, and each output directory carries a
+`specialization.tsv` naming its constants, its layer, and whether a
+specialization was applied. The VGPR, spill, occupancy, and instruction
+counts come out of RADV's ACO backend targeting gfx902 under
+`RADV_DEBUG=shaderstats`, and that script's own header states that a host
+without a gfx902 part produces another vendor's ISA under a receipt that
+looks the same, which is the second reason `--allow-device` exists. The lab
 arm therefore needs the appliance, in the light form the lab was built for:
-one pipeline creation, no model load, no server, no lease, seconds rather
+two pipeline creations, no model load, no server, no lease, seconds rather
 than a teardown window.
+
+    remote/raven2-shader-lab/q8-mat-vec-receipt.sh SPV OUT/control \
+        --allow-device --subgroup-only --num-rows 2
+    remote/raven2-shader-lab/q8-mat-vec-receipt.sh SPV OUT/candidate \
+        --allow-device --subgroup-only --num-rows 4
 
 The register rows are absolute, since the census pins the control at 40
 VGPRs, 0 spilled, and 6 subgroups per SIMD. The instruction rows are
