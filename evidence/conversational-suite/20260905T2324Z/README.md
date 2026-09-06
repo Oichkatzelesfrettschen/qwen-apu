@@ -56,21 +56,24 @@ over the records the sweep already wrote, in `summarize.log`.
 94 rows per checkpoint, thinking off, 1024-token budget, 24000-character
 long-context rows, graded in the row file's own order.
 
-| Checkpoint | passed | correct_on_completed | transport errors | wall s |
-| --- | ---: | ---: | ---: | ---: |
-| qwen35-4b-base | 78/94 | 0.830 | 0 | 3794.3 |
-| lfm25-vl-16b | 69/94 | 0.734 | 0 | 1406.8 |
-| qwen35-2b | 64/94 | 0.681 | 0 | 1388.5 |
-| qwen38-4b-distill | 56/94 | 0.747 | 19 | 2912.9 |
-| qwenseer-2b | 49/94 | 0.662 | 19 | 1258.0 |
-| qwen35-2b-heretic | 48/94 | 0.649 | 19 | 2035.1 |
-| qwen35-2b-unredacted | 45/94 | 0.595 | 19 | 1053.4 |
-| qwen35-08b-unsloth-unc | 44/94 | 0.587 | 19 | 492.3 |
-| qwen35-2b-hauhau | 43/94 | 0.573 | 19 | 1079.2 |
-| qwen38-2b-uncensored | 41/94 | 0.554 | 19 | 1739.9 |
-| qwen35-08b | 40/94 | 0.533 | 19 | 428.9 |
-| qwen35-08b-f16 | 40/94 | 0.533 | 19 | 497.5 |
-| qwen38-2b-distill | 40/94 | 0.548 | 19 | 1768.0 |
+The table orders by the text-only figure, which is the comparable one; the
+mechanism that makes the retained column incomparable is stated below it.
+
+| Checkpoint | passed | correct_on_completed | text-only rows | transport errors | wall s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| qwen35-4b-base | 78/94 | 0.830 | 0.787 | 0 | 3794.3 |
+| qwen38-4b-distill | 56/94 | 0.747 | 0.747 | 19 | 2912.9 |
+| lfm25-vl-16b | 69/94 | 0.734 | 0.680 | 0 | 1406.8 |
+| qwenseer-2b | 49/94 | 0.662 | 0.662 | 19 | 1258.0 |
+| qwen35-2b-heretic | 48/94 | 0.649 | 0.649 | 19 | 2035.1 |
+| qwen35-2b | 64/94 | 0.681 | 0.600 | 0 | 1388.5 |
+| qwen35-2b-unredacted | 45/94 | 0.595 | 0.595 | 19 | 1053.4 |
+| qwen35-08b-unsloth-unc | 44/94 | 0.587 | 0.587 | 19 | 492.3 |
+| qwen35-2b-hauhau | 43/94 | 0.573 | 0.573 | 19 | 1079.2 |
+| qwen38-2b-uncensored | 41/94 | 0.554 | 0.554 | 19 | 1739.9 |
+| qwen38-2b-distill | 40/94 | 0.548 | 0.548 | 19 | 1768.0 |
+| qwen35-08b | 40/94 | 0.533 | 0.533 | 19 | 428.9 |
+| qwen35-08b-f16 | 40/94 | 0.533 | 0.533 | 19 | 497.5 |
 
 The three arms reading zero transport errors are the three checkpoints whose
 own directory holds a projector. The other ten each answer HTTP 500 on the 19
@@ -80,10 +83,21 @@ a text-only checkpoint has none, so `run-quality-suite.py` records
 `served=None` with a transport error and the arm's status reads `failed`. That
 is `run-quality-roster.sh`'s existing behavior without `--omit-images` rather
 than a fault of this harness, and it is one mechanism rather than 190 findings.
-`correct_on_completed` excludes those rows from its denominator and is the
-cross-checkpoint column to read; `passed` out of 94 and `empty_answer_rate`
-include them and are comparable only inside the projector-carrying group or
-inside the text-only group.
+
+That mechanism also decides which column compares. `correct_on_completed`
+divides by the rows a checkpoint completed, so for the ten text-only arms it is
+already computed over the 75 rows carrying no image, while for the three
+projector arms it divides by all 94 and those three nearly sweep the 19 image
+rows (base 19 of 19, `qwen35-2b` 19 of 19, `lfm25-vl-16b` 18 of 19). The
+`text-only rows` column above recomputes each arm's `correct_on_completed` on
+the 75 non-image rows alone, by the same rule `run-quality-suite.py` applies --
+a row with an error, an attribution failure, an empty answer, or a truncation
+leaves the denominator -- and is identical to the retained column for the ten
+text-only arms by construction. It moves the three: the base falls 0.830 to
+0.787, `lfm25-vl-16b` 0.734 to 0.680, and `qwen35-2b` 0.681 to 0.600, which
+takes `qwen35-2b` from third place to sixth and halves the base's lead over the
+4B distill from 0.083 to 0.040. `passed` out of 94 and `empty_answer_rate`
+carry the image rows and compare only inside one of the two groups.
 
 Two pairs the registry already accounts for appear here as measurements.
 `qwen35-08b` at Q8_0 and `qwen35-08b-f16` land on the same 0.533, one row apart
@@ -125,7 +139,16 @@ since a comparison on this machine is read inside one sweep.
 
 29 rows carry an `image` or `tools` attachment and have no transport through
 the page's turn driver, so 65 of 94 reach the web-on arm. The paired delta over
-all 65 shared rows is -0.046 with a paired count of 65.
+all 65 shared rows is -0.046, which is 3 rows net, and it decomposes exactly:
+-5 `long_context`, +2 `web_current`, +1 `code`, and -2 then +1 on
+`word_problem`. On the 60 rows both arms completed the delta is +2 of 60,
+entirely the two `web_current` rows.
+
+The two 4B web-off arms six hours apart -- the sweep's and this rerun's --
+both graded 56 of 94 with identical per-category rows. On a machine
+`evidence/decode-bound-analysis.md` documents at 30.6% throughput spread
+between sweeps, that reproducibility is what licenses reading the rerun's
+pairing as one comparison rather than two sweeps joined at the seam.
 
 **The web-on arm proposed a search on one row of 65.** `tool_proposal_rate`
 reads 0.015: only `web-10` opened the approval dialog, on nine other
@@ -160,8 +183,8 @@ in the same invocation. A 24000-character prompt prefills longer than the
 driver's 300 s dialog-or-turn ceiling on this machine, so those five report the
 timeout rather than the checkpoint. Raising `QWEN_CONVERSATIONAL_DIALOG_TIMEOUT`
 past the measured prefill is what makes that category comparable across the two
-arms; the paired delta above includes the five as web-on failures and is
-therefore a lower bound.
+arms; the 65-row delta counts the five as web-on failures where the 60-row
+figure sets them aside.
 
 ## Files
 
@@ -175,6 +198,7 @@ approval dialog's fields per row.
 
 The records carry no bearer, no session secret, and no grant: the web-off arm
 sends its bearer in a header the record never holds, and the web-on records
-retain the dialog's parsed fields rather than the token signed over them. The
-git copies replace the appliance hostname with `qwen-laptop` and the home
-prefix with `$HOME`.
+retain the dialog's parsed fields rather than the token signed over them. Every
+retained JSON is ASCII, since `json.dump` escapes what a model wrote outside
+it. The git copies replace the appliance hostname with `qwen-laptop` and the
+home prefix with `$HOME`.
