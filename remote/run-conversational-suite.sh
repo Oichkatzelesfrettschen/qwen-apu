@@ -40,10 +40,14 @@ set -eu
 #   QWEN_CONVERSATIONAL_MODELS                   override the registry's servable ids
 #   QWEN_CONVERSATIONAL_SUITE                    default remote/quality-suite.tsv
 #   QWEN_WEB_PROFILES                            default remote/web-profiles.tsv
+#   QWEN_SERVER_HOST                             router host, default 127.0.0.1
 #   QWEN_SERVER_PORT                             router port, default 8080
+#   QWEN_WEB_BROKER_HOST                         broker host, default QWEN_SERVER_HOST
 #   QWEN_WEB_BROKER_PORT                         broker port, default 8571
 #   QWEN_WEB_API_KEY_FILE                        bearer file the page sets; required
-#                                                 for any model whose web-on arm runs
+#                                                 for any model whose web-on arm runs,
+#                                                 and the bearer both arms present where
+#                                                 the launch requires one
 #   QWEN_CONVERSATIONAL_PAGE_DRIVER              default remote/web-mcp/drive-fallback-page.py
 #   QWEN_CONVERSATIONAL_LOAD_TIMEOUT             default 180
 #   QWEN_CONVERSATIONAL_DIALOG_TIMEOUT           default 300
@@ -59,8 +63,15 @@ output_directory=$1
 shift
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-endpoint=http://127.0.0.1:${QWEN_SERVER_PORT:-8080}
-broker_origin=http://127.0.0.1:${QWEN_WEB_BROKER_PORT:-8571}
+# QWEN_WEB_LAN=1 binds the router, the broker, and the artifact listener to one
+# routable IPv4 literal, so a loopback origin reaches nothing on an exposed
+# appliance and the broker's closed Host set refuses a request carrying
+# 127.0.0.1 even where a forward reached the socket. Both origins therefore
+# follow one host, which defaults to the loopback an ordinary launch binds.
+server_host=${QWEN_SERVER_HOST:-127.0.0.1}
+broker_host=${QWEN_WEB_BROKER_HOST:-$server_host}
+endpoint=http://$server_host:${QWEN_SERVER_PORT:-8080}
+broker_origin=http://$broker_host:${QWEN_WEB_BROKER_PORT:-8571}
 suite_runner=$script_directory/run-quality-suite.py
 web_arm_runner=$script_directory/run-conversational-web-arm.py
 summarizer=$script_directory/summarize-conversational-suite.py
@@ -119,7 +130,27 @@ if [ -z "$model_ids" ]; then
     exit 1
 fi
 
-served_listing=$(curl -s --max-time 30 "$endpoint/v1/models") || {
+# QWEN_REQUIRE_API_KEY=1 accompanies every exposed launch, so the roster read
+# and run-quality-suite.py's own requests carry the same bearer the page holds.
+# The key reaches run-quality-suite.py through QWEN_API_KEY, which it already
+# reads, and a caller's own value wins so a launch with another credential
+# stays reachable. The file's contents stay out of every argv this script
+# builds, since /proc/PID/cmdline is world-readable.
+if [ -n "$api_key_file" ]; then
+    if [ ! -r "$api_key_file" ]; then
+        printf 'run-conversational-suite: the bearer file is unreadable: %s\n' \
+            "$api_key_file" >&2
+        exit 1
+    fi
+    QWEN_API_KEY=${QWEN_API_KEY:-$(cat "$api_key_file")}
+    export QWEN_API_KEY
+fi
+if [ -n "${QWEN_API_KEY:-}" ]; then
+    served_listing=$(printf 'header = "Authorization: Bearer %s"\n' "$QWEN_API_KEY" |
+        curl -s --max-time 30 --config - "$endpoint/v1/models")
+else
+    served_listing=$(curl -s --max-time 30 "$endpoint/v1/models")
+fi || {
     printf 'run-conversational-suite: the endpoint is unreachable: %s\n' "$endpoint" >&2
     exit 1
 }

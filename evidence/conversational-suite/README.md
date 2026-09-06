@@ -5,8 +5,10 @@ through the graded suite twice: once through the API with the web lane off
 (`remote/run-quality-suite.py`, the path `remote/run-quality-roster.sh`
 already runs), and once through the served fallback page with the per-turn
 Web toggle on (`remote/run-conversational-web-arm.py`, driving
-`remote/web-mcp/drive-fallback-page.py`). No arm has run on the appliance yet;
-this registers the design and its falsifiers ahead of that run.
+`remote/web-mcp/drive-fallback-page.py`). This registers the design and its
+falsifiers. `20260905T2324Z/` holds the first run that executed them on the
+appliance: thirteen web-off arms, one web-on arm against the `web-open`
+section, and the three harness defects a LAN-bound appliance exposed.
 
 ## What web-on is expected to change
 
@@ -116,16 +118,32 @@ section armed, which is the unified launch rather than the single-profile
 cannot also serve every other registry row the web-off arm grades):
 
 ```sh
-openssl rand -hex 32 >~/qwen-webui-state/api.key
-chmod 600 ~/qwen-webui-state/api.key
+openssl rand -hex 32 >$QWEN_HOME/state/api.key
+chmod 600 $QWEN_HOME/state/api.key
 QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
-QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
-    ~/qwen-laptop-setup/remote/qwen-launch.sh low-async
+QWEN_WEB_TOKEN_KEY_FILE=$QWEN_HOME/web-token.key \
+    remote/qwen-launch.sh low-async
 
-QWEN_WEB_API_KEY_FILE=~/qwen-webui-state/api.key \
-    ~/qwen-laptop-setup/remote/run-conversational-suite.sh \
-    ~/qwen-conversational-roster
+QWEN_WEB_API_KEY_FILE=$QWEN_HOME/state/api.key \
+    remote/run-conversational-suite.sh $QWEN_HOME/results/conversational
 ```
+
+`QWEN_WEB_LAN=1` binds the router, the broker, and the artifact listener to
+one routable literal and the broker compares a request's Host against a closed
+set holding it, so a run against an exposed appliance names that literal on
+both origins rather than reaching for a loopback forward:
+
+```sh
+QWEN_SERVER_HOST=$QWEN_WEB_LAN_ADDRESS QWEN_SERVER_PORT=42069 \
+QWEN_WEB_BROKER_HOST=$QWEN_WEB_LAN_ADDRESS QWEN_WEB_BROKER_PORT=42070 \
+QWEN_WEB_API_KEY_FILE=$QWEN_HOME/state/api.key \
+    remote/run-conversational-suite.sh $QWEN_HOME/results/conversational
+```
+
+Both origins default to `127.0.0.1`, which is what an ordinary launch binds.
+The bearer file reaches `run-quality-suite.py` through the `QWEN_API_KEY` it
+already reads and the roster read through a curl configuration on stdin, so
+the key stays out of every argv.
 
 `run-conversational-suite.sh` checks the router's own served roster
 (`GET /v1/models`) before it spends any device time: a registry row the

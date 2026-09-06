@@ -1,0 +1,14 @@
+model_id	web_off_rows	web_off_correct_on_completed	web_off_mean_wall	web_off_p90_wall	web_on_status	web_on_reason	web_on_rows	web_on_correct_on_completed	web_on_mean_wall	web_on_p90_wall	tool_proposal_rate	approvals	results_produced	paired_count	paired_delta_mean
+qwen38-4b-distill	94	0.747	38.84	45.59	failed	record_absent	-	-	-	-	-	-	-	0	-
+qwen38-2b-distill	94	0.548	23.57	46.73	unavailable	execution_policy_refused	-	-	-	-	-	-	-	0	-
+qwen35-4b-base	94	0.830	40.37	67.04	unavailable	execution_policy_refused	-	-	-	-	-	-	-	0	-
+qwen35-08b	94	0.533	5.72	7.74	unavailable	execution_policy_refused	-	-	-	-	-	-	-	0	-
+qwen35-2b	94	0.681	14.77	34.88	unavailable	execution_policy_refused	-	-	-	-	-	-	-	0	-
+lfm25-vl-16b	94	0.734	14.97	74.53	unavailable	execution_policy_refused	-	-	-	-	-	-	-	0	-
+qwen35-08b-f16	94	0.533	6.63	9.17	unavailable	no_web_profile	-	-	-	-	-	-	-	0	-
+qwen38-2b-uncensored	94	0.554	23.20	36.46	unavailable	no_web_profile	-	-	-	-	-	-	-	0	-
+qwen35-2b-hauhau	94	0.573	14.39	16.86	unavailable	no_web_profile	-	-	-	-	-	-	-	0	-
+qwen35-2b-unredacted	94	0.595	14.04	15.24	unavailable	no_web_profile	-	-	-	-	-	-	-	0	-
+qwen35-2b-heretic	94	0.649	27.13	47.11	unavailable	no_web_profile	-	-	-	-	-	-	-	0	-
+qwen35-08b-unsloth-unc	94	0.587	6.56	12.21	unavailable	no_web_profile	-	-	-	-	-	-	-	0	-
+qwenseer-2b	94	0.662	16.77	64.89	unavailable	no_web_profile	-	-	-	-	-	-	-	0	-

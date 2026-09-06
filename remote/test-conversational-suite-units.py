@@ -16,6 +16,7 @@ remote/test-fixtures/fake-chat-router.py.
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -223,6 +224,46 @@ with tempfile.TemporaryDirectory() as directory:
         fail(f"transport_errors = {document['summary']['transport_errors']}, want 1")
 
 
+# --- run-conversational-web-arm.py: a page driver the mode bit refuses -----
+#
+# remote/web-mcp/drive-fallback-page.py is tracked at mode 644, so an arm
+# that execs the path meets PermissionError on its first row and takes the
+# whole arm down. The fixture driver carries the execute bit and hides that,
+# so this case drives the arm against a mode-644 copy of the same fixture and
+# requires the row to complete.
+
+with tempfile.TemporaryDirectory() as directory:
+    suite_path = os.path.join(directory, "suite.tsv")
+    with open(suite_path, "w", encoding="utf-8") as handle:
+        handle.write("term-01\ttermination\tnonempty\t\tSay something.\t-\n")
+    driver_path = os.path.join(directory, "unexecutable-page-driver.py")
+    shutil.copyfile(os.path.join(FIXTURES, "fake-page-driver.py"), driver_path)
+    os.chmod(driver_path, 0o644)
+    reports_path = os.path.join(directory, "reports.json")
+    with open(reports_path, "w", encoding="utf-8") as handle:
+        json.dump([{"error": None, "dialog": None, "selected_model_at_load": "web-open",
+                    "history": [{"role": "user", "content": "Say something."},
+                                {"role": "assistant", "content": "Something."}]}], handle)
+    state_path = os.path.join(directory, "state.txt")
+    output_json = os.path.join(directory, "web-on.json")
+    environment = dict(os.environ)
+    environment["QWEN_FAKE_PAGE_DRIVER_REPORTS"] = reports_path
+    environment["QWEN_FAKE_PAGE_DRIVER_STATE"] = state_path
+    completed = subprocess.run(
+        [sys.executable, os.path.join(HERE, "run-conversational-web-arm.py"),
+         "http://127.0.0.1:1", "web-open", output_json,
+         "--suite", suite_path, "--page-driver", driver_path],
+        capture_output=True, text=True, env=environment)
+    if completed.returncode != 0:
+        fail("a mode-644 page driver failed the web-on arm: "
+             f"{completed.stdout}\n{completed.stderr}")
+    with open(output_json, encoding="utf-8") as handle:
+        document = json.load(handle)
+    if document["summary"]["transport_errors"] != 0:
+        fail("a mode-644 page driver produced "
+             f"{document['summary']['transport_errors']} transport errors, want 0")
+
+
 # --- summarize-conversational-suite.py: mean, p90, and the paired delta ----
 
 with tempfile.TemporaryDirectory() as directory:
@@ -314,6 +355,49 @@ with tempfile.TemporaryDirectory() as directory:
         markdown = handle.read()
     if "fixture-model" not in markdown or "paired_delta_mean" not in markdown:
         fail("markdown report is missing the model row or its header")
+
+    # A `failed` arm that raised ahead of its row loop wrote no record. The
+    # report folds that row in with `-` web-on columns and `record_absent`
+    # on its reason rather than refusing every other model's arm; a
+    # `completed` arm claims a record, so an absent one still refuses.
+    absent_manifest = os.path.join(directory, "manifest-absent.tsv")
+    absent_record = os.path.join(directory, "never-written.json")
+    with open(absent_manifest, "w", encoding="utf-8") as handle:
+        handle.write("model_id\tweb_off_json\tweb_on_status\tweb_on_reason\tweb_on_json\n")
+        handle.write(f"fixture-model\t{off_path}\tfailed\t-\t{absent_record}\n")
+    absent_output = os.path.join(directory, "output-absent")
+    os.makedirs(absent_output)
+    completed = subprocess.run(
+        [sys.executable, os.path.join(HERE, "summarize-conversational-suite.py"),
+         absent_manifest, absent_output],
+        capture_output=True, text=True)
+    if completed.returncode != 0:
+        fail("an absent record on a failed arm refused the report: "
+             f"{completed.stdout}\n{completed.stderr}")
+    with open(os.path.join(absent_output, "conversational-summary.tsv"),
+              encoding="utf-8") as handle:
+        absent_lines = handle.read().splitlines()
+    absent_values = dict(zip(absent_lines[0].split("\t"), absent_lines[1].split("\t")))
+    if absent_values["web_on_reason"] != "record_absent":
+        fail(f"web_on_reason = {absent_values['web_on_reason']}, want record_absent")
+    if absent_values["web_on_rows"] != "-":
+        fail(f"web_on_rows = {absent_values['web_on_rows']}, want -")
+    if absent_values["web_off_correct_on_completed"] != "0.250":
+        fail("the web-off arm was dropped alongside the absent web-on record: "
+             f"{absent_values['web_off_correct_on_completed']}")
+
+    completed_manifest = os.path.join(directory, "manifest-claimed.tsv")
+    with open(completed_manifest, "w", encoding="utf-8") as handle:
+        handle.write("model_id\tweb_off_json\tweb_on_status\tweb_on_reason\tweb_on_json\n")
+        handle.write(f"fixture-model\t{off_path}\tcompleted\t-\t{absent_record}\n")
+    claimed_output = os.path.join(directory, "output-claimed")
+    os.makedirs(claimed_output)
+    completed = subprocess.run(
+        [sys.executable, os.path.join(HERE, "summarize-conversational-suite.py"),
+         completed_manifest, claimed_output],
+        capture_output=True, text=True)
+    if completed.returncode == 0:
+        fail("a completed arm naming an absent record was folded in rather than refused")
 
 
 if failures:
