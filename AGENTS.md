@@ -1701,12 +1701,23 @@ the correction allowance the page already tracked does not move.
 # The runtime root, from the appliance's own checkout
 make bootstrap                                  # lay out $QWEN_HOME (.runtime) and its marker
 make install-searxng && make verify-searxng     # the pinned instance under opt/searxng, user-owned
+make searxng-wheelhouse                         # the lock's wheels by digest under opt/searxng
+make verify-searxng-wheelhouse                  # every wheel at its pinned digest, none unnamed
 make install-ryzenadj install-image-runtime install-shaderc install-models build-llama
 make status                                     # every claimed component into $QWEN_HOME/manifest.tsv
 make doctor                                     # legacy, foreign, and transient paths, untouched
-make verify                                     # sudo policy, manifest, and the path ratchet
+make verify-layout                              # marker, schema, binding, layout, and the path ratchet
+make verify-components                          # sudo policy and every installed component identity
+make verify-live                                # transient system state, passing where a node is absent
+make verify                                     # the union of the three
+make verify-models                              # every registry model file and projector against
+                                                # the byte count and SHA-256 its fetch rule pins,
+                                                # fetching nothing
 QWEN_PURGE_LEGACY_CONFIRM=yes make purge-legacy # the enumerated predecessor paths, nothing else
-make uninstall                                  # the root minus state/ and models/
+QWEN_RUNTIME_ROOT_CONFIRM=$PWD/.runtime make uninstall
+                                                # the root minus state/ and models/; the confirm is
+                                                # required where the marker binds the root to a
+                                                # production checkout
 QWEN_RUNTIME_ROOT_CONFIRM=$PWD/.runtime make purge
 
 # Start and stop the appliance (run on the laptop)
@@ -1886,7 +1897,7 @@ QWEN_IMAGE_MCP_SERVER=remote/image-mcp/server.py \
 QWEN_IMAGE_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
 QWEN_IMAGE_STATE_DIR=$HOME/qwen-webui-state/images \
 QWEN_IMAGE_SERVICE_SOCKET=$HOME/qwen-webui-state/images/image-service.sock \
-QWEN_IMAGE_PROFILES_JSON=$HOME/qwen-webui-state/image-parameters.json \
+QWEN_IMAGE_PROFILES_JSON=$QWEN_HOME/state/image-parameters.json \
     remote/build-router-presets.sh OUT.ini
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
 remote/build-feature-roster.sh [OUTPUT_JSON]   # webui/roster.json, from the feature claim ledger
@@ -2126,6 +2137,7 @@ directly:
 remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
+remote/test-verify-models.sh
 remote/test-model-tiers.sh
 remote/test-feature-roster.sh
 node remote/test-fallback-webui-roster.mjs

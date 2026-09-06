@@ -18,16 +18,31 @@ set -eu
 # removes the enumerated predecessor paths and nothing else, under an
 # explicit opt-in.
 #
+# The three verifications answer three different questions and fail for three
+# different reasons, so they are three actions rather than one. `verify-layout`
+# reads the structure alone: the marker, its schema, its binding, the layout
+# directories, and any entry under the root outside the layout. It touches no
+# installed component, so it answers on a root `make bootstrap` just laid out.
+# `verify-components` reads the identity of every installed component out of
+# the manifest and names each one present or absent, which is the question a
+# receipt asks. `verify-live` reads the transient system state and the legacy
+# summary, which move under a running campaign and belong to no build; it
+# passes where a node is absent, since the workstation carries no amdgpu
+# sysfs. `make verify` is their union beside the sudo policy and the ratchet.
+#
 # usage: runtime-root.sh paths|init|status|doctor|uninstall|purge|purge-legacy
+#        runtime-root.sh verify-layout|verify-components|verify-live
 #   QWEN_HOME                    the root, default .runtime beside remote/
 #   QWEN_PURGE_LEGACY_CONFIRM    must read `yes` for purge-legacy
-#   QWEN_RUNTIME_ROOT_CONFIRM    must equal QWEN_HOME for purge
+#   QWEN_RUNTIME_ROOT_CONFIRM    must equal QWEN_HOME for purge, and for
+#                                uninstall of a root bound to a production checkout
+#   QWEN_RUNTIME_ROOT_REBIND     must equal this tree for init over a foreign marker
 #   QWEN_DOCTOR_HOME             doctor reads this in place of $HOME (fixtures)
 #   QWEN_DOCTOR_SYSTEM_PREFIX    doctor prefixes absolute legacy paths (fixtures)
 #   QWEN_DOCTOR_ACCOUNT_LOOKUP   command that tests a legacy account (fixtures)
 
 usage() {
-    sed -n '21,28p' "$0" >&2
+    sed -n '33,42p' "$0" >&2
     exit 2
 }
 
@@ -79,6 +94,7 @@ write_marker() {
 }
 
 require_marker() {
+    qwen_home_require_binding || exit 2
     if [ ! -f "$qwen_home_marker" ]; then
         printf '%s carries no runtime-root marker (%s); this script removes only a root it laid out\n' \
             "$qwen_home" "$qwen_home_marker" >&2
@@ -109,6 +125,11 @@ status_rows() {
     tsv_row searxng-venv venv "$qwen_home_searxng_root/venv" toolchains/searxng/requirements.lock - \
         "$(file_or_absent "$searxng_lock")" "$searxng_venv_identity" no 'make install-searxng'
 
+    wheelhouse_manifest_path=$qwen_home_searxng_root/wheelhouse/wheelhouse.tsv
+    tsv_row searxng-wheelhouse wheels "$qwen_home_searxng_root/wheelhouse" \
+        toolchains/searxng/requirements.lock - "$(file_or_absent "$searxng_lock")" \
+        "$(file_or_absent "$wheelhouse_manifest_path")" no 'make searxng-wheelhouse'
+
     tsv_row ryzenadj binary "$qwen_home_ryzenadj" github:FlyGoat/RyzenAdj \
         "$(git_head_or_absent "$qwen_home_ryzenadj_source")" - "$(file_or_absent "$qwen_home_ryzenadj")" no 'make install-ryzenadj'
     tsv_row image-runtime binary "$qwen_home_image_runtime" github:leejet/stable-diffusion.cpp \
@@ -122,6 +143,15 @@ status_rows() {
         [ -x "$candidate" ] && shaderc_glslc=$(sha256_of "$candidate")
     done
     tsv_row shaderc toolchain "$qwen_home_shaderc_root" remote/fetch-shaderc-toolchain.sh - - "$shaderc_glslc" no 'make install-shaderc'
+    # The image parameter file is the geometry and the ceilings the service
+    # runs a job under, so it is a component the root owns rather than a path
+    # a caller names: qwen-image-launch.sh validates it against the ledger row
+    # and image-launch-lib.sh refuses one resolving outside the root. It is
+    # written per launch from the ledger, so its digest states which parameter
+    # set the running service enforces.
+    tsv_row image-parameters parameters "$qwen_home_image_parameters" remote/image-profiles.tsv - \
+        "$(file_or_absent "$qwen_tree_root/remote/image-profiles.tsv")" \
+        "$(file_or_absent "$qwen_home_image_parameters")" yes 'remote/qwen-image-launch.sh'
     tsv_row models artifacts "$qwen_home_models" remote/model-artifacts.tsv - \
         "$(file_or_absent "$qwen_tree_root/remote/model-artifacts.tsv")" "$(listing_digest_or_absent "$qwen_home_models")" no 'make install-models'
     deployment_current=absent
@@ -156,7 +186,15 @@ status_rows() {
 # service-account form and need sudo to remove; `account` names the service
 # account that form created.
 legacy_rows() {
-    legacy_home=${QWEN_DOCTOR_HOME:-${HOME:?}}
+    # The legacy table is a report rather than a requirement, so an unset HOME
+    # leaves the user rows unenumerated and the system rows and the transient
+    # state still answer. `make verify-live` runs in environments that carry
+    # no HOME, and a refusal there would report an environment rather than the
+    # appliance.
+    legacy_home=${QWEN_DOCTOR_HOME:-${HOME:-}}
+    if [ -z "$legacy_home" ]; then
+        legacy_home=/nonexistent-home  # appliance-path: named
+    fi
     legacy_prefix=${QWEN_DOCTOR_SYSTEM_PREFIX:-}
     for relative in qwen-laptop-setup qwen-deployments qwen-webui-state models \
         src/llama.cpp-qwen-apu src/llama.cpp-qwen-apu-trace src/llama.cpp \
@@ -187,6 +225,8 @@ account_exists() {
 doctor_report() {
     printf 'class\tpath\tdetail\n'
     printf 'declared\t%s\t%s\n' "$qwen_home" "runtime root"
+    printf 'declared\t%s\tmarker binding %s, this tree %s\n' \
+        "$qwen_home_marker" "$(qwen_home_binding_state)" "$qwen_tree_root"
     for relative in $layout_directories; do
         state=absent
         [ -d "$qwen_home/$relative" ] && state=present
@@ -235,11 +275,134 @@ doctor_report() {
     done
 }
 
+verify_layout() {
+    verify_failures=0
+    if [ ! -d "$qwen_home" ]; then
+        printf 'runtime root absent: %s (run make bootstrap)\n' "$qwen_home" >&2
+        return 1
+    fi
+    printf 'layout_root=%s\n' "$qwen_home"
+    if [ -f "$qwen_home_marker" ]; then
+        marker_schema=$(sed -n 's/^runtime_schema_version=//p' "$qwen_home_marker")
+        printf 'layout_marker=present schema=%s binding=%s\n' \
+            "${marker_schema:--}" "$(qwen_home_binding_state)"
+        if [ "$marker_schema" != "$runtime_schema_version" ]; then
+            printf 'marker states schema %s where this script reads %s\n' \
+                "${marker_schema:--}" "$runtime_schema_version" >&2
+            verify_failures=$((verify_failures + 1))
+        fi
+    else
+        printf 'layout_marker=absent\n'
+        printf '%s carries no runtime-root marker; run make bootstrap\n' "$qwen_home" >&2
+        verify_failures=$((verify_failures + 1))
+    fi
+    qwen_home_require_binding || verify_failures=$((verify_failures + 1))
+    for relative in $layout_directories; do
+        if [ -d "$qwen_home/$relative" ]; then
+            printf 'layout_directory=%s state=present\n' "$relative"
+        else
+            printf 'layout_directory=%s state=absent\n' "$relative"
+            verify_failures=$((verify_failures + 1))
+        fi
+    done
+    layout_foreign=0
+    for entry in "$qwen_home"/* "$qwen_home"/.[!.]*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        entry_name=${entry##*/}
+        case " $layout_directories manifest.tsv .qwen-runtime-root .gitkeep " in
+            *" $entry_name "*) ;;
+            *)
+                printf 'layout_foreign=%s\n' "$entry"
+                layout_foreign=$((layout_foreign + 1))
+                ;;
+        esac
+    done
+    printf 'verify_layout=%s foreign_entries=%s\n' \
+        "$([ "$verify_failures" -eq 0 ] && [ "$layout_foreign" -eq 0 ] && printf 'passed' || printf 'failed')" \
+        "$layout_foreign"
+    [ "$verify_failures" -eq 0 ] && [ "$layout_foreign" -eq 0 ]
+}
+
+verify_components() {
+    if [ ! -f "$qwen_home_manifest" ]; then
+        printf 'no manifest at %s; run make status\n' "$qwen_home_manifest" >&2
+        return 1
+    fi
+    # The manifest is the identity record and this reads it rather than
+    # recomputing it, so `make status` is what a stale reading names as the
+    # remedy. A mutable component declares no identity and is reported as
+    # such; every other component is present or absent by its installed
+    # digest.
+    component_absent=0
+    while IFS="$(printf '\t')" read -r component kind path source revision \
+        source_digest installed_digest mutable rebuild; do
+        [ "$component" = component ] && continue
+        [ -n "$component" ] || continue
+        case $mutable in
+            yes) printf 'component=%s state=mutable path=%s\n' "$component" "$path"; continue ;;
+        esac
+        case $installed_digest in
+            absent | unreadable | '' | -)
+                printf 'component=%s state=absent rebuild=%s\n' "$component" "$rebuild"
+                component_absent=$((component_absent + 1))
+                ;;
+            *)
+                printf 'component=%s state=present installed_sha256=%s source=%s revision=%s source_sha256=%s kind=%s\n' \
+                    "$component" "$installed_digest" "$source" "$revision" "$source_digest" "$kind"
+                ;;
+        esac
+    done <"$qwen_home_manifest"
+    printf 'verify_components=passed absent_components=%s manifest_sha256=%s\n' \
+        "$component_absent" "$(sha256_of "$qwen_home_manifest")"
+}
+
+# The transient half: the sysfs a campaign writes and restores, and the
+# legacy summary the doctor computes. A node absent from this machine is
+# reported as absent and passes, since the workstation carries no amdgpu
+# sysfs and a verification that refused there would refuse every gate run.
+verify_live() {
+    for node in /sys/class/drm/card0/device/power_dpm_force_performance_level \
+        /sys/devices/system/cpu/cpufreq/boost /sys/kernel/mm/ksm/run; do
+        if [ -e "$node" ]; then
+            printf 'live_node=%s value=%s\n' "$node" "$(cat "$node" 2>/dev/null || printf 'unreadable')"
+        else
+            printf 'live_node=%s value=absent\n' "$node"
+        fi
+    done
+    live_session=absent
+    if [ -f "$qwen_home_state/session.status" ]; then
+        live_session=$(sed -n 's/^state=\([A-Za-z-]*\).*/\1/p' "$qwen_home_state/session.status" | head -n 1)
+        [ -n "$live_session" ] || live_session=unreadable
+    fi
+    live_doctor=$(doctor_report)
+    live_legacy=$(printf '%s\n' "$live_doctor" | grep -c '^legacy-known' || true)
+    live_foreign=$(printf '%s\n' "$live_doctor" | grep -c '^foreign' || true)
+    printf 'verify_live=passed session_state=%s legacy_paths=%s foreign_owned_paths=%s\n' \
+        "$live_session" "$live_legacy" "$live_foreign"
+}
+
 case $action in
     paths)
         "$script_directory/qwen-home.sh" paths
         ;;
     init)
+        # A marker naming another checkout is the case the binding exists to
+        # catch, and `make bootstrap` is the first remedy a refused reader
+        # reaches for, so init rewrites such a marker only where
+        # QWEN_RUNTIME_ROOT_REBIND names this tree. Without that rule the
+        # remedy silently steals the root the refusal reported.
+        init_binding=$(qwen_home_binding_state)
+        case $init_binding in
+            bound | unmarked) ;;
+            *)
+                if [ "${QWEN_RUNTIME_ROOT_REBIND:-}" != "$qwen_tree_root" ]; then
+                    printf '%s is bound to %s; rebinding it to %s discards that checkout'"'"'s claim, so set QWEN_RUNTIME_ROOT_REBIND to that exact tree\n' \
+                        "$qwen_home" "${init_binding#foreign:}" "$qwen_tree_root" >&2
+                    exit 2
+                fi
+                printf 'rebound %s from %s\n' "$qwen_home" "${init_binding#foreign:}"
+                ;;
+        esac
         mkdir -p "$qwen_home"
         for relative in $layout_directories; do
             mkdir -p "$qwen_home/$relative"
@@ -248,6 +411,7 @@ case $action in
         printf 'runtime_root=%s schema=%s\n' "$qwen_home" "$runtime_schema_version"
         ;;
     status)
+        qwen_home_require_binding || exit 2
         if [ ! -d "$qwen_home" ]; then
             printf 'runtime root absent: %s (run make bootstrap)\n' "$qwen_home" >&2
             exit 1
@@ -258,6 +422,16 @@ case $action in
         cat "$qwen_home_manifest"
         printf 'runtime_manifest=%s runtime_manifest_sha256=%s\n' \
             "$qwen_home_manifest" "$(sha256_of "$qwen_home_manifest")"
+        ;;
+    verify-layout)
+        verify_layout
+        ;;
+    verify-components)
+        qwen_home_require_binding || exit 2
+        verify_components
+        ;;
+    verify-live)
+        verify_live
         ;;
     doctor)
         doctor_output=$(doctor_report)
@@ -280,6 +454,20 @@ case $action in
         if [ "$action" = purge ] && [ "${QWEN_RUNTIME_ROOT_CONFIRM:-}" != "$qwen_home" ]; then
             printf 'purge removes %s whole, models and state included; set QWEN_RUNTIME_ROOT_CONFIRM to that exact path\n' \
                 "$qwen_home" >&2
+            exit 2
+        fi
+        # A production checkout is the one git tree with its own object
+        # store: a linked worktree carries .git as a gitdir file and a
+        # fixture tree carries none, so the discriminator names the tree
+        # the appliance serves from without naming any path. The root the
+        # marker bound to such a tree holds the served deployments and the
+        # session state, so uninstall takes the confirm purge already takes
+        # rather than removing 74 GB of reproducible products on a bare
+        # command.
+        if [ "$action" = uninstall ] && [ -d "$qwen_tree_root/.git" ] && \
+            [ "${QWEN_RUNTIME_ROOT_CONFIRM:-}" != "$qwen_home" ]; then
+            printf 'the marker binds %s to the production checkout %s; set QWEN_RUNTIME_ROOT_CONFIRM to that exact root to uninstall it\n' \
+                "$qwen_home" "$qwen_tree_root" >&2
             exit 2
         fi
         for entry in "$qwen_home"/* "$qwen_home"/.[!.]*; do

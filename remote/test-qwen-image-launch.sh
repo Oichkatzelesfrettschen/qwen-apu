@@ -93,7 +93,11 @@ image_runtime=$work/fake-image-runtime.sh
 printf '#!/bin/sh\nexit 0\n' >"$image_runtime"
 chmod +x "$image_runtime"
 
-image_parameters=$work/image-parameters.json
+# The parameter file is a component of the runtime root, so the fixture writes
+# it where the launch requires it: state/ under the root this copied tree
+# resolves to, which is .runtime beside the copied remote/.
+mkdir -p "$work/.runtime/state"
+image_parameters=$work/.runtime/state/image-parameters.json
 write_parameters() {
     cat >"$image_parameters" <<PARAMETERS
 {
@@ -509,6 +513,32 @@ else
     report default_launch_reports_loopback_exposure refused
     cat "$work/loopback-report.err" >&2
 fi
+
+# The parameter file is a component of the root, so one resolving outside it
+# refuses the launch and names the served path. The opt-in a harness uses is
+# exercised by remote/test-admit-image-router.sh, where the harness regenerates
+# the preset against its own parameter file; here the preset names the served
+# path, so the launch meets the preset comparison rather than this rule.
+outside_parameters=$work/outside-image-parameters.json
+cp "$image_parameters" "$outside_parameters"
+if env QWEN_IMAGE_LAUNCH_RECORD="$launch_record" \
+    QWEN_WEB_AUTHORIZER_READY=1 \
+    QWEN_WEB_PRESETS="$presets_armed" \
+    QWEN_WEBUI_STATE_DIRECTORY="$state_directory" \
+    QWEN_WEB_TOKEN_KEY_FILE="$signing_key_file" \
+    QWEN_IMAGE_PROFILES_JSON="$outside_parameters" \
+    QWEN_MEMORY_PREFLIGHT_PROGRAM="$memory_preflight_stub" \
+    QWEN_STATIC_PATH="$script_directory/../webui" \
+    "$launcher" >"$work/outside.log" 2>"$work/outside.err"; then
+    report external_parameters_refuse_the_launch accepted
+elif grep -q 'outside the runtime root' "$work/outside.err"; then
+    report external_parameters_refuse_the_launch ok
+else
+    report external_parameters_refuse_the_launch "$(tail -n 3 "$work/outside.err")"
+fi
+grep -q "the declared parameter file is $image_parameters" "$work/outside.err" \
+    && report refusal_names_the_served_parameters ok \
+    || report refusal_names_the_served_parameters "$(tail -n 2 "$work/outside.err")"
 
 # The authorizer marker gates the image grant the way it gates the web one.
 if env QWEN_IMAGE_LAUNCH_RECORD="$launch_record" \

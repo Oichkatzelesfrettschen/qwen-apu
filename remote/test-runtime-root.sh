@@ -39,6 +39,86 @@ rebuild=$(awk -F'\t' '$1 == "searxng-venv" { print $9 }' "$QWEN_HOME/manifest.ts
 [ "$rebuild" = 'make install-searxng' ] && report rebuild_command_named ok || report rebuild_command_named "$rebuild"
 case $status_out in *runtime_manifest_sha256=*) report status_prints_manifest_digest ok ;; *) report status_prints_manifest_digest missing ;; esac
 
+# ---- verify-layout, verify-components, verify-live ----
+layout_out=$("$tool" verify-layout)
+printf '%s\n' "$layout_out" | grep -q '^verify_layout=passed foreign_entries=0$' \
+    && report verify_layout_passes_clean_root ok || report verify_layout_passes_clean_root "$(printf '%s\n' "$layout_out" | tail -n 1)"
+printf '%s\n' "$layout_out" | grep -q '^layout_marker=present schema=1 binding=bound$' \
+    && report verify_layout_reads_binding ok || report verify_layout_reads_binding missing
+mkdir -p "$QWEN_HOME/intruder"
+if "$tool" verify-layout >"$work/layout-foreign.log" 2>&1; then
+    report verify_layout_fails_on_foreign accepted
+else
+    report verify_layout_fails_on_foreign ok
+fi
+grep -q "^layout_foreign=$QWEN_HOME/intruder$" "$work/layout-foreign.log" \
+    && report verify_layout_names_foreign ok || report verify_layout_names_foreign missing
+rmdir "$QWEN_HOME/intruder"
+rmdir "$QWEN_HOME/results"
+if "$tool" verify-layout >/dev/null 2>&1; then
+    report verify_layout_fails_on_missing_directory accepted
+else
+    report verify_layout_fails_on_missing_directory ok
+fi
+mkdir -p "$QWEN_HOME/results"
+components_out=$("$tool" verify-components)
+printf '%s\n' "$components_out" | grep -q '^component=searxng-venv state=absent rebuild=make install-searxng$' \
+    && report verify_components_names_absent ok || report verify_components_names_absent missing
+printf '%s\n' "$components_out" | grep -q '^component=state state=mutable ' \
+    && report verify_components_names_mutable ok || report verify_components_names_mutable missing
+printf '%s\n' "$components_out" | grep -q '^verify_components=passed absent_components=[0-9]* manifest_sha256=[0-9a-f]\{64\}$' \
+    && report verify_components_summary ok || report verify_components_summary "$(printf '%s\n' "$components_out" | tail -n 1)"
+missing_manifest=$work/no-manifest
+mkdir -p "$missing_manifest"
+if QWEN_HOME=$missing_manifest "$tool" verify-components >/dev/null 2>&1; then
+    report verify_components_needs_manifest accepted
+else
+    report verify_components_needs_manifest ok
+fi
+live_out=$("$tool" verify-live)
+printf '%s\n' "$live_out" | grep -q '^verify_live=passed session_state=absent legacy_paths=[0-9]* foreign_owned_paths=[0-9]*$' \
+    && report verify_live_passes_on_absence ok || report verify_live_passes_on_absence "$(printf '%s\n' "$live_out" | tail -n 1)"
+printf '%s\n' "$live_out" | grep -q '^live_node=/sys/kernel/mm/ksm/run value=' \
+    && report verify_live_reads_nodes ok || report verify_live_reads_nodes missing
+
+# ---- the marker binds the root to the checkout that laid it out ----
+tree_root_path=$(CDPATH='' cd -- "$script_directory/.." && pwd -P)
+marker_tree=$(sed -n 's/^tree_root=//p' "$QWEN_HOME/.qwen-runtime-root")
+[ "$marker_tree" = "$tree_root_path" ] \
+    && report marker_names_tree_root ok || report marker_names_tree_root "$marker_tree"
+foreign_tree=$work/other-checkout
+mkdir -p "$foreign_tree/remote"
+cp "$script_directory/qwen-home.sh" "$script_directory/runtime-root.sh" "$foreign_tree/remote/"
+if "$foreign_tree/remote/runtime-root.sh" status >"$work/foreign-status.log" 2>&1; then
+    report foreign_tree_status_refused accepted
+else
+    report foreign_tree_status_refused ok
+fi
+grep -q 'is bound to' "$work/foreign-status.log" \
+    && report foreign_refusal_names_binding ok || report foreign_refusal_names_binding "$(cat "$work/foreign-status.log")"
+if "$foreign_tree/remote/runtime-root.sh" init >/dev/null 2>&1; then
+    report foreign_tree_init_refused accepted
+else
+    report foreign_tree_init_refused ok
+fi
+[ "$(sed -n 's/^tree_root=//p' "$QWEN_HOME/.qwen-runtime-root")" = "$marker_tree" ] \
+    && report refused_init_keeps_binding ok || report refused_init_keeps_binding rebound
+if "$foreign_tree/remote/runtime-root.sh" uninstall >/dev/null 2>&1; then
+    report foreign_tree_uninstall_refused accepted
+else
+    report foreign_tree_uninstall_refused ok
+fi
+QWEN_RUNTIME_ROOT_REBIND=$foreign_tree "$foreign_tree/remote/runtime-root.sh" init >/dev/null
+[ "$(sed -n 's/^tree_root=//p' "$QWEN_HOME/.qwen-runtime-root")" = "$foreign_tree" ] \
+    && report explicit_rebind_moves_binding ok || report explicit_rebind_moves_binding rebind_failed
+QWEN_RUNTIME_ROOT_REBIND=$tree_root_path "$tool" init >/dev/null
+if python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import qwen_home; sys.exit(0 if qwen_home.binding_state() == "bound" else 1)' \
+    "$script_directory"; then
+    report python_binding_state ok
+else
+    report python_binding_state mismatch
+fi
+
 # ---- doctor over seeded legacy and foreign paths ----
 fake_home=$work/home; fake_system=$work/system
 mkdir -p "$fake_home/qwen-webui-state" "$fake_home/models" "$fake_system/usr/local/searxng" "$fake_system/etc/searxng" "$fake_system/tmp"
@@ -109,6 +189,34 @@ rm -f "$QWEN_HOME/state/session.status"
 unmarked=$work/unmarked; mkdir -p "$unmarked/models"; : >"$unmarked/models/precious"
 if QWEN_HOME=$unmarked "$tool" uninstall >/dev/null 2>&1; then report unmarked_root_refused accepted; else report unmarked_root_refused ok; fi
 [ -f "$unmarked/models/precious" ] && report unmarked_root_untouched ok || report unmarked_root_untouched removed
+
+# ---- a root bound to a production checkout takes the confirm on uninstall ----
+production_tree=$work/production-checkout
+mkdir -p "$production_tree/remote" "$production_tree/.git"
+cp "$script_directory/qwen-home.sh" "$script_directory/runtime-root.sh" "$production_tree/remote/"
+production_root=$work/production-root
+QWEN_HOME=$production_root "$production_tree/remote/runtime-root.sh" init >/dev/null
+: >"$production_root/models/keep.gguf"; : >"$production_root/cache/drop"
+if QWEN_HOME=$production_root "$production_tree/remote/runtime-root.sh" uninstall >/dev/null 2>&1; then
+    report production_uninstall_needs_confirm accepted
+else
+    report production_uninstall_needs_confirm ok
+fi
+[ -e "$production_root/cache" ] && report refused_production_uninstall_touches_nothing ok \
+    || report refused_production_uninstall_touches_nothing removed
+if QWEN_HOME=$production_root QWEN_RUNTIME_ROOT_CONFIRM=/wrong \
+    "$production_tree/remote/runtime-root.sh" uninstall >/dev/null 2>&1; then
+    report production_uninstall_needs_exact_confirm accepted
+else
+    report production_uninstall_needs_exact_confirm ok
+fi
+QWEN_HOME=$production_root QWEN_RUNTIME_ROOT_CONFIRM=$production_root \
+    "$production_tree/remote/runtime-root.sh" uninstall >/dev/null
+[ -f "$production_root/models/keep.gguf" ] && [ ! -e "$production_root/cache" ] \
+    && report production_uninstall_with_confirm ok || report production_uninstall_with_confirm "$(ls -A "$production_root")"
+rm -rf "$production_tree/.git"
+QWEN_HOME=$production_root "$production_tree/remote/runtime-root.sh" uninstall >/dev/null \
+    && report worktree_uninstall_needs_no_confirm ok || report worktree_uninstall_needs_no_confirm refused
 
 # ---- purge requires the confirm to equal the root ----
 if QWEN_RUNTIME_ROOT_CONFIRM=/wrong "$tool" purge >/dev/null 2>&1; then report purge_needs_exact_confirm accepted; else report purge_needs_exact_confirm ok; fi
