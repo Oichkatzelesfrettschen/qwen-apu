@@ -182,10 +182,10 @@ grep -F 'context size exceeds the admitted ceiling for this cache policy: 4097 >
 # A fabricated registry carries a triple the fallback never produces, so this
 # check separates the registry read from the built-in default.
 fabricated_registry=$temporary_directory/models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
     4096 8192 8192 q5_1 iq4_nl auto none - - - untested candidate 256 64 4096 - \
-    unmeasured refused \
+    unmeasured refused - \
     >"$fabricated_registry"
 registry_model=$temporary_directory/fabricated.gguf
 : >"$registry_model"
@@ -1247,9 +1247,9 @@ grep -F "router preset section fabricated carries LLAMA_ARG_MODEL $alternate_mod
 # tuple field still matches. Archive and rejected rows never reach a generated
 # router preset.
 archived_registry=$temporary_directory/archived-models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
-    4096 8192 8192 q5_1 iq4_nl auto none - - - untested archive 256 64 4096 - unmeasured refused \
+    4096 8192 8192 q5_1 iq4_nl auto none - - - untested archive 256 64 4096 - unmeasured refused - \
     >"$archived_registry"
 if QWEN_MODEL_REGISTRY=$archived_registry QWEN_MODEL_ROOT=$router_model_root \
     QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
@@ -1266,9 +1266,9 @@ grep -F 'router preset section fabricated has non-servable registry tier archive
 # A quarantine tier requires both the durable override and model-scope
 # router-child authority. The marker alone cannot manufacture that authority.
 quarantine_tier_registry=$temporary_directory/quarantine-tier-models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
-    4096 8192 8192 q5_1 iq4_nl auto none - - - untested quarantine 256 64 4096 - unmeasured refused \
+    4096 8192 8192 q5_1 iq4_nl auto none - - - untested quarantine 256 64 4096 - unmeasured refused - \
     >"$quarantine_tier_registry"
 unowned_quarantine_preset=$temporary_directory/unowned-quarantine-tier.ini
 printf '%s\n' '# qwen_router_include_quarantine=1' \
@@ -1479,7 +1479,7 @@ if QWEN_TEST_GUARD_COMMAND_OUTPUT=$guard_command_output \
     "$authority_race_quarantine" "$guard_quarantine_sha256" \
     - - \
     "$guard_web_profiles" "$guard_web_profiles_sha256" \
-    "$guard_ctx_ledger" "$guard_ctx_ledger_sha256" "$guard_command" \
+    "$guard_ctx_ledger" "$guard_ctx_ledger_sha256" - "$guard_command" \
     >"$temporary_directory/web-ledger-guard.stdout" \
     2>"$temporary_directory/web-ledger-guard.stderr"; then
     printf 'exec guard accepted a replaced web profile ledger\n' >&2
@@ -1511,7 +1511,7 @@ run_ctx_ledger_guard() {
         "$authority_race_quarantine" "$guard_quarantine_sha256" \
         - - \
         "$guard_web_profiles_unchanged" "$guard_web_unchanged_sha256" \
-        "$ctx_guard_path" "$ctx_guard_sha256" "$guard_command" \
+        "$ctx_guard_path" "$ctx_guard_sha256" - "$guard_command" \
         >"$temporary_directory/ctx-guard-$ctx_guard_label.stdout" \
         2>"$temporary_directory/ctx-guard-$ctx_guard_label.stderr"
 }
@@ -1947,10 +1947,10 @@ grep -F 'generated router presets omit quarantine provenance' \
 # the quarantined geometry resets the amdgpu compute ring on a live desktop,
 # which is why this is a refusal rather than a warning.
 quarantine_registry=$temporary_directory/quarantine-models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     quarantined research quarantined.gguf download-qwen38-4b-distill-q4km.sh \
     4096 16384 16384 q8_0 q4_0 on none - - - untested production 2048 512 4096 - \
-    unmeasured refused \
+    unmeasured refused - \
     >"$quarantine_registry"
 quarantine_table=$temporary_directory/quarantine.tsv
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -2023,15 +2023,15 @@ esac
 # A preset persists across a ledger edit, so a draft key that no longer matches
 # the ledger refuses the launch rather than serving a draft nobody admitted.
 pair_registry=$temporary_directory/pair-models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     pair-target research pair-target.gguf download-qwen38-4b-distill-q4km.sh \
     4096 8192 8192 q5_1 iq4_nl auto none - - - untested candidate 256 64 4096 - \
-    unmeasured refused \
+    unmeasured refused - \
     >"$pair_registry"
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     pair-draft research pair-draft.gguf download-qwen35-08b-q80.sh \
     4096 8192 8192 q5_1 iq4_nl auto none - - - untested candidate 256 64 4096 - \
-    unmeasured refused \
+    unmeasured refused - \
     >>"$pair_registry"
 : >"$temporary_directory/pair-target.gguf"
 : >"$temporary_directory/pair-draft.gguf"
@@ -2310,7 +2310,7 @@ grep -F 'does not match its manifest row' \
 guard=$script_directory/qwen-build-exec-guard.sh
 if "$guard" "$natural_server" \
     0000000000000000000000000000000000000000000000000000000000000000 \
-    natural-boundary-v1 /bin/true \
+    natural-boundary-v1 - /bin/true \
     2>"$temporary_directory/guard-manifest.stderr"; then
     printf 'the guard accepted a manifest whose identity changed\n' >&2
     exit 1
@@ -2323,7 +2323,7 @@ grep -F 'artifact manifest identity changed' \
 duplicate_server=$(write_fixture_build "$semantics_root/duplicate" natural-boundary-v1)
 printf 'checkpoint_semantics\tforced-tail-v1\n' \
     >>"$semantics_root/duplicate/artifact-manifest.tsv"
-if "$guard" "$duplicate_server" - natural-boundary-v1 /bin/true \
+if "$guard" "$duplicate_server" - natural-boundary-v1 - /bin/true \
     2>"$temporary_directory/guard-duplicate.stderr"; then
     printf 'the guard accepted two checkpoint_semantics rows\n' >&2
     exit 1
@@ -2380,5 +2380,83 @@ QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
     >"$temporary_directory/semantics-router-zero.stdout" 2>&1
 grep -F 'checkpoint_binding semantics=unknown requirement=-' \
     "$temporary_directory/semantics-router-zero.stdout" >/dev/null
+
+# The Q4_K formulation requirement rides the same manifest the checkpoint
+# declaration does, and the two are independent claims: a launch arming the
+# formulation alone still binds the manifest digest and the executable row.
+q4k_guard_root=$temporary_directory/q4k-guard
+write_q4k_build() {
+    q4k_directory=$1
+    shift
+    mkdir -p "$q4k_directory"
+    cp "$fixture_server" "$q4k_directory/llama-server"
+    chmod 755 "$q4k_directory/llama-server"
+    {
+        printf 'executable\tllama-server\t%s\t%s\n' \
+            "$(stat -c %s "$q4k_directory/llama-server")" \
+            "$(sha256sum "$q4k_directory/llama-server" | cut -d ' ' -f 1)"
+        for q4k_declaration in "$@"; do
+            printf 'q4k_variants\t%s\n' "$q4k_declaration"
+        done
+    } >"$q4k_directory/artifact-manifest.tsv"
+    printf '%s/llama-server' "$q4k_directory"
+}
+q4k_admitting_server=$(write_q4k_build "$q4k_guard_root/admits" \
+    e4/4,e4-scale/4,production/4)
+if ! "$guard" "$q4k_admitting_server" - - e4-scale/4 /bin/true \
+    >"$temporary_directory/q4k-guard-admits.stdout" 2>&1; then
+    printf 'the guard refused a key the manifest declares\n' >&2
+    cat "$temporary_directory/q4k-guard-admits.stdout" >&2
+    exit 1
+fi
+grep -F 'build_guard q4k_variants=e4/4,e4-scale/4,production/4 requirement=e4-scale/4' \
+    "$temporary_directory/q4k-guard-admits.stdout" >/dev/null
+
+# A build carrying no reader declares `-` and admits nothing, so a released row
+# against it would serve the production module under a name claiming a
+# formulation.
+q4k_silent_server=$(write_q4k_build "$q4k_guard_root/silent" -)
+if "$guard" "$q4k_silent_server" - - e4-scale/4 /bin/true \
+    2>"$temporary_directory/q4k-guard-silent.stderr"; then
+    printf 'the guard accepted a key a build without the reader carries\n' >&2
+    exit 1
+fi
+grep -F 'does not admit Q4_K formulation e4-scale/4' \
+    "$temporary_directory/q4k-guard-silent.stderr" >/dev/null
+
+# Two declarations leave the manifest stating nothing, the rule the checkpoint
+# declaration already takes.
+q4k_duplicate_server=$(write_q4k_build "$q4k_guard_root/duplicate" \
+    e4-scale/4 e4/4)
+if "$guard" "$q4k_duplicate_server" - - e4-scale/4 /bin/true \
+    2>"$temporary_directory/q4k-guard-duplicate.stderr"; then
+    printf 'the guard accepted two q4k_variants rows\n' >&2
+    exit 1
+fi
+grep -F 'artifact manifest holds 2 q4k_variants rows' \
+    "$temporary_directory/q4k-guard-duplicate.stderr" >/dev/null
+
+# A manifest relabelled between policy assembly and exec changes the digest the
+# policy recorded, and the formulation requirement is held to it the way the
+# checkpoint requirement is.
+if "$guard" "$q4k_admitting_server" \
+    0000000000000000000000000000000000000000000000000000000000000000 \
+    - e4-scale/4 /bin/true \
+    2>"$temporary_directory/q4k-guard-relabelled.stderr"; then
+    printf 'the guard accepted a relabelled manifest under a formulation key\n' >&2
+    exit 1
+fi
+grep -F 'artifact manifest identity changed' \
+    "$temporary_directory/q4k-guard-relabelled.stderr" >/dev/null
+
+# A launch arming neither claim reads no manifest, which is what lets a build
+# predating both declarations serve an all-`-` registry.
+if ! "$guard" "$q4k_silent_server" - - - /bin/true \
+    >"$temporary_directory/q4k-guard-none.stdout" 2>&1; then
+    printf 'the guard refused a launch arming neither declaration\n' >&2
+    exit 1
+fi
+grep -F 'checkpoint_requirement=none q4k_requirement=none' \
+    "$temporary_directory/q4k-guard-none.stdout" >/dev/null
 
 printf 'qwen_capacity_policy=accepted\n'

@@ -108,9 +108,9 @@ mul-2	arithmetic	nonempty		What is 12 x 34?	-
 TSV
 
 cat > "$work_directory/registry.tsv" <<'TSV'
-alpha	text	models/alpha.gguf	fetch-alpha.sh	8192	8192	32768	q8_0	q4_0	on	none	-	9.0	60.0	-	production	128	32	-	-	unmeasured	refused
-beta	text	models/beta.gguf	fetch-beta.sh	8192	8192	32768	q8_0	q4_0	on	none	-	9.0	60.0	-	candidate	128	32	-	-	unmeasured	refused
-gamma	text	models/gamma.gguf	fetch-gamma.sh	8192	8192	32768	q8_0	q4_0	on	none	-	9.0	60.0	-	quarantine	128	32	-	-	unmeasured	refused
+alpha	text	models/alpha.gguf	fetch-alpha.sh	8192	8192	32768	q8_0	q4_0	on	none	-	9.0	60.0	-	production	128	32	-	-	unmeasured	refused	-
+beta	text	models/beta.gguf	fetch-beta.sh	8192	8192	32768	q8_0	q4_0	on	none	-	9.0	60.0	-	candidate	128	32	-	-	unmeasured	refused	-
+gamma	text	models/gamma.gguf	fetch-gamma.sh	8192	8192	32768	q8_0	q4_0	on	none	-	9.0	60.0	-	quarantine	128	32	-	-	unmeasured	refused	-
 TSV
 
 # start_fixture restarts the server on this one port several times, so the

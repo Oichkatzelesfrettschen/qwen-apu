@@ -5,7 +5,8 @@ set -eu
 # from, so a later question -- which main commit is this LAN peer talking to --
 # reads one file instead of six live probes. The receipt names the active
 # bundle's own members, the synced runtime tree beside it, the model and
-# checkpoint ledgers the registry reads, the candidate patch identity a served
+# checkpoint ledgers the registry reads, the Q4_K formulation each served
+# section is released under beside the build that admits it, the candidate patch identity a served
 # reply's prefix-checkpoint behavior depends on, and the LAN exposure boundary
 # the running session recorded, each beside the file it was read from so a
 # claim here is checkable against the tree that produced it. evidence/
@@ -188,6 +189,36 @@ candidate_series=${candidate_series:--}
 candidate_series_sha256=${candidate_series_sha256:--}
 tool_prefix_identity=$candidate_series:$candidate_series_sha256
 
+# The Q4_K formulation release is a per-section fact and the receipt carries one
+# field, so the field states the whole selection: every section carrying
+# LLAMA_ARG_VK_Q4K_VARIANT as `section=key`, in preset order, and `-` where the
+# deployment serves the production module throughout. The build authority sits
+# beside it, since a key is executable only against a manifest that declares it,
+# and the pair is what makes an attributed rate checkable after the fact.
+q4k_selection_identity=-
+if [ "$router_preset_digest" != - ] && [ -r "$router_preset_source" ]; then
+    q4k_selection_identity=$(awk '
+        /^[[:space:]]*\[/ {
+            section = $0
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            next
+        }
+        /^[[:space:]]*LLAMA_ARG_VK_Q4K_VARIANT[[:space:]]*=/ {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            if (value != "") {
+                selection = selection (selection == "" ? "" : ",") \
+                    section "=" value
+            }
+        }
+        END { print (selection == "") ? "-" : selection }
+    ' "$router_preset_source")
+fi
+q4k_variants_declared=$(read_manifest_row q4k_variants "$artifact_manifest")
+q4k_variants_declared=${q4k_variants_declared:--}
+
 # The boundary line is the one the running session recorded when it armed the
 # LAN exposure, read verbatim rather than re-derived, so the receipt states
 # what the session actually decided rather than what its inputs would imply.
@@ -268,6 +299,10 @@ trap 'rm -f "$staging_output"' EXIT HUP INT TERM
     printf 'checkpoint_ledger_digest\t%s\t%s\n' "$checkpoint_ledger_digest" \
         "$active_directory/ctx-checkpoints.tsv"
     printf 'tool_prefix_identity\t%s\t%s\n' "$tool_prefix_identity" "$artifact_manifest"
+    printf 'q4k_selection_identity\t%s\t%s\n' "$q4k_selection_identity" \
+        "$router_preset_source"
+    printf 'q4k_variants_declared\t%s\t%s\n' "$q4k_variants_declared" \
+        "$artifact_manifest"
     printf 'open_lan_policy_identity\t%s\t%s\n' "$open_lan_policy_identity" \
         "$open_lan_policy_source"
     printf 'served_page_identity\t%s\t%s\n' "$served_page_identity" \

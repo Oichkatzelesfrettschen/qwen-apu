@@ -56,7 +56,7 @@ harness=$tool_directory/measure-mtp-arm.sh
 
 registry=$work/models.tsv
 registry_row() {
-    printf '%s\tresearch\t%s\tfetch.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\t%s\t128\t32\t4096\t-\tunmeasured\trefused\n' \
+    printf '%s\tresearch\t%s\tfetch.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\t%s\t128\t32\t4096\t-\tunmeasured\trefused\t-\n' \
         "$1" "$2" "$3"
 }
 {

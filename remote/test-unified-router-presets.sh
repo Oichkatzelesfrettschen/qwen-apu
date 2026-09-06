@@ -367,6 +367,7 @@ if "$exec_guard" "$merged" "$(guard_digest "$merged")" \
     "$(guard_digest "$script_directory/draft-pairs.tsv")" \
     "$web_profiles" "$(guard_digest "$web_profiles")" \
     "$ctx_ledger" "$(guard_digest "$ctx_ledger")" \
+    - \
     true >"$work/guard.log" 2>"$work/guard.err"; then
     report exec_guard_admits_both_ledgers ok
 else
@@ -380,6 +381,7 @@ if "$exec_guard" "$merged" "$(guard_digest "$merged")" \
     "$(guard_digest "$script_directory/draft-pairs.tsv")" \
     "$web_profiles" "$(guard_digest "$script_directory/models.tsv")" \
     "$ctx_ledger" "$(guard_digest "$ctx_ledger")" \
+    - \
     true >"$work/guard-swap.log" 2>"$work/guard-swap.err"; then
     report exec_guard_web_ledger_swap_refused admitted
 elif grep -q 'router web profile ledger identity changed' \
@@ -595,6 +597,130 @@ else
         report bundle_web_count_drift_refused wrong_reason
         cat "$work/drift.err" >&2
     fi
+fi
+
+# The Q4_K formulation release travels row to section to policy to guard, and
+# each of the four rules is measured against the merged file the roster serves.
+# The shipped registry releases none, so the generated preset carries no key and
+# a smuggled one names a formulation the row never released.
+q4k_smuggled=$work/q4k-smuggled.ini
+awk '
+    { print }
+    /^\[qwen38-2b-distill\]$/ { print "LLAMA_ARG_VK_Q4K_VARIANT = e4-scale/4" }
+' "$merged" >"$q4k_smuggled"
+if run_policy "$q4k_smuggled" >"$work/q4k-smuggled.log" \
+    2>"$work/q4k-smuggled.err"; then
+    report q4k_unreleased_section_key_refused admitted
+elif grep -q 'releases no Q4_K formulation' "$work/q4k-smuggled.err"; then
+    report q4k_unreleased_section_key_refused ok
+else
+    report q4k_unreleased_section_key_refused wrong_reason
+    cat "$work/q4k-smuggled.err" >&2
+fi
+
+# A registry releasing a formulation for one row is the release commit this
+# plumbing exists for. The policy then requires the section key to equal the
+# row and the build manifest to admit it, so the same preset is run against a
+# build that declares the key and one that declares none.
+q4k_registry=$work/q4k-models.tsv
+awk -F'\t' 'BEGIN { OFS = "\t" }
+    /^#/ || NF == 0 { print; next }
+    $1 == "qwen38-2b-distill" { $23 = "e4-scale/4" }
+    { print }' "$script_directory/models.tsv" >"$q4k_registry"
+q4k_preset=$work/q4k-merged.ini
+if build_presets "$q4k_preset" "QWEN_MODEL_REGISTRY=$q4k_registry" \
+    QWEN_WEB_AUTHORIZER_READY=0 \
+    >"$work/q4k-build.log" 2>"$work/q4k-build.err"; then
+    report q4k_release_preset_generated ok
+else
+    report q4k_release_preset_generated failed
+    cat "$work/q4k-build.err" >&2
+fi
+
+# A build declaring the key admits the section; a build declaring `-` carries no
+# reader, so the same preset would serve the production module under a row
+# claiming a formulation and the policy refuses ahead of the argv.
+q4k_build_root=$work/q4k-build
+make_q4k_build() {
+    q4k_build_directory=$1
+    q4k_build_declaration=$2
+    mkdir -p "$q4k_build_directory"
+    cp "$fake_server" "$q4k_build_directory/llama-server"
+    chmod +x "$q4k_build_directory/llama-server"
+    {
+        printf 'executable\tllama-server\t%s\t%s\n' \
+            "$(stat -c %s -- "$q4k_build_directory/llama-server")" \
+            "$(sha256sum -- "$q4k_build_directory/llama-server" | cut -d ' ' -f 1)"
+        printf 'checkpoint_semantics\tnatural-boundary-v1\n'
+        printf 'q4k_variants\t%s\n' "$q4k_build_declaration"
+    } >"$q4k_build_directory/artifact-manifest.tsv"
+}
+make_q4k_build "$q4k_build_root/admits" \
+    e4/4,e4-scale/4,e4-scale-licm/4
+make_q4k_build "$q4k_build_root/silent" -
+run_q4k_policy() {
+    QWEN_MODEL_REGISTRY=$q4k_registry \
+    QWEN_MODEL_ROOT=$model_root \
+    QWEN_QUARANTINE_REGISTRY=$quarantine_registry \
+    QWEN_CTX_CHECKPOINT_LEDGER=$ctx_ledger \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$work/q4k-policy.out \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$2 QWEN_ROUTER_MAX=1 \
+        "$policy" "$1/llama-server" \
+        "$model_root/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf" 8192 18080
+}
+if run_q4k_policy "$q4k_build_root/admits" "$q4k_preset" \
+    >"$work/q4k-admits.log" 2>"$work/q4k-admits.err"; then
+    report q4k_declared_build_admits_release ok
+else
+    report q4k_declared_build_admits_release failed
+    cat "$work/q4k-admits.err" >&2
+fi
+if run_q4k_policy "$q4k_build_root/silent" "$q4k_preset" \
+    >"$work/q4k-silent.log" 2>"$work/q4k-silent.err"; then
+    report q4k_undeclared_build_refused admitted
+elif grep -q 'does not admit Q4_K formulation' "$work/q4k-silent.err"; then
+    report q4k_undeclared_build_refused ok
+else
+    report q4k_undeclared_build_refused wrong_reason
+    cat "$work/q4k-silent.err" >&2
+fi
+
+# A preset persists across a registry edit, so a section naming a formulation
+# other than the one its row releases is refused against the same build.
+q4k_drifted=$work/q4k-drifted.ini
+sed 's|^LLAMA_ARG_VK_Q4K_VARIANT = e4-scale/4$|LLAMA_ARG_VK_Q4K_VARIANT = e4/4|' \
+    "$q4k_preset" >"$q4k_drifted"
+if run_q4k_policy "$q4k_build_root/admits" "$q4k_drifted" \
+    >"$work/q4k-drift.log" 2>"$work/q4k-drift.err"; then
+    report q4k_section_row_drift_refused admitted
+elif grep -q 'carries LLAMA_ARG_VK_Q4K_VARIANT e4/4, registry admits e4-scale/4' \
+    "$work/q4k-drift.err"; then
+    report q4k_section_row_drift_refused ok
+else
+    report q4k_section_row_drift_refused wrong_reason
+    cat "$work/q4k-drift.err" >&2
+fi
+
+# The router guard re-derives the key set from the preset it has just verified,
+# so a requirement that missed a section is refused at the exec boundary rather
+# than serving a formulation no build authority admitted.
+if "$exec_guard" "$q4k_preset" "$(guard_digest "$q4k_preset")" \
+    "$q4k_registry" "$(guard_digest "$q4k_registry")" \
+    "$quarantine_registry" "$(guard_digest "$quarantine_registry")" \
+    "$script_directory/draft-pairs.tsv" \
+    "$(guard_digest "$script_directory/draft-pairs.tsv")" \
+    - - \
+    "$ctx_ledger" "$(guard_digest "$ctx_ledger")" \
+    - \
+    true >"$work/q4k-guard.log" 2>"$work/q4k-guard.err"; then
+    report q4k_guard_underderived_requirement_refused admitted
+elif grep -q 'names Q4_K formulations e4-scale/4 where the policy bound -' \
+    "$work/q4k-guard.err"; then
+    report q4k_guard_underderived_requirement_refused ok
+else
+    report q4k_guard_underderived_requirement_refused wrong_reason
+    cat "$work/q4k-guard.err" >&2
 fi
 
 if [ "$failures" -eq 0 ]; then

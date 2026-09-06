@@ -42,10 +42,10 @@ write_row() {
 model_row() {
     # id role model_file fetch_script, the depth triple, the cache triple,
     # projector pair, rates, quality, tier, geometry, filled depth, evidence,
-    # and the two tool claims: 22 fields.
+    # the two tool claims, and the Q4_K formulation: 23 fields.
     write_row "$fixture_models" "$1" role "$1.gguf" "download-$1.sh" \
         8192 8192 32768 q8_0 q4_0 on none - - - untested "$2" 128 32 - - \
-        unmeasured refused
+        unmeasured refused -
 }
 
 build_fixture_ledgers() {

@@ -466,6 +466,7 @@ resolve_image_review_model() {
     review_batch=
     review_ubatch=
     review_ctx_checkpoints=
+    review_q4k_variant=-
     if [ -z "$image_profile_review_model" ] ||
         [ "$image_profile_review_model" = '-' ]; then
         return 0
@@ -520,6 +521,15 @@ resolve_image_review_model() {
     review_batch=$(registry_field "$review_registry_row" batch)
     review_ubatch=$(registry_field "$review_registry_row" ubatch)
     review_ctx_checkpoints=$(ledger_ctx_checkpoints "$image_profile_review_model")
+    # The reviewer is a registry row like any other, so its section carries the
+    # row's own Q4_K formulation rather than the language profile's.
+    review_q4k_variant=$(registry_field "$review_registry_row" q4k_variant)
+    if ! "$script_directory/model-registry.sh" validate-q4k-variant \
+        "${review_q4k_variant:--}"; then
+        printf 'review_model %s carries q4k_variant %s, which is outside the vocabulary\n' \
+            "$image_profile_review_model" "$review_q4k_variant" >&2
+        return 1
+    fi
     for review_numeric_field in "$review_context" "$review_batch" \
         "$review_ubatch"; do
         case $review_numeric_field in

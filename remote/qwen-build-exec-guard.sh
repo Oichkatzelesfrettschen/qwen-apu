@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-# Bind the checkpoint policy to the build that will execute it, immediately
-# before llama-server replaces this process.
+# Bind the checkpoint policy and the Q4_K formulation release to the build that
+# will execute them, immediately before llama-server replaces this process.
 #
 # A positive --ctx-checkpoints count is executable only by a server whose build
 # placed checkpoints at natural batch boundaries. The pinned commit force-breaks
@@ -26,11 +26,19 @@ set -eu
 # the one the capacity policy measured closes the remaining window: a manifest
 # rewritten to declare natural-boundary-v1 over an unrepaired binary changes the
 # digest the policy recorded.
+#
+# The Q4_K formulation requirement rides the same manifest. remote/models.tsv
+# releases a formulation per row, the preset carries the key per section, and
+# `q4k_variants` states which keys the compiled executable holds; a key the
+# manifest does not name would load the production module under a row claiming a
+# formulation, and the digest comparison above closes the same relabelling
+# window for that claim as for the checkpoint semantics.
 
-if [ "$#" -lt 4 ]; then
-    printf 'usage: %s SERVER MANIFEST_SHA256 REQUIRED_SEMANTICS COMMAND [ARG ...]\n' \
+if [ "$#" -lt 5 ]; then
+    printf 'usage: %s SERVER MANIFEST_SHA256 REQUIRED_SEMANTICS REQUIRED_Q4K_KEYS COMMAND [ARG ...]\n' \
         "$0" >&2
     printf '  REQUIRED_SEMANTICS is `-` where no positive checkpoint count is armed\n' >&2
+    printf '  REQUIRED_Q4K_KEYS is a comma-separated key list, `-` where every section serves the production module\n' >&2
     exit 2
 fi
 
@@ -39,6 +47,8 @@ shift
 manifest_sha256=$1
 shift
 required_semantics=$1
+shift
+required_q4k_keys=$1
 shift
 
 resolved_server=$(readlink -f -- "$server_path") || {
@@ -69,10 +79,12 @@ for candidate_manifest in "$server_directory/artifact-manifest.tsv" \
     fi
 done
 
-if [ "$required_semantics" = - ]; then
-    # No positive count is armed, so an older checkpoint implementation serves
-    # and a build predating the declaration launches unchanged.
-    printf 'build_guard=accepted checkpoint_requirement=none server=%s\n' \
+# The two requirements are independent claims about one build, so each is
+# checked on its own and a launch arming either binds the manifest, its digest,
+# and the executable row. A launch arming neither reads no manifest, which is
+# what lets a build predating both declarations serve an all-`-` registry.
+if [ "$required_semantics" = - ] && [ "$required_q4k_keys" = - ]; then
+    printf 'build_guard=accepted checkpoint_requirement=none q4k_requirement=none server=%s\n' \
         "$resolved_server"
     exec "$@"
 fi
@@ -80,8 +92,8 @@ fi
 if [ -z "$manifest_path" ]; then
     printf 'selected llama-server carries no artifact manifest: %s\n' \
         "$resolved_server" >&2
-    printf 'a positive context checkpoint count requires %s\n' \
-        "$required_semantics" >&2
+    printf 'checkpoint requirement %s and Q4_K formulation requirement %s each require one\n' \
+        "$required_semantics" "$required_q4k_keys" >&2
     exit 1
 fi
 
@@ -123,6 +135,57 @@ if [ "$measured_bytes" != "$expected_bytes" ] ||
     printf 'manifest states %s bytes %s, measured %s bytes %s\n' \
         "$expected_bytes" "$expected_digest" "$measured_bytes" "$measured_digest" >&2
     exit 1
+fi
+
+# A Q4_K key selects a compiled pipeline, so the build that carries the
+# formulation is what makes the key executable. The manifest declares the
+# admitted set from the source build-llama-preset.sh compiled, one row exactly,
+# and a build without the reader declares `-` and admits nothing: a key against
+# it would serve the production module under a name claiming a formulation, and
+# the served rate would be attributed to a release that never executed.
+if [ "$required_q4k_keys" != - ]; then
+    q4k_rows=$(awk -F'\t' '
+        $1 == "q4k_variants" { count++ }
+        END { print count + 0 }
+    ' "$manifest_path")
+    if [ "$q4k_rows" -ne 1 ]; then
+        printf 'artifact manifest holds %s q4k_variants rows, requires exactly one: %s\n' \
+            "$q4k_rows" "$manifest_path" >&2
+        exit 1
+    fi
+    declared_q4k_variants=$(awk -F'\t' '
+        $1 == "q4k_variants" { print $2; exit }
+    ' "$manifest_path")
+    if ! printf '%s\n' "$required_q4k_keys" | tr ',' '\n' |
+        awk -v admitted="$declared_q4k_variants" '
+            BEGIN {
+                if (admitted != "-" && admitted != "") {
+                    admitted_count = split(admitted, keys, ",")
+                    for (key_index = 1; key_index <= admitted_count; key_index++) {
+                        admits[keys[key_index]] = 1
+                    }
+                }
+            }
+            $0 == "" { next }
+            !($0 in admits) {
+                printf "the selected llama-server does not admit Q4_K formulation %s\n", \
+                    $0 > "/dev/stderr"
+                bad = 1
+            }
+            END { exit bad ? 1 : 0 }
+        '; then
+        printf 'the build declares q4k_variants=%s: %s\n' \
+            "$declared_q4k_variants" "$resolved_server" >&2
+        exit 1
+    fi
+    printf 'build_guard q4k_variants=%s requirement=%s\n' \
+        "$declared_q4k_variants" "$required_q4k_keys"
+fi
+
+if [ "$required_semantics" = - ]; then
+    printf 'build_guard=accepted checkpoint_requirement=none server=%s manifest=%s\n' \
+        "$resolved_server" "$manifest_path"
+    exec "$@"
 fi
 
 semantics_rows=$(awk -F'\t' '

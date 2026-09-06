@@ -3525,6 +3525,17 @@ if [ "$term_status" -ne 143 ]; then
 fi
 grep -q '^dpm_restore=restored level=auto requested=auto ' "$term_stdout"
 [ "$(cat "$term_drm/power_dpm_force_performance_level")" = auto ]
+# The readback reaches the caller rather than an artifact. The campaign writes
+# its contracts, its wall-clock ledger, its terminal state, each brick receipt,
+# and its calibration root through block redirections of its own stdout, so a
+# restore printed on that stdout lands inside whichever record the signal
+# interrupted: the level returns and the proof of it is buried in a file a
+# reader parses. Descriptor 9 is what keeps the line out of every one of them.
+if grep -rq 'dpm_restore=' "$term_output"; then
+    printf 'the restore readback reached a campaign artifact: %s\n' \
+        "$(grep -rl 'dpm_restore=' "$term_output" | head -n 1)" >&2
+    exit 1
+fi
 diagnostic_file=
 printf 'engine_clock_restore_on_term=accepted\n'
 

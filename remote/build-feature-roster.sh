@@ -129,8 +129,8 @@ roster_json=$(printf '%s\n' "$quarantine_subjects" | awk -F'\t' \
 
     FILENAME == models_file {
         if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) { next }
-        if (NF != 22) {
-            fail(sprintf("model row %d holds %d fields, expected 22", FNR, NF))
+        if (NF != 23) {
+            fail(sprintf("model row %d holds %d fields, expected 23", FNR, NF))
             next
         }
         model_tier[$1] = $16

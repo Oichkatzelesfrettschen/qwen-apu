@@ -127,6 +127,7 @@ case $3 in
     ubatch) printf '32\n' ;;
     cache_type_k | cache_type_v) printf 'f16\n' ;;
     flash_attention) printf 'on\n' ;;
+    q4k_variant) printf -- '-\n' ;;
     *) exit 1 ;;
 esac
 REGISTRY_STUB

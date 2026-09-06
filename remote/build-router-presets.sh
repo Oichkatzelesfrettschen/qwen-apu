@@ -466,11 +466,24 @@ deploy_quarantine_reason() {
 while IFS='	' read -r id role model_file _fetch_script context_default \
     _context_ceiling _context_target cache_type_k cache_type_v flash_attention \
     projector _projector_fetch_script _decode_tok_s _prefill_tok_s _quality tier batch ubatch \
-    _validated_filled_depth _validation_evidence; do
+    _validated_filled_depth _validation_evidence _raw_tool_selection \
+    _guarded_tool_execution q4k_variant; do
     case $id in
         '#'* | '') continue ;;
     esac
     [ -n "${tier:-}" ] || continue
+
+    # The Q4_K formulation is a per-row release: the section carries the key
+    # only where the row names one, so a measured win reaches that checkpoint
+    # while every other section serves the production module under an absent
+    # key. The vocabulary is checked here as well as at load, since a value the
+    # build refuses ends a launch on the device where this refusal names the row.
+    if ! "$script_directory/model-registry.sh" validate-q4k-variant \
+        "${q4k_variant:--}"; then
+        printf 'row %s carries q4k_variant %s, which is outside the vocabulary\n' \
+            "$id" "$q4k_variant" >&2
+        exit 1
+    fi
 
     if ! "$script_directory/model-registry.sh" validate-tier "$tier"; then
         printf 'row %s carries tier %s, which is outside the vocabulary\n' \
@@ -565,6 +578,9 @@ while IFS='	' read -r id role model_file _fetch_script context_default \
         printf 'LLAMA_ARG_BATCH = %s\n' "$batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$ubatch"
         printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' "$(ledger_ctx_checkpoints "$id")"
+        if [ "$q4k_variant" != - ]; then
+            printf 'LLAMA_ARG_VK_Q4K_VARIANT = %s\n' "$q4k_variant"
+        fi
     } >>"$output_staging"
 
     if [ "$projector" = required ]; then
@@ -643,6 +659,9 @@ while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
     target_row=$("$script_directory/model-registry.sh" id "$target_model_id")
     target_model_file=$(printf '%s\n' "$target_row" | sed -n 's/^model_file=//p')
     target_context=$(printf '%s\n' "$target_row" | sed -n 's/^context_default=//p')
+    # A pairing serves the target's weights, so the target row rather than the
+    # draft row decides which Q4_K mat-vec the section dispatches.
+    target_q4k_variant=$(printf '%s\n' "$target_row" | sed -n 's/^q4k_variant=//p')
     target_cache_k=$(printf '%s\n' "$target_row" | sed -n 's/^cache_type_k=//p')
     target_cache_v=$(printf '%s\n' "$target_row" | sed -n 's/^cache_type_v=//p')
     target_flash=$(printf '%s\n' "$target_row" | sed -n 's/^flash_attention=//p')
@@ -714,6 +733,9 @@ while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
         printf 'LLAMA_ARG_UBATCH = %s\n' "$target_ubatch"
         printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' \
             "$(ledger_ctx_checkpoints "$target_model_id")"
+        if [ "$target_q4k_variant" != - ]; then
+            printf 'LLAMA_ARG_VK_Q4K_VARIANT = %s\n' "$target_q4k_variant"
+        fi
         printf 'LLAMA_ARG_SPEC_TYPE = draft-simple\n'
         printf 'LLAMA_ARG_SPEC_DRAFT_MODEL = %s\n' "$draft_path"
         printf 'LLAMA_ARG_SPEC_DRAFT_N_MAX = %s\n' "$spec_draft_n_max"
@@ -801,6 +823,15 @@ if [ "$authorizer_ready" = 1 ]; then
         web_projector=$(registry_field "$web_registry_row" projector)
         web_raw_tool_selection=$(registry_field "$web_registry_row" \
             raw_tool_selection)
+        # The formulation belongs to the checkpoint, so a web section serving
+        # this row dispatches the same mat-vec its roster section does.
+        web_q4k_variant=$(registry_field "$web_registry_row" q4k_variant)
+        if ! "$script_directory/model-registry.sh" validate-q4k-variant \
+            "${web_q4k_variant:--}"; then
+            printf 'profile %s names model %s whose q4k_variant reads %s, which is outside the vocabulary\n' \
+                "$profile_id" "$model_id" "$web_q4k_variant" >&2
+            exit 1
+        fi
         require_canonical_integer context_ceiling "$web_context_ceiling" \
             sentinel-refused "$profile_id"
         require_canonical_integer batch "$web_batch" sentinel-refused "$profile_id"
@@ -924,6 +955,9 @@ if [ "$authorizer_ready" = 1 ]; then
             printf 'LLAMA_ARG_UBATCH = %s\n' "$web_ubatch"
             printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' \
                 "$(ledger_ctx_checkpoints "$model_id")"
+            if [ "$web_q4k_variant" != - ]; then
+                printf 'LLAMA_ARG_VK_Q4K_VARIANT = %s\n' "$web_q4k_variant"
+            fi
             if [ -n "$web_projector_path" ]; then
                 printf 'LLAMA_ARG_MMPROJ = %s\n' "$web_projector_path"
             fi

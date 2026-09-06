@@ -15,8 +15,8 @@ set -eu
 # exec would otherwise admit a count the ledger no longer states, and the pinned
 # build defaults n_ctx_checkpoints to 32 where the ledger admits at most two.
 
-if [ "$#" -lt 13 ]; then
-    printf 'usage: %s PRESET PRESET_SHA MODEL_REGISTRY MODEL_SHA QUARANTINE_REGISTRY QUARANTINE_SHA DRAFT_PAIRS DRAFT_PAIRS_SHA WEB_PROFILES WEB_PROFILES_SHA CTX_CHECKPOINT_LEDGER CTX_CHECKPOINT_LEDGER_SHA COMMAND [ARG ...]\n' \
+if [ "$#" -lt 14 ]; then
+    printf 'usage: %s PRESET PRESET_SHA MODEL_REGISTRY MODEL_SHA QUARANTINE_REGISTRY QUARANTINE_SHA DRAFT_PAIRS DRAFT_PAIRS_SHA WEB_PROFILES WEB_PROFILES_SHA CTX_CHECKPOINT_LEDGER CTX_CHECKPOINT_LEDGER_SHA REQUIRED_Q4K_KEYS COMMAND [ARG ...]\n' \
         "$0" >&2
     exit 2
 fi
@@ -44,6 +44,8 @@ shift
 ctx_checkpoint_ledger_path=$1
 shift
 ctx_checkpoint_ledger_sha256=$1
+shift
+required_q4k_keys=$1
 shift
 
 verify_identity() {
@@ -100,5 +102,29 @@ else
 fi
 verify_identity 'router context checkpoint ledger' \
     "$ctx_checkpoint_ledger_path" "$ctx_checkpoint_ledger_sha256"
+
+# The Q4_K formulation requirement is what qwen-build-exec-guard.sh held the
+# manifest to, and it is derived rather than declared: the policy reads the keys
+# off the preset sections. This guard re-derives them from the preset whose
+# digest it has just verified and requires the same set, so a derivation that
+# missed a section would leave that section serving a formulation no build
+# authority admitted. The two readings are one decision made twice over the same
+# bytes.
+measured_q4k_keys=$(awk '
+    /^[[:space:]]*LLAMA_ARG_VK_Q4K_VARIANT[[:space:]]*=/ {
+        value = $0
+        sub(/^[^=]*=[[:space:]]*/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+        if (value != "" && !seen[value]++) {
+            keys = keys (keys == "" ? "" : ",") value
+        }
+    }
+    END { print (keys == "") ? "-" : keys }
+' "$preset_path")
+if [ "$measured_q4k_keys" != "$required_q4k_keys" ]; then
+    printf 'router preset names Q4_K formulations %s where the policy bound %s\n' \
+        "$measured_q4k_keys" "$required_q4k_keys" >&2
+    exit 1
+fi
 
 exec "$@"

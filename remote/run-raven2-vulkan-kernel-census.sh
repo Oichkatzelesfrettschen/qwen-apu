@@ -983,6 +983,22 @@ cache_v=$("$registry_reader" id "$model_id" cache_type_v)
 flash=$("$registry_reader" id "$model_id" flash_attention)
 ctx_checkpoints=$("$registry_reader" ctx-checkpoint "$model_id")
 checkpoint_min_step=8192
+# Every arm here reaches the device through qwen-launch.sh, so
+# qwen-capacity-policy.sh resolves the Q4_K formulation from the registry row
+# wherever QWEN_Q4K_VARIANT is absent, and the arm environment this campaign
+# writes names no such key. P is bound to the fixed-64 receipt's production
+# build, whose artifact manifest declares q4k_variants `-` and therefore admits
+# no key, so a row releasing a formulation refuses that launch at the policy
+# rather than measuring the pipeline the census attributes. The campaign states
+# that here while the model id is still the only thing it has spent.
+census_q4k_variant=$("$registry_reader" id "$model_id" q4k_variant)
+[ -n "$census_q4k_variant" ] || census_q4k_variant=-
+if [ "$census_q4k_variant" != - ]; then
+    printf 'the registry row releases q4k_variant %s, which every arm would serve unstated: %s\n' \
+        "$census_q4k_variant" "$model_id" >&2
+    printf 'measure the released formulation through run-served-binary-ab.sh under its own keys\n' >&2
+    exit 2
+fi
 if [ ! -r "$model_path" ]; then
     printf 'model file is unreadable: %s\n' "$model_path" >&2
     exit 2
@@ -2082,9 +2098,16 @@ cleanup_children() {
     fi
     # The forced clock is the campaign's own transition, so it unwinds with the
     # children rather than in a trap of its own; the restore acts once and
-    # leaves the exit status where it found it.
+    # leaves the exit status where it found it. Its readback goes to descriptor
+    # 9, the campaign's original stdout, for the reason the traps this function
+    # replaces name: from here on the shell writes the contracts, the wall-clock
+    # ledger, the terminal state, each brick receipt, and the calibration root
+    # through block redirections of its own stdout, and a signal arriving inside
+    # one sends the readback into that artifact instead of to the caller. The
+    # descriptor is opened under the same forced-policy branch that arms this
+    # restore, so it is open wherever this line runs.
     if [ "$engine_clock_policy" != auto ]; then
-        census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"
+        census_engine_clock_restore "$drm_device" "$engine_clock_snapshot" >&9
     fi
     remove_workload_lease_proof
 }

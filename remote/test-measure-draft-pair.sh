@@ -47,13 +47,13 @@ report() {
 # A fabricated registry, pair ledger, and model root, so the harness runs
 # without weights and without the device.
 registry=$work/models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     fake-target research Target/target.gguf fetch.sh 4096 8192 8192 \
-    q8_0 q4_0 on none - - - untested production 128 32 4096 - unmeasured refused \
+    q8_0 q4_0 on none - - - untested production 128 32 4096 - unmeasured refused - \
     >"$registry"
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     fake-draft research Draft/draft.gguf fetch.sh 4096 8192 8192 \
-    q8_0 q4_0 on none - - - untested candidate 128 32 4096 - unmeasured refused \
+    q8_0 q4_0 on none - - - untested candidate 128 32 4096 - unmeasured refused - \
     >>"$registry"
 quarantine=$work/quarantine.tsv
 : >"$quarantine"
