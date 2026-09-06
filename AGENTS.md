@@ -547,7 +547,9 @@ is that one column, because a whole-registry snapshot would also freeze
 `validated_filled_depth`, `context_ceiling`, and `tier` and leave an old bundle
 serving a depth a present-day revocation withdrew. A launch reading no bundle
 leaves the variable empty and the registry column answers, which is the
-generator's own reading and the explicit-preset recovery form's.
+generator's own reading; the explicit-`QWEN_LLAMA_SERVER` recovery form reads no
+bundle either, so an operator serving a preset older than the registry beside it
+states `QWEN_BUNDLE_Q4K_POLICY=-` there rather than editing the registry back.
 `write-deployment-receipt.sh` records the whole selection as
 `q4k_selection_identity` beside the build's own `q4k_variants_declared`. On the
 single-model path the policy exports the row's key as `QWEN_Q4K_VARIANT`, the

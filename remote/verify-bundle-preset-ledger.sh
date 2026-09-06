@@ -57,10 +57,10 @@ done
 # rather than the file's emptiness decides what the absence means.
 q4k_policy_scratch=''
 case $q4k_policy_selector in
-    '') q4k_policy_mode=registry ;;
-    -) q4k_policy_mode=none ;;
+    '') q4k_policy_mode='registry' ;;
+    -) q4k_policy_mode='none' ;;
     *)
-        q4k_policy_mode=file
+        q4k_policy_mode='file'
         if [ ! -f "$q4k_policy_selector" ] || \
             [ ! -r "$q4k_policy_selector" ]; then
             printf 'Q4_K formulation policy is unreadable: %s\n' \
@@ -70,7 +70,7 @@ case $q4k_policy_selector in
         ;;
 esac
 q4k_policy_path=$q4k_policy_selector
-if [ "$q4k_policy_mode" != file ]; then
+if [ "$q4k_policy_mode" != 'file' ]; then
     q4k_policy_scratch=$(mktemp) || exit 1
     trap 'rm -f "$q4k_policy_scratch"' EXIT HUP INT TERM
     q4k_policy_path=$q4k_policy_scratch
