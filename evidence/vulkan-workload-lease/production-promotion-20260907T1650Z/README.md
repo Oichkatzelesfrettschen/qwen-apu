@@ -82,8 +82,18 @@ one difference between the two epochs is the lease member.
 | `llama-server` sha256 | `510c0420346ffa4f5104d3f2b28117262a0d30b2907dc21c833d38442c3e49af` |
 
 `verify-deployment-bundle.sh` accepts it, `promote-llama-build.sh` accepts with
-`strict_vulkan=passed multimodal=passed`, and `main-2c1fa9de-r1` still verifies
-and stands as `deployment_previous`.
+`strict_vulkan=passed multimodal=passed`, and the appliance serves it at
+`/health` 200 under `lan_boundary=lan-authenticated`.
+
+The epoch is operationally admitted and serving; repository integration is
+pending. The serving `llama-server` is
+`sha256 510c0420346ffa4f5104d3f2b28117262a0d30b2907dc21c833d38442c3e49af` over
+58,224,648 bytes. The recovery bundle `main-2c1fa9de-r1` stands as
+`deployment_previous` and was verified after the ledger edit and again after the
+activation, both times as
+`deployment_bundle_verified=main-2c1fa9de-r1`, so the rollback the activation
+rests on is proven rather than assumed. No throughput or quality arm compares
+the two epochs, so the lease member's serving cost is unmeasured.
 
 ## The lease on the device
 
