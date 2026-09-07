@@ -117,7 +117,12 @@ package-budget campaign.
 On this SMU10 path, `pp_dpm_mclk` is a misleading sysfs name: the kernel obtains
 its selected value with `PPSMC_MSG_GetFclkFrequency`. The 933 and 1067 MHz
 entries are dynamic fabric-clock states, not alternate DRAM training results,
-and retained Vulkan telemetry shows 1067 MHz selected under load. Theoretical
+and retained Vulkan telemetry shows 1067 MHz selected under load. The step
+answers memory traffic rather than graphics residency: under `stress-ng --vm`
+with two hogs and no Vulkan workload, `pp_dpm_mclk` sampled every 256 ms
+selects 1067 MHz on 27 of 76 samples and 933 MHz on 49, which
+`evidence/hp14-dk1xxx-memory-firmware-rca.md` records with the capture's
+digest. Theoretical
 dual-channel peak is therefore `2 x 8 bytes x 2133 MT/s = 34.13 GB/s`. The
 15.44 GB/s two-thread host read is about 45% of that peak and bounds the two
 Zen+ cores' load/store path rather than the memory controller or iGPU.
