@@ -27,6 +27,31 @@ Linux kernel `smu10_hwmgr.c` handles the `PP_MCLK` sysfs display by sending
 contains selected 1067 MHz states, which also falsifies the earlier
 "unreachable highest step" claim.
 
+That telemetry reaches the fabric through the iGPU, so it leaves open whether
+the 1067 MHz step answers memory traffic or answers graphics activity. A
+later session on the same day separates the two by driving the memory
+controller from the CPU alone: `stress-ng --vm` with two hogs, `pp_dpm_mclk`
+sampled every 256 ms, and no Vulkan workload running. Of 76 samples, 27 carry
+the star at 1067 MHz and 49 at 933 MHz. The top fabric step is therefore
+selected under host memory pressure with the graphics pipeline idle, which
+makes the dynamic-FCLK reading a property of the memory path rather than of
+the GPU's own residency. The capture is
+`20260826T2226Z-spd-and-fclk/mclk-under-memory-stress.txt`, SHA-256
+`92a19de7df196be46810dd3ffa89812dedef10e31d3b1a0dace218d722255ed1`.
+
+The same session re-reads the SPD by a second, independent path. Where the
+trained rate above comes from the UMC registers through the read-only SMN
+probe, `decode-dimms` reads both EEPROMs through the kernel `ee1004` driver
+and reports the same DDR4-2133 rating and 15-15-15-36 profile without loading
+any out-of-tree module. Two methods that share no code reach one answer, which
+is what separates the rating from an artifact of the probe. That capture is
+`20260826T2226Z-spd-and-fclk/spd-access-baseline.txt`, SHA-256
+`01c469c4a8b1e4e72b8138e8350689d53fd714fa8e2dbceafc7314491eb2b183`, beside the
+raw EEPROM images `spd-channel-a-slot1.bin`
+(`b532f1891a56a7f63202ee2800b7f8857b94e0daf6c001c3dcdd2cea12eb0db7`) and
+`spd-channel-b-slot2.bin`
+(`89aa7cb87760d48be8784a21b2b7997ea86db9172e415683b654a21cd186650a`).
+
 The read-only SMN probe was loaded only for the register capture. The retained
 log proves that `ryzen_smu` was absent afterward and the AMDGPU performance
 level remained `auto`.
@@ -157,3 +182,16 @@ The private raw SPD, SMBIOS, and ACPI captures remain in the ignored local
 `evidence/hp14-dk1xxx-memory-configuration/` directory because they contain
 module serial numbers and machine identifiers. Their local `SHA256SUMS` file
 retains exact identity without publishing those blobs.
+
+The 2026-08-26T22:26Z session's captures joined that directory as
+`20260826T2226Z-spd-and-fclk/`, carrying its own `SHA256SUMS` over sixteen
+files: the two EEPROM images, the `decode-dimms` and `stress-ng` records cited
+above, the platform SMBIOS dump, the firmware-path enumeration, the
+virtualization inventory, the session transcript, and the four read-only probe
+scripts that produced them. They were written to a home directory rather than
+to this tree and are consolidated here under the name this section already
+names. The `ryzen_smu` build workspaces and vendored source snapshots from that
+session are not retained: they are a compiled dependency of the probe rather
+than a measurement, this tree neither builds nor ships that module, and the
+register capture they served is already retained in
+`evidence/hp14-dk1xxx-memory-registers.log`.
