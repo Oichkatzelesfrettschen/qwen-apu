@@ -61,7 +61,7 @@ chmod +x "$vulkan_wrapper"
 # on a host whose own kernel log is restricted to root.
 dmesg_stub=$temporary_directory/dmesg-stub.sh
 printf '%s\n' '#!/bin/sh' 'set -eu' \
-    'if [ "${1:-}" = --follow-new ]; then sleep 3600; fi' 'exit 0' \
+    'if [ "${1:-}" = --follow-new ]; then exec sleep 3600; fi' 'exit 0' \
     >"$dmesg_stub"
 chmod +x "$dmesg_stub"
 
