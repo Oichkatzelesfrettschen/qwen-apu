@@ -71,6 +71,20 @@ searxng_pid=${searxng_pid:-}
 searxng_start_time=${searxng_start_time:-}
 searxng_port=${searxng_port:-}
 
+# The teardown stage runs from the stop request to the server's departure. The
+# record is the launch's own, named on the `state=running` line the session
+# wrote, so a configured state directory is read rather than re-derived; a
+# session that failed before that line names no path and the default beside the
+# status file is what this teardown appends to.
+stage_timing=$script_directory/stage-timing.sh
+stage_timing_file=''
+if [ -r "$status_file" ]; then
+    stage_timing_file=$(sed -n '1p' "$status_file" | tr ' ' '\n' |
+        sed -n 's/^stage_timing=//p')
+fi
+[ -n "$stage_timing_file" ] || stage_timing_file=$state_directory/stage-timing.tsv
+stage_signal_ns=$("$stage_timing" now) || stage_signal_ns=''
+
 "$script_directory/qwen-webui-control.sh" stop || true
 
 # Forced tmux termination bypasses the session EXIT trap. Once control has
@@ -94,6 +108,17 @@ while [ "$attempt" -lt 300 ] && pgrep -x llama-server >/dev/null 2>&1; do
     attempt=$((attempt + 1))
     sleep 0.1
 done
+# The stage ends where the wait answers, and a wait that spent its whole budget
+# with a server still running records `-`: the boundary the stage measures never
+# arrived, and the residue proof below is what reports the survivor.
+if [ -n "$stage_signal_ns" ]; then
+    stage_exit_ns=-
+    if [ "$attempt" -lt 300 ]; then
+        stage_exit_ns=$("$stage_timing" now) || stage_exit_ns=-
+    fi
+    "$stage_timing" record "$stage_timing_file" teardown_signal_to_exit \
+        "$stage_signal_ns" "$stage_exit_ns" || :
+fi
 
 # `tmux kill-session` ends the session script without running its EXIT trap, so
 # the guards it launched are orphaned rather than cleaned up: a probe observed

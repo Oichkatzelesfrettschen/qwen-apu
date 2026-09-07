@@ -55,7 +55,9 @@ remote/test-signal-process-group.py
 remote/summarize-fixed64-served-campaign.py
 remote/test-summarize-fixed64-served-campaign.py
 remote/test-verify-external-vulkan-lease.py
-remote/verify-external-vulkan-lease.py'
+remote/verify-external-vulkan-lease.py
+remote/summarize-stage-timing.py
+remote/test-summarize-stage-timing.py'
 
 gate_shell_syntax() {
     for shell_file in $shell_files; do
@@ -403,6 +405,20 @@ gate_cell test-qwen-runtime-guards derive remote/test-qwen-runtime-guards.sh \
 gate_cell test-telemetry-session-records derive \
     'remote/test-telemetry-session-records.sh remote/image_protocol.py' \
     remote/test-telemetry-session-records.sh
+gate_cell test-stage-timing derive \
+    'remote/test-stage-timing.sh remote/stage-timing.sh
+remote/summarize-stage-timing.py remote/qwen-webui-session.sh
+remote/qwen-teardown.sh remote/qwen-home.sh
+remote/preserve-legacy-telemetry.sh' \
+    remote/test-stage-timing.sh
+gate_cell test-measure-model-switch derive \
+    'remote/test-measure-model-switch.sh remote/measure-model-switch.sh
+remote/summarize-stage-timing.py remote/qwen-home.sh
+remote/test-port-lease.sh' \
+    remote/test-measure-model-switch.sh
+gate_cell test-summarize-stage-timing derive \
+    'remote/test-summarize-stage-timing.py remote/summarize-stage-timing.py' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-stage-timing.py'
 gate_cell test-quality-roster derive remote/test-quality-roster.sh \
     remote/test-quality-roster.sh
 gate_cell test-await-quiescence derive remote/test-await-quiescence.sh \

@@ -40,6 +40,14 @@ graphics_latency_log=$state_directory/graphics-latency.log
 kernel_hazard_log=$state_directory/kernel-hazards.log
 pid_file=$state_directory/server.pid
 status_file=$state_directory/session.status
+# The stage record belongs to one launch, so it is truncated here beside the
+# state directory rather than at the first row a stage writes: the launcher
+# appends its own readiness row after this session reports `state=running` and
+# the teardown appends after the session has gone, so the truncation precedes
+# both. stage-timing.sh is the one writer and the record of what it means.
+stage_timing_file=$state_directory/stage-timing.tsv
+stage_timing=$script_directory/stage-timing.sh
+"$stage_timing" init "$stage_timing_file" || :
 api_key_file=$state_directory/api.key
 monitor_pid=""
 latency_watchdog_pid=""
@@ -702,6 +710,19 @@ fi
 # The session owns the state directory, so it names the one the Vulkan workload
 # lease lives in; qwen-capacity-policy.sh derives the lock path from it and
 # image-service.py opens the same file under its own --state-dir.
+# The spawn opens two stages at once. `server_exec` ends where the spawned
+# process has become the server: run-qwen-capacity-server.sh execs the capacity
+# policy, which execs the Vulkan environment wrapper and the exec guard, and
+# each replaces the image without changing the PID, so `/proc/PID/comm` holding
+# the server's own basename is the observable that the chain reached its last
+# link. `model_load` runs from there to the readiness marker below. Both are
+# sampled by the readiness loop, so each carries that loop's own 0.1 s
+# granularity rather than the stamp's.
+stage_spawn_ns=$("$stage_timing" now) || stage_spawn_ns=''
+stage_exec_ns=''
+# The kernel truncates comm at 15 characters, so the comparison truncates the
+# expected name the same way rather than requiring a shorter executable name.
+stage_server_comm=$(printf '%.15s' "$(basename -- "$llama_server")")
 QWEN_VULKAN_PROFILE=$vulkan_profile \
 QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
 "$script_directory/run-qwen-capacity-server.sh" \
@@ -778,6 +799,36 @@ finalize_loading_record() {
     chmod 444 "$telemetry_loading_log" 2>/dev/null || :
 }
 
+# The readiness loop calls this once per iteration until it answers. A process
+# that has already exited leaves comm unreadable, so the sample stays empty and
+# the two rows below record `-` for their ends.
+stage_timing_sample_exec() {
+    [ -z "$stage_exec_ns" ] || return 0
+    stage_observed_comm=$(cat "/proc/$server_pid/comm" 2>/dev/null) || return 0
+    [ "$stage_observed_comm" = "$stage_server_comm" ] || return 0
+    stage_exec_ns=$("$stage_timing" now) || stage_exec_ns=''
+    return 0
+}
+
+# STAGE_TIMING_SEAL_LOADING READY_END_NS: the two loading rows, written on
+# every path that leaves the readiness loop. A stage whose boundary never
+# arrived carries `-` rather than a fabricated end, which is what makes the
+# record of a terminated load the finding rather than a gap.
+stage_timing_seal_loading() {
+    [ -n "$stage_spawn_ns" ] || return 0
+    "$stage_timing" record "$stage_timing_file" server_exec \
+        "$stage_spawn_ns" "${stage_exec_ns:--}" || :
+    if [ -n "$stage_exec_ns" ]; then
+        "$stage_timing" record "$stage_timing_file" model_load \
+            "$stage_exec_ns" "${1:--}" || :
+    else
+        "$stage_timing" record "$stage_timing_file" model_load \
+            "$stage_spawn_ns" "${1:--}" || :
+    fi
+    stage_spawn_ns=''
+    return 0
+}
+
 # The loading phase holds the serving monitor's own thresholds; the breach
 # terminates the exact process the session spawned and leaves a finalized
 # loading record carrying the reason.
@@ -794,6 +845,7 @@ terminate_loading_server() {
         kill "$server_pid" 2>/dev/null || :
     fi
     wait "$server_pid" 2>/dev/null || :
+    stage_timing_seal_loading -
     finalize_loading_record "$1"
     printf 'state=failed reason=%s phase=loading utc=%s\n' \
         "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
@@ -826,6 +878,7 @@ while [ "$attempt" -lt 1200 ]; do
         "/proc/$server_pid/status" 2>/dev/null) || affinity=''
     nice_value=$(sed 's/^.*) //' "/proc/$server_pid/stat" 2>/dev/null |
         awk '{ print $17 }')
+    stage_timing_sample_exec
     if [ "$affinity" = "$inference_cpu" ] && [ "$nice_value" = 19 ] && \
        grep -F "$readiness_marker" "$server_log" >/dev/null 2>&1; then
         ready_for_monitor=1
@@ -847,6 +900,11 @@ while [ "$attempt" -lt 1200 ]; do
     attempt=$((attempt + 1))
     sleep 0.1
 done
+stage_ready_ns=-
+if [ "$ready_for_monitor" = 1 ]; then
+    stage_ready_ns=$("$stage_timing" now) || stage_ready_ns=-
+fi
+stage_timing_seal_loading "$stage_ready_ns"
 record_loading_sample
 printf 'loading_end_utc=%s ready=%s attempts=%s\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ready_for_monitor" "$attempt" \
@@ -978,7 +1036,18 @@ fi
 # The exposure joins the same line because the status file is what a later
 # reader consults for what this launch serves, and the address on the network
 # is the one field a teardown, a status query, and an operator all read.
-# lan_exposure=0 records the loopback default.
+# The stage record's path joins the same line, because the launcher appends its
+# own readiness row to this file and the teardown appends after this session has
+# gone: the path each reads is the one this session truncated. It precedes the
+# exposure fields because write-deployment-receipt.sh binds
+# `open_lan_policy_identity` from ` lan_exposure=` to end of line, so a field
+# after them would land inside that receipt value. A caller-supplied state
+# directory holding a space splits this field the way it splits every other
+# field on the line, which is why the broker's secret path took a line of its
+# own.
+broker_status_field="$broker_status_field stage_timing=$stage_timing_file"
+# The exposure joins last for that reason. lan_exposure=0 records the loopback
+# default.
 broker_status_field="$broker_status_field lan_exposure=$lan_exposure lan_address=${lan_address:--} lan_name=${lan_name:--} lan_open=$lan_open lan_boundary=$lan_boundary"
 printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s%s profile=%s host=%s port=%s context=%s latency_mode=%s utc=%s\n' \
     "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \

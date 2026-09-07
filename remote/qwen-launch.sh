@@ -859,13 +859,33 @@ fi
 [ -n "$mmproj" ] && printf 'projector=%s\n' "$(basename -- "$mmproj")"
 
 control_start_entered=1
+# Readiness as this launcher observes it: the interval from handing the session
+# to the control script through to a `state=running` line paired with a /health
+# answer. It contains the session's own `server_exec` and `model_load` stages,
+# so the three nest and no total is meaningful over them. The session truncates
+# the record while this interval runs and this row appends after `state=running`
+# is on disk, so the truncation always precedes the append.
+stage_timing=$script_directory/stage-timing.sh
+stage_timing_file=$state_directory/stage-timing.tsv
+stage_launch_ns=$("$stage_timing" now) || stage_launch_ns=''
 QWEN_BIND_HOST=$bind_host QWEN_SERVER_PORT=$server_port \
 QWEN_MODEL_PATH=$model_path QWEN_MMPROJ=$mmproj \
     "$control" start "$profile"
 
+# STAGE_TIMING_RECORD_READINESS END_NS: `-` wherever readiness never arrived,
+# which is the reported failure and the expired budget alike.
+stage_timing_record_readiness() {
+    [ -n "$stage_launch_ns" ] || return 0
+    "$stage_timing" record "$stage_timing_file" launch_readiness \
+        "$stage_launch_ns" "$1" || :
+    stage_launch_ns=''
+    return 0
+}
+
 attempt=0
 while [ "$attempt" -lt "$ready_attempts" ]; do
     if grep -q 'state=failed' "$state_directory/session.status" 2>/dev/null; then
+        stage_timing_record_readiness -
         printf 'session reported failure\n' >&2
         sed -n '1p' "$state_directory/session.status" >&2
         [ -r "$state_directory/server.log" ] && tail -n 40 "$state_directory/server.log" >&2
@@ -874,6 +894,8 @@ while [ "$attempt" -lt "$ready_attempts" ]; do
     fi
     if grep -q 'state=running ' "$state_directory/session.status" 2>/dev/null && \
        curl --silent --fail "http://$health_probe_host:$server_port/health" >/dev/null 2>&1; then
+        stage_ready_ns=$("$stage_timing" now) || stage_ready_ns=-
+        stage_timing_record_readiness "$stage_ready_ns"
         break
     fi
     attempt=$((attempt + 1))
@@ -881,6 +903,7 @@ while [ "$attempt" -lt "$ready_attempts" ]; do
 done
 
 if [ "$attempt" -ge "$ready_attempts" ]; then
+    stage_timing_record_readiness -
     printf 'server did not answer /health within %s seconds\n' \
         "$((ready_attempts / 10))" >&2
     "$script_directory/qwen-teardown.sh" >/dev/null 2>&1 || true

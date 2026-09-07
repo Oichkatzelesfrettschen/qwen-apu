@@ -256,6 +256,25 @@ if [ -r "$session_status" ]; then
     fi
 fi
 
+# The stage record's path is bound the way the served page's digest is: the
+# session named it on the `state=running` line, and a receipt that carries the
+# path lets a reader join a deployment to the elapsed boundaries the launch
+# crossed. The path rather than the rows travels, since the record is truncated
+# per launch and a receipt outlives the launch that produced it.
+stage_timing_identity=no-running-session
+stage_timing_source=-
+if [ -r "$session_status" ]; then
+    stage_timing_field=$(grep '^state=running' "$session_status" | tail -n 1 |
+        tr ' ' '\n' | sed -n 's/^stage_timing=//p')
+    if [ -n "$stage_timing_field" ]; then
+        stage_timing_identity=$stage_timing_field
+        stage_timing_source=$session_status
+    elif [ -n "$(grep '^state=running' "$session_status" || true)" ]; then
+        stage_timing_identity=no-stage-timing-field
+        stage_timing_source=$session_status
+    fi
+fi
+
 # The runtime layout the launch ran under is part of the identity the
 # receipt binds: the root, the manifest runtime-root.sh writes over every
 # component the repository claims, the identity of each component that
@@ -307,6 +326,8 @@ trap 'rm -f "$staging_output"' EXIT HUP INT TERM
         "$open_lan_policy_source"
     printf 'served_page_identity\t%s\t%s\n' "$served_page_identity" \
         "$served_page_source"
+    printf 'stage_timing_identity\t%s\t%s\n' "$stage_timing_identity" \
+        "$stage_timing_source"
     printf 'runtime_schema_version\t%s\t%s\n' 1 "$runtime_root/.qwen-runtime-root"
     printf 'qwen_home\t%s\t%s\n' "$runtime_root" "$script_directory/qwen-home.sh"
     printf 'runtime_manifest_sha256\t%s\t%s\n' "$runtime_manifest_sha256" "$runtime_manifest"
