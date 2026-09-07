@@ -21,7 +21,7 @@ fi
 
 source_path=$script_directory/telemetry-broker.c
 mkdir -p "$(dirname -- "$output_path")"
-"$compiler" -O2 -Wall -Wextra -std=c11 \
+"$compiler" -O2 -Wall -Wextra -Werror -std=c11 \
     "$source_path" \
     -o "$output_path"
 # The digest of the source this executable was compiled from, written beside

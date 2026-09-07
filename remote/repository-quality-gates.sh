@@ -338,7 +338,7 @@ gate_cell sweep-coverage-current derive \
 gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
     remote/test-run-served-binary-ab.sh
 gate_cell test-run-checkpoint-baseline derive \
-    'remote/test-run-checkpoint-baseline.sh remote/run-checkpoint-baseline.sh remote/checkpoint-baseline-lib.sh remote/summarize-checkpoint-baseline.py remote/test-fixtures/fake-llama-server.sh' \
+    'remote/test-run-checkpoint-baseline.sh remote/run-checkpoint-baseline.sh remote/checkpoint-baseline-lib.sh remote/summarize-checkpoint-baseline.py remote/test-fixtures/fake-llama-server.sh remote/telemetry-broker.c remote/compute-state-lease.sh remote/validate-clock-sidecar.py remote/check-runtime-tree.sh remote/census-arm-lib.sh remote/models.tsv' \
     remote/test-run-checkpoint-baseline.sh
 gate_cell test-run-kernel-delta-witness derive remote/test-run-kernel-delta-witness.sh \
     remote/test-run-kernel-delta-witness.sh

@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+# Match the served-baseline orchestration priority before launching fixtures.
+renice --priority 0 --pid "$$" >/dev/null
+
 # Drive run-checkpoint-baseline.sh and summarize-checkpoint-baseline.py over
 # scratch fixtures with no device, no build, and no launch chain.
 #
@@ -65,6 +68,8 @@ serving_port=$(sed -n '1p' "$temporary_directory/ports")
 tree_root=$temporary_directory/tree
 scratch=$tree_root/remote
 runtime_root=$tree_root/.runtime
+acquisitions=$runtime_root/results
+mkdir -p "$acquisitions"
 state_directory=$runtime_root/state
 models_directory=$runtime_root/models
 mkdir -p "$scratch" "$state_directory" "$models_directory"
@@ -76,6 +81,7 @@ for carried in qwen-home.sh census-arm-lib.sh checkpoint-baseline-lib.sh \
 done
 cp -- "$harness" "$scratch/run-checkpoint-baseline.sh"
 cp -- "$summarizer" "$scratch/summarize-checkpoint-baseline.py"
+summarizer=$scratch/summarize-checkpoint-baseline.py
 chmod +x "$scratch/run-checkpoint-baseline.sh" "$scratch/summarize-checkpoint-baseline.py"
 
 registry_field() {
@@ -92,6 +98,8 @@ tuple_cache_k=$(registry_field cache_type_k)
 tuple_cache_v=$(registry_field cache_type_v)
 tuple_flash=$(registry_field flash_attention)
 tuple_checkpoints=$("$script_directory/model-registry.sh" ctx-checkpoint "$model_id")
+tuple_variant=$(registry_field q4k_variant)
+[ "$tuple_variant" != - ] || tuple_variant=production/4
 model_path=$models_directory/$model_file
 mkdir -p "$(dirname -- "$model_path")"
 printf 'fixture checkpoint bytes\n' >"$model_path"
@@ -113,9 +121,30 @@ printf '%s\t%s\t%s\t%s\t-\t-\n' "$model_id" "$model_file" "$model_bytes" \
 build_server() {
     server_root=$temporary_directory/$1
     mkdir -p "$server_root/bin"
-    printf 'const char *role = "%s";\nint main(void) { return 0; }\n' "$1" \
+    printf 'const char *role = "%s";\n\n' "$1" \
         >"$server_root/server.c"
-    cc -o "$server_root/bin/llama-server" "$server_root/server.c"
+    cat >>"$server_root/server.c" <<'SERVER'
+#include <errno.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+static volatile sig_atomic_t child;
+static void stop_child(int signal_number) { if (child > 0) kill(child, signal_number); }
+int main(void) {
+    fprintf(stderr, "ggml_vulkan: q4k_variant=%s q4k_rows=4\n", getenv("GGML_VK_Q4K_VARIANT"));
+    signal(SIGTERM, stop_child);
+    child = fork();
+    if (child == 0) { execl(getenv("BASELINE_FAKE_SERVER"), "fake-server", (char *)0); _exit(127); }
+    if (child < 0) return 2;
+    int status;
+    while (waitpid(child, &status, 0) < 0) { if (errno != EINTR) return 2; }
+    return 0;
+}
+SERVER
+    cc -Wall -Wextra -Werror -o "$server_root/bin/llama-server" "$server_root/server.c"
     server_bytes=$(wc -c <"$server_root/bin/llama-server" | tr -d ' ')
     server_sha256=$(sha256sum "$server_root/bin/llama-server" | cut -d ' ' -f 1)
     {
@@ -142,16 +171,18 @@ cat >"$scratch/qwen-launch.sh" <<LAUNCH
 #!/bin/sh
 set -eu
 state=$state_directory
-# The fake server replaces itself with its own python listener, so the argv the
-# served-tuple reader projects the tuple out of lives in the shell that spawned
-# it: the trailing exit keeps that shell from being exec-optimized away, and its
-# /proc entry carries the flags a capacity policy would have built.
+# The compiled fixture owns its Python listener and forwards termination.
+# Its process exposes the bound executable and the serving tuple through procfs.
 QWEN_FAKE_SERVER_PORT=$serving_port \\
 QWEN_FAKE_SERVER_STATE_DIRECTORY="\$state/fake-server" \\
 QWEN_FAKE_SERVER_TOKENS="\${QWEN_FIXTURE_TOKENS:-10 11 12 13 14 15 16 17}" \\
+GGML_VK_Q4K_VARIANT=$tuple_variant \\
+BASELINE_FAKE_SERVER=$fake_server \\
+QWEN_FAKE_SERVER_DECODE_TOK_S=1000000 \\
 QWEN_FAKE_SERVER_FIRST_TOKEN_DELAY_S=0.05 \\
-    sh -c '"\$0" "\$@"; exit \$?' $fake_server \\
-    --port $serving_port --ctx-size \${QWEN_FIXTURE_CONTEXT:-$tuple_context} \\
+    nice -n 19 "\$QWEN_LLAMA_SERVER" \\
+    --model "$model_path" --threads 1 --threads-batch 1 --device Vulkan0 \\
+    --n-gpu-layers all --parallel 1 --port $serving_port --ctx-size \${QWEN_FIXTURE_CONTEXT:-$tuple_context} \\
     --batch-size $tuple_batch --ubatch-size $tuple_ubatch \\
     --cache-type-k $tuple_cache_k --cache-type-v $tuple_cache_v \\
     --flash-attn $tuple_flash --ctx-checkpoints $tuple_checkpoints \\
@@ -189,36 +220,65 @@ TEARDOWN
 # validator stub accepts unless the case asks it to refuse. Both are what the
 # absent-sidecar case removes.
 cat >"$scratch/sample-clock-sidecar.py" <<'SIDECAR'
-#!/bin/sh
-set -eu
-output=$1
-if [ -n "${QWEN_FIXTURE_SIDECAR_SILENT:-}" ]; then
-    sleep 30
-    exit 0
-fi
-{
-    printf 'monotonic_ns\tsclk_mhz\tmclk_mhz\tedge_c\n'
-    printf '1000\t1100\t933\t70\n'
-    printf '2000\t1100\t933\t71\n'
-} >"$output"
-sleep 30
+#!/usr/bin/env python3
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+running = True
+def stop(signum, frame):
+    global running
+    running = False
+signal.signal(signal.SIGTERM, stop)
+if os.environ.get("QWEN_FIXTURE_SIDECAR_SILENT"):
+    time.sleep(30)
+    raise SystemExit(0)
+with Path(sys.argv[1]).open("w") as output:
+    output.write("monotonic_ns\tsclk_mhz\tmclk_mhz\tedge_c\n")
+    while running:
+        output.write(f"{time.monotonic_ns()}\t1100\t933\t70\n")
+        output.flush()
+        print("telemetry_broker=sampled monotonic_ns=1", file=sys.stderr, flush=True)
+        time.sleep(0.02)
+raise SystemExit(int(os.environ.get("QWEN_FIXTURE_SIDECAR_EXIT", "0")))
 SIDECAR
 cat >"$scratch/validate-clock-sidecar.py" <<'VALIDATOR'
 #!/bin/sh
 set -eu
 record=$1
-if [ ! -s "$record" ]; then
-    printf 'clock record is absent or empty: %s\n' "$record" >&2
-    exit 1
-fi
-printf 'clock_invariant=held\n'
+[ -s "$record" ] || exit 1
+shift
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = --sidecar-status ] && [ "$2" != 0 ]; then
+        printf 'clock_sidecar=refused failures=sidecar_exit\n'
+        exit 1
+    fi
+    shift
+done
+printf 'clock_invariant=held sclk_source=sclk_actual_mhz\nclock_sidecar=accepted failures=-\n'
 VALIDATOR
+cat >"$scratch/check-runtime-tree.sh" <<'RUNTIME'
+#!/bin/sh
+printf 'runtime_tree=verified\n'
+RUNTIME
+chmod +x "$scratch/check-runtime-tree.sh"
+printf 'git_head\tfixture\n' >"$tree_root/runtime-tree-manifest.tsv"
+cp "$script_directory/telemetry-broker.c" "$scratch/telemetry-broker.c"
+sha256sum "$scratch/telemetry-broker.c" | cut -d ' ' -f 1 >"$scratch/sample-clock-sidecar.py.source-sha256"
+cp "$script_directory/compute-state-lease.sh" "$scratch/compute-state-lease.sh"
+printf 'key\tvalue\nprofile\tserve-baseline-fixed\nsnapshot_ksm_run\t1\napplied_ksm_run\t1\n' >"$temporary_directory/compute-state.tsv"
+export QWEN_COMPUTE_STATE_PROFILE=serve-baseline-fixed
+export QWEN_COMPUTE_STATE_RECORD=$temporary_directory/compute-state.tsv
+export QWEN_CENSUS_BROKER=$scratch/sample-clock-sidecar.py
 cat >"$scratch/verify-external-vulkan-lease.py" <<'LEASE'
 #!/bin/sh
 exit 0
 LEASE
 cat >"$scratch/await-quiescence.sh" <<'QUIESCE'
 #!/bin/sh
+[ "$#" -eq 5 ] && [ "$1" = --sclk-forced ] && [ "$2" = --max-seconds ] && [ "$4" = --drm-device ] || exit 2
+[ "${QWEN_FIXTURE_QUIESCENCE_EXIT:-0}" -eq 0 ] || exit 1
 printf 'quiescence=reached\n'
 QUIESCE
 chmod +x "$scratch/qwen-launch.sh" "$scratch/qwen-teardown.sh" \
@@ -244,10 +304,10 @@ run_harness() {
         QWEN_SERVER_PORT="$serving_port" \
         QWEN_VULKAN_EXTERNAL_LEASE_PROOF="$lease_proof" \
         QWEN_DRM_DEVICE="$temporary_directory/drm" \
-        QWEN_BASELINE_COOLDOWN_S=0 \
+        QWEN_BASELINE_COOLDOWN_S=1 \
         QWEN_BASELINE_READY_DEADLINE_S=30 \
         QWEN_BENCH_GENERATE=8 \
-        QWEN_BASELINE_REPEATS=2 \
+        QWEN_BASELINE_REPEATS=4 \
         QWEN_LLAMA_SERVER="$control_server" \
         sh -c 'exec "$0" "$@" 8<>"'"$lease_lock"'"' \
         "$scratch/run-checkpoint-baseline.sh" "$model_id" "$run_output" \
@@ -262,12 +322,12 @@ mkdir -p "$temporary_directory/drm"
 printf '0: 200Mhz\n1: 400Mhz\n2: 1100Mhz *\n' >"$temporary_directory/drm/pp_dpm_sclk"
 
 active_fixture=completed_single_arm
-if ! run_harness "$temporary_directory/single"; then
+if ! run_harness "$acquisitions/single"; then
     printf 'the single-checkpoint form failed on a healthy fixture\n' >&2
     exit 1
 fi
-summary=$temporary_directory/single/summary.tsv
-for required_row in 'schema	checkpoint-baseline-summary-v1' 'token_identity	held' \
+summary=$acquisitions/single/summary.tsv
+for required_row in 'schema	checkpoint-baseline-summary-v2' 'within_binary_repeatability	held' \
     'arms	1'; do
     if ! grep -qx "$required_row" "$summary"; then
         printf 'the summary omits the row %s\n' "$required_row" >&2
@@ -275,7 +335,7 @@ for required_row in 'schema	checkpoint-baseline-summary-v1' 'token_identity	held
         exit 1
     fi
 done
-arm_directory=$temporary_directory/single/arms/01-subject
+arm_directory=$acquisitions/single/arms/01-subject
 for required_artifact in load.tsv ttft.tsv decode-rows.tsv served-tuple.tsv \
     clock-samples.tsv repeats/01/tokens.txt repeats/02/response.json \
     graphics-latency.log kernel-hazards.log; do
@@ -301,7 +361,7 @@ fi
 # The two request bodies are two digests, since the streamed request and the
 # decode request differ in shape and a run carrying one would leave the other
 # unstated.
-identity=$temporary_directory/single/identity.tsv
+identity=$acquisitions/single/identity.tsv
 ttft_digest=$(awk -F'\t' '$1 == "ttft_request_sha256" { print $2 }' "$identity")
 decode_digest=$(awk -F'\t' '$1 == "decode_request_sha256" { print $2 }' "$identity")
 if [ -z "$ttft_digest" ] || [ "$ttft_digest" = "$decode_digest" ]; then
@@ -311,14 +371,14 @@ if [ -z "$ttft_digest" ] || [ "$ttft_digest" = "$decode_digest" ]; then
 fi
 
 active_fixture=summary_recomputation
-if ! "$summarizer" "$temporary_directory/single" >/dev/null; then
+if ! "$summarizer" "$acquisitions/single" >/dev/null; then
     printf 'the retained summary differs from its own recomputation\n' >&2
     exit 1
 fi
 
 active_fixture=summary_refuses_absent_response
 mutated=$temporary_directory/mutated
-cp -r -- "$temporary_directory/single" "$mutated"
+cp -r -- "$acquisitions/single" "$mutated"
 rm -- "$mutated/arms/01-subject/repeats/02/response.json"
 if "$summarizer" "$mutated" >/dev/null 2>"$temporary_directory/absent.log"; then
     printf 'the summarizer accepted an arm whose repeat retained no response\n' >&2
@@ -332,7 +392,7 @@ fi
 
 active_fixture=summary_refuses_absent_clock_record
 mutated_clock=$temporary_directory/mutated-clock
-cp -r -- "$temporary_directory/single" "$mutated_clock"
+cp -r -- "$acquisitions/single" "$mutated_clock"
 rm -- "$mutated_clock/arms/01-subject/clock-samples.tsv"
 if "$summarizer" "$mutated_clock" >/dev/null 2>"$temporary_directory/clock.log"; then
     printf 'the summarizer accepted an arm carrying no clock record\n' >&2
@@ -346,9 +406,18 @@ fi
 
 active_fixture=token_identity_mismatch_is_reported
 diverged=$temporary_directory/diverged
-cp -r -- "$temporary_directory/single" "$diverged"
+cp -r -- "$acquisitions/single" "$diverged"
 diverged_arm=$diverged/arms/01-subject
-printf '900\n901\n' >"$diverged_arm/repeats/02/tokens.txt"
+python3 - "$diverged_arm/repeats/02" <<'TOKENS'
+import json
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+response = json.loads((root / "response.json").read_text())
+response["tokens"] = list(range(900, 908))
+(root / "response.json").write_text(json.dumps(response))
+(root / "tokens.txt").write_text("".join(f"{token}\n" for token in response["tokens"]))
+TOKENS
 diverged_digest=$(sha256sum "$diverged_arm/repeats/02/tokens.txt" | cut -d ' ' -f 1)
 awk -F'\t' -v OFS='\t' -v digest="$diverged_digest" \
     'NR == 1 || $1 != "02" { print; next } { $6 = digest; print }' \
@@ -359,7 +428,7 @@ if ! "$summarizer" "$diverged" --write >/dev/null; then
     printf 'the summarizer refused an arm whose repeats diverged\n' >&2
     exit 1
 fi
-if ! grep -qx 'token_identity	diverged' "$diverged/summary.tsv"; then
+if ! grep -qx 'within_binary_repeatability	diverged' "$diverged/summary.tsv"; then
     printf 'the summary did not report the token divergence\n' >&2
     cat "$diverged/summary.tsv" >&2
     exit 1
@@ -367,7 +436,7 @@ fi
 
 active_fixture=summary_refuses_a_row_its_tokens_disagree_with
 tampered=$temporary_directory/tampered
-cp -r -- "$temporary_directory/single" "$tampered"
+cp -r -- "$acquisitions/single" "$tampered"
 printf '900\n901\n' >"$tampered/arms/01-subject/repeats/02/tokens.txt"
 if "$summarizer" "$tampered" >/dev/null 2>"$temporary_directory/tamper.log"; then
     printf 'the summarizer accepted a token file its retained digest denies\n' >&2
@@ -380,32 +449,32 @@ if ! grep -q 'token digest differs' "$temporary_directory/tamper.log"; then
 fi
 
 active_fixture=absent_clock_sidecar_fails_the_arm
-if QWEN_FIXTURE_SIDECAR_SILENT=1 run_harness "$temporary_directory/no-sidecar" \
+if QWEN_FIXTURE_SIDECAR_SILENT=1 run_harness "$acquisitions/no-sidecar" \
     QWEN_FIXTURE_SIDECAR_SILENT=1; then
     printf 'the runner completed an arm whose sidecar retained no record\n' >&2
     exit 1
 fi
-if ! grep -q 'clock_invariant' "$temporary_directory/no-sidecar/arms.tsv"; then
+if ! grep -q 'clock_invariant' "$acquisitions/no-sidecar/arms.tsv"; then
     printf 'the arm ledger named another reason for an unsampled arm\n' >&2
-    cat "$temporary_directory/no-sidecar/arms.tsv" >&2
+    cat "$acquisitions/no-sidecar/arms.tsv" >&2
     exit 1
 fi
 
 active_fixture=a_served_tuple_that_left_the_registry_row_fails_the_arm
-if QWEN_FIXTURE_CONTEXT=8192 run_harness "$temporary_directory/tuple-moved" \
+if QWEN_FIXTURE_CONTEXT=8192 run_harness "$acquisitions/tuple-moved" \
     QWEN_FIXTURE_CONTEXT=8192; then
     printf 'the runner measured a server whose depth left the registry row\n' >&2
     exit 1
 fi
-if ! grep -q 'tuple_mismatch' "$temporary_directory/tuple-moved/arms.tsv"; then
+if ! grep -q 'tuple_mismatch' "$acquisitions/tuple-moved/arms.tsv"; then
     printf 'the arm ledger named another reason for a moved tuple\n' >&2
-    cat "$temporary_directory/tuple-moved/arms.tsv" >&2
+    cat "$acquisitions/tuple-moved/arms.tsv" >&2
     exit 1
 fi
 
 active_fixture=identity_binding_refuses_a_moved_model
 printf 'fixture checkpoint bytes replaced under the ledger\n' >"$model_path"
-if run_harness "$temporary_directory/moved"; then
+if run_harness "$acquisitions/moved"; then
     printf 'the runner measured a checkpoint whose bytes the ledger denies\n' >&2
     exit 1
 fi
@@ -424,11 +493,11 @@ env QWEN_STATE_DIRECTORY="$state_directory" \
     QWEN_SERVER_PORT="$serving_port" \
     QWEN_VULKAN_EXTERNAL_LEASE_PROOF="$lease_proof" \
     QWEN_DRM_DEVICE="$temporary_directory/drm" \
-    QWEN_BASELINE_COOLDOWN_S=0 QWEN_BASELINE_READY_DEADLINE_S=30 \
-    QWEN_BENCH_GENERATE=8 QWEN_BASELINE_REPEATS=2 \
+    QWEN_BASELINE_COOLDOWN_S=1 QWEN_BASELINE_READY_DEADLINE_S=30 \
+    QWEN_BENCH_GENERATE=8 QWEN_BASELINE_REPEATS=4 \
     sh -c 'exec "$0" "$@" 8<>"'"$lease_lock"'"' \
     "$scratch/run-checkpoint-baseline.sh" --bracket "$control_server" \
-    "$candidate_server" "$model_id" "$temporary_directory/bracket" \
+    "$candidate_server" "$model_id" "$acquisitions/bracket" \
     >"$temporary_directory/bracket.log" 2>&1
 bracket_status=$?
 set -e
@@ -437,16 +506,16 @@ if [ "$bracket_status" -ne 0 ]; then
     exit 1
 fi
 for expected_arm in 01-control 02-candidate 03-candidate 04-control; do
-    if [ ! -d "$temporary_directory/bracket/arms/$expected_arm" ]; then
+    if [ ! -d "$acquisitions/bracket/arms/$expected_arm" ]; then
         printf 'the bracket did not run the arm %s\n' "$expected_arm" >&2
-        ls "$temporary_directory/bracket/arms" >&2
+        ls "$acquisitions/bracket/arms" >&2
         exit 1
     fi
 done
 if ! grep -q '^candidate_over_control	[0-9]' \
-    "$temporary_directory/bracket/summary.tsv"; then
+    "$acquisitions/bracket/summary.tsv"; then
     printf 'the bracket summary reports no role ratio\n' >&2
-    cat "$temporary_directory/bracket/summary.tsv" >&2
+    cat "$acquisitions/bracket/summary.tsv" >&2
     exit 1
 fi
 
@@ -459,7 +528,7 @@ env QWEN_STATE_DIRECTORY="$state_directory" \
     QWEN_DRM_DEVICE="$temporary_directory/drm" \
     sh -c 'exec "$0" "$@" 8<>"'"$lease_lock"'"' \
     "$scratch/run-checkpoint-baseline.sh" --bracket "$control_server" \
-    "$control_server" "$model_id" "$temporary_directory/one-binary" \
+    "$control_server" "$model_id" "$acquisitions/one-binary" \
     >"$temporary_directory/one-binary.log" 2>&1
 one_binary_status=$?
 set -e
@@ -481,7 +550,7 @@ env QWEN_STATE_DIRECTORY="$state_directory" \
     QWEN_DRM_DEVICE="$temporary_directory/drm" \
     QWEN_LLAMA_SERVER="$control_server" \
     "$scratch/run-checkpoint-baseline.sh" "$model_id" \
-    "$temporary_directory/no-lease" >"$temporary_directory/no-lease.log" 2>&1
+    "$acquisitions/no-lease" >"$temporary_directory/no-lease.log" 2>&1
 lease_status=$?
 set -e
 if [ "$lease_status" -eq 0 ]; then
@@ -493,6 +562,134 @@ if ! grep -q 'compute-state-lease.sh' "$temporary_directory/no-lease.log"; then
     cat "$temporary_directory/no-lease.log" >&2
     exit 1
 fi
+
+active_fixture=warmup_deadline_prevents_repeats
+if run_harness "$acquisitions/warmup-timeout" QWEN_BASELINE_REQUEST_DEADLINE_S=1 \
+    QWEN_FAKE_SERVER_STREAM_TOKEN_DELAY_S=0.3; then
+    printf 'slow streamed warmup escaped its elapsed deadline\n' >&2
+    exit 1
+fi
+[ ! -d "$acquisitions/warmup-timeout/arms/01-subject/repeats" ]
+grep -q first_token "$acquisitions/warmup-timeout/arms.tsv"
+
+active_fixture=incomplete_warmup_prevents_repeats
+if run_harness "$acquisitions/warmup-truncated" QWEN_FAKE_SERVER_STREAM_TRUNCATED=1; then
+    printf 'incomplete warmup admitted repeats\n' >&2
+    exit 1
+fi
+[ ! -d "$acquisitions/warmup-truncated/arms/01-subject/repeats" ]
+
+active_fixture=launch_elapsed_deadline
+mkdir -p "$temporary_directory/launch-deadline"
+printf '#!/bin/sh\nexec sleep 30\n' >"$temporary_directory/slow-launch.sh"
+chmod +x "$temporary_directory/slow-launch.sh"
+python3 - "$scratch/checkpoint-baseline-lib.sh" "$temporary_directory" <<'DEADLINE'
+import subprocess
+import sys
+import time
+library, root = sys.argv[1:]
+begin = time.monotonic()
+result = subprocess.run(["sh", "-c", '. "$1"; baseline_launch "$2/launch-deadline" "$2/slow-launch.sh" low-async http://127.0.0.1:1 1',
+                         "deadline", library, root], capture_output=True, text=True, timeout=4)
+if result.returncode == 0 or time.monotonic() - begin > 3:
+    raise SystemExit(f"launch deadline failed: {result.stderr}")
+DEADLINE
+
+active_fixture=raw_reader_regressions
+python3 - "$summarizer" "$acquisitions/single" "$acquisitions/bracket" "$temporary_directory" <<'PY'
+import hashlib
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+reader, single, bracket, scratch = map(Path, sys.argv[1:])
+
+def check_case(name, mutate, source=single, accepted=False, required=()):
+    root = scratch / f"regression-{name}"
+    shutil.copytree(source, root)
+    mutate(root)
+    result = subprocess.run([str(reader), str(root), "--write"], capture_output=True, text=True)
+    if (result.returncode == 0) != accepted:
+        raise SystemExit(f"{name}: unexpected status {result.returncode}: {result.stdout} {result.stderr}")
+    for text in required:
+        if text not in result.stdout:
+            raise SystemExit(f"{name}: absent {text}: {result.stdout}")
+    print(f"baseline_regression={name} expected={'accepted' if accepted else 'refused'}")
+
+arm = Path('arms/01-subject')
+response = arm / 'repeats/01/response.json'
+rows = arm / 'decode-rows.tsv'
+
+def raw_change(root, key, value):
+    path = root / response
+    document = json.loads(path.read_text())
+    document['timings'][key] = value
+    path.write_text(json.dumps(document))
+
+def derived_change(root):
+    path = root / rows
+    lines = path.read_text().splitlines()
+    fields = lines[1].split('\t')
+    fields[1] = '99'
+    lines[1] = '\t'.join(fields)
+    path.write_text('\n'.join(lines) + '\n')
+
+check_case('malformed-raw', lambda root: (root / response).write_text('{invalid'))
+check_case('derived-rate', derived_change)
+check_case('clock-refusal', lambda root: (root / arm / 'clock-validation.txt').write_text('clock_sidecar=refused failures=clock_invariant\n'))
+check_case('one-repeat', lambda root: (root / rows).write_text('\n'.join((root / rows).read_text().splitlines()[:2])+'\n'))
+check_case('duplicate-repeat', lambda root: (root / rows).write_text((root / rows).read_text().splitlines()[0]+'\n'+((root / rows).read_text().splitlines()[1]+'\n')*4))
+for value in (float('inf'), float('nan'), -1, 0, True):
+    check_case(f'raw-rate-{value}', lambda root, value=value: raw_change(root, 'predicted_per_second', value))
+check_case('raw-count-bool', lambda root: raw_change(root, 'predicted_n', True))
+check_case('elapsed-conflict', lambda root: raw_change(root, 'predicted_ms', 9000))
+check_case('stale-token-digest', lambda root: (root / arm / 'repeats/01/tokens.txt').write_text('900\n901\n'))
+check_case('sampler-exit', lambda root: (root / arm / 'terminal.tsv').write_text((root / arm / 'terminal.tsv').read_text().replace('sidecar_status\t0', 'sidecar_status\t9')))
+check_case('incomplete-bracket', lambda root: shutil.rmtree(root / 'arms/04-control'), source=bracket)
+check_case('wrong-arm-order', lambda root: (root / 'arms.tsv').write_text((root / 'arms.tsv').read_text().replace('02\tK', '02\tC')), source=bracket)
+check_case('process-thread-mismatch', lambda root: (root / arm / 'process-identity.tsv').write_text((root / arm / 'process-identity.tsv').read_text().replace('threads\t1', 'threads\t2')))
+check_case('truncated-warmup', lambda root: (root / arm / 'warmup.sse').write_text((root / arm / 'warmup.sse').read_text().splitlines()[0]+'\n'))
+
+def stable_candidate_difference(root):
+    for name in ('02-candidate', '03-candidate'):
+        directory = root / 'arms' / name
+        lines = (directory / 'decode-rows.tsv').read_text().splitlines()
+        for index in range(1, len(lines)):
+            fields = lines[index].split('\t')
+            repeat = directory / 'repeats' / fields[0]
+            document = json.loads((repeat / 'response.json').read_text())
+            document['tokens'] = [token+100 for token in document['tokens']]
+            text = ''.join(f'{token}\n' for token in document['tokens'])
+            (repeat / 'response.json').write_text(json.dumps(document))
+            (repeat / 'tokens.txt').write_text(text)
+            fields[5] = hashlib.sha256(text.encode()).hexdigest()
+            lines[index] = '\t'.join(fields)
+        (directory / 'decode-rows.tsv').write_text('\n'.join(lines)+'\n')
+
+check_case('within-versus-cross-binary', stable_candidate_difference, source=bracket, accepted=True,
+           required=('within_binary_repeatability\theld', 'cross_binary_token_comparison\tdiverged',
+                     'acquisition_completeness\tcompleted', 'instrument_admission\taccepted',
+                     'performance_result\twithheld_correctness'))
+PY
+
+for refusal in sampler quiescence; do
+    active_fixture="${refusal}_failure_is_terminal"
+    case $refusal in
+        sampler) refusal_environment=QWEN_FIXTURE_SIDECAR_EXIT=7; reason=clock_invariant ;;
+        *) refusal_environment=QWEN_FIXTURE_QUIESCENCE_EXIT=1; reason=quiescence ;;
+    esac
+    if run_harness "$acquisitions/$refusal-failure" "$refusal_environment"; then
+        printf 'runner admitted %s failure\n' "$refusal" >&2
+        exit 1
+    fi
+    grep -q "$reason" "$acquisitions/$refusal-failure/arms.tsv"
+    if [ "$refusal" = sampler ]; then
+        awk -F'\t' '$1 == "sidecar_status" { exit $2 != 7 }' "$acquisitions/$refusal-failure/arms/01-subject/terminal.tsv"
+    fi
+    awk -F'\t' '$1 == "status" && ($2 == "incomplete" || $2 == "failed") { found=1 } END { exit !found }' "$acquisitions/$refusal-failure/arms/01-subject/terminal.tsv"
+done
 
 diagnostic_file=
 printf 'checkpoint baseline fixtures passed\n'

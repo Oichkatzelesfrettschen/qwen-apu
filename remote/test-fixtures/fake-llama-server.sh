@@ -235,10 +235,13 @@ class Handler(BaseHTTPRequestHandler):
         if first_token_delay_s > 0:
             time.sleep(first_token_delay_s)
         for token_id in emitted:
+            time.sleep(float(os.environ.get("QWEN_FAKE_SERVER_STREAM_TOKEN_DELAY_S", "0")))
             self.wfile.write(
-                f"data: {json.dumps({'content': str(token_id), 'stop': False})}\n\n".encode())
+                f"data: {json.dumps({'content': str(token_id), 'tokens': [token_id], 'stop': False})}\n\n".encode())
             self.wfile.flush()
-        final = {"content": "", "stop": True, "tokens": emitted}
+        if os.environ.get("QWEN_FAKE_SERVER_STREAM_TRUNCATED") == "1":
+            return
+        final = {"content": "", "stop": True, "tokens": []}
         if not omit_timings:
             final["timings"] = timings
         self.wfile.write(f"data: {json.dumps(final)}\n\n".encode())

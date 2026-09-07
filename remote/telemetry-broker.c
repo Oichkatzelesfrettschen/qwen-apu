@@ -1029,6 +1029,7 @@ int main(int argc, char **argv)
     }
 
     {
+        bool usable_sample_reported = false;
         int32_t last_temperature = VALUE_UNAVAILABLE;
         int32_t last_sclk = VALUE_UNAVAILABLE;
         int32_t last_mclk = VALUE_UNAVAILABLE;
@@ -1145,6 +1146,13 @@ int main(int argc, char **argv)
                 record->unavailable_flags = flags;
                 record->sclk_actual_mhz = last_sclk_actual;
                 broker.sample_count++;
+                if (!usable_sample_reported && last_sclk_actual > 0 &&
+                    (flags & (UNAVAILABLE_SENSOR_MASK & ~UNAVAILABLE_FCLK)) == 0) {
+                    usable_sample_reported = true;
+                    fprintf(stderr, "telemetry_broker=sampled monotonic_ns=%" PRIu64 "\n",
+                            record->monotonic_ns);
+                    fflush(stderr);
+                }
                 /* The fast path is the sample that reads gpu_busy_percent
                  * alone, which is the cost the sidecar contract bounds. */
                 if (tick % DPM_PERIOD_MULTIPLE != 0 &&
