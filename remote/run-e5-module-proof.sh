@@ -336,8 +336,9 @@ observed_executed_sha256=$(printf '%s' "$matched_row" | cut -f 4)
 
 # The disassembly carries one block per compiled shader under RADV's own stage
 # name, so the q8_1 mat-vec is selected by what it is rather than by what it is
-# called: no other pipeline in this build expands to 224 24-bit signed products
-# with no quarter-rate v_mul_lo_u32 beside them.
+# called: the 224 24-bit signed products the expansion produces are the handle.
+# Uniqueness of that handle is recorded rather than assumed, since the family's
+# own second reduction variant expands the same products.
 recount_record=$output_directory/isa-recount.tsv
 set -- "$output_directory"/isa-dump/isa/*.s
 if [ ! -r "$1" ]; then
@@ -354,6 +355,24 @@ aco_row=$(awk -F'\t' -v mul24="$expected_mul24" '
             $(column["v_add3_u32"]) "\t" $(column["v_mul_lo_u32"]);
         exit
     }' "$recount_record")
+# RADV names every compute shader "Compute Shader" in its own dump, so
+# summarize-radv-isa.py derives isa-index.tsv from content alone and this
+# selection is by expansion shape rather than by pipeline name. The family
+# creates a second q8_1 module for DMMV_WG_SIZE_LARGE whose reduction differs
+# while its 224 products do not, so the match is not proven unique and the row
+# a first match returns follows compile order. The candidate count and the
+# reductions those candidates agree on are therefore recorded: a single
+# candidate reads its own lowering, several agreeing candidates read that one
+# lowering, and several disagreeing candidates read `ambiguous`, since the
+# reduction the arm executed is undetermined by a listing that carries no name.
+aco_candidate_rows=$(awk -F'\t' -v mul24="$expected_mul24" '
+    NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $(column["v_mul_i32_i24"]) == mul24 { rows++ }
+    END { print rows + 0 }' "$recount_record")
+aco_candidate_add3=$(awk -F'\t' -v mul24="$expected_mul24" '
+    NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $(column["v_mul_i32_i24"]) == mul24 { seen[$(column["v_add3_u32"])] = 1 }
+    END { for (value in seen) distinct++; print distinct + 0 }' "$recount_record")
 if [ -z "$aco_row" ]; then
     observed_mul24=$(awk -F'\t' '
         NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
@@ -374,6 +393,9 @@ case $aco_add3 in
     "$expected_add3_generic") aco_lowering=generic ;;
     *) aco_lowering=other ;;
 esac
+if [ "$aco_candidate_add3" -gt 1 ]; then
+    aco_lowering=ambiguous
+fi
 
 {
     printf 'key\tvalue\n'
@@ -390,6 +412,8 @@ esac
     printf 'aco_v_mul_i32_i24\t%s\n' "$expected_mul24"
     printf 'aco_v_mul_lo_u32\t%s\n' "$aco_mul_lo"
     printf 'family_pipeline_count\t%s\n' "$family_count"
+    printf 'aco_candidate_rows\t%s\n' "$aco_candidate_rows"
+    printf 'aco_candidate_reductions\t%s\n' "$aco_candidate_add3"
 } >"$output_directory/verdict.tsv"
 
 # The module is proven and the lowering is recorded rather than gated: merge

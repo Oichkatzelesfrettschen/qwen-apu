@@ -47,6 +47,15 @@ registration, verbatim from before a line of shader existed;
 `isa-shimmed-raven2/` hold the arithmetic, the compile matrix, the SPIR-V
 receipts, and the two production anchors all three paths are read against.
 
+`input-closure.md` closes the workstation side of the lane in one file: the
+pinned producer by digest, the validated module, the isolated RADV identity a
+device run must record, the `ggml-vulkan.cpp` lines by which a server selects the
+integer-dot pipeline and the confinement the patch adds to them, and the Raven2
+order the device rungs run in. It supersedes the falsifier list below for the
+pipeline-creation and executed-ISA rungs, which two separate artifacts now
+answer, and leaves the arithmetic, witness, bracket, envelope, and served rungs
+with the contracts registered here.
+
 | path | valu | code_size | vgprs | blocks | longest_valu_chain | isa_sha256 |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | production FP16 dequantize | 882 | 6764 | 64 | 82 | 29 | `ad837848d5...` |
