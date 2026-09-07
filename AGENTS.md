@@ -2594,6 +2594,99 @@ answer.
 repository work, and `evidence/` retains the measurements that put each default
 where it is.
 
+## Change reaches main through one worktree at a time
+
+The primary checkout tracks `main` and pulls after each merge, so the tree the
+appliance syncs from holds merged state alone. Every unit of change lives in a
+worktree under `~/worktrees/<repo>/<branch>`, which keeps a branch's edits, its
+scratch files, and its gate cache outside the `remote/` and `patches/` payload
+the sync carries.
+
+One worktree carries one logical cluster of related change from creation to
+merge, and its removal ends the cluster. A second cluster takes a new worktree,
+because a fresh one starts with an empty untracked set and an empty gate cache
+while a reused one carries the previous cluster's scratch files and accepted
+cells into the next cluster's evidence. The gate is the expensive step, so a
+cluster is sized to what one gate run covers; a cluster split across two
+worktrees pays that run twice.
+
+Concurrent agents are the case that puts several worktrees in play, and each
+agent takes one worktree and one branch name under the same lifecycle. Git
+holds a branch for the worktree that checked it out, so `git branch -f` and a
+re-dispatch onto that name both meet a refusal until the worktree goes; the
+removal precedes the reuse.
+
+```sh
+primary=~/Github/qwen-apu
+cluster=<branch>
+
+git -C "$primary" fetch --prune origin
+git -C "$primary" checkout main && git -C "$primary" pull --ff-only
+git -C "$primary" worktree add ~/worktrees/qwen-apu/"$cluster" \
+    -b "$cluster" main
+cd ~/worktrees/qwen-apu/"$cluster"
+# commit the cluster here, then gate this tree
+bwrap --unshare-pid --dev-bind / / --proc /proc --chdir "$PWD" \
+    "$PWD/remote/repository-quality-gates.sh"
+git push -u origin "$cluster"
+gh pr create --base main --head "$cluster" --title ... --body ...
+gh pr merge <number> --merge --match-head-commit "$(git rev-parse HEAD)" \
+    --delete-branch
+git -C "$primary" worktree remove ~/worktrees/qwen-apu/"$cluster"
+git -C "$primary" branch -d "$cluster"
+git -C "$primary" checkout main && git -C "$primary" pull --ff-only
+```
+
+`gh pr merge --match-head-commit` reads a full forty-character object name, so
+`git rev-parse HEAD` supplies it and an abbreviation is refused before the
+merge.
+
+The gate runs from a worktree because `runtime-root.sh` identifies a production
+checkout as the one git tree carrying its own object store, where a linked
+worktree carries `.git` as a gitdir file and a fixture tree carries none. Its
+`uninstall` requires `QWEN_RUNTIME_ROOT_CONFIRM` in a tree whose `.git` is a
+directory, and `test-runtime-root.sh` exercises that action, so the cell passes
+in a worktree and meets the confirm refusal in the primary checkout.
+
+Three properties of that invocation decide whether a fixture measures the tree
+or the harness. `--unshare-pid` hides another session's `llama-server` and
+fixture processes on a shared workstation, so a process query inside a fixture
+answers for that fixture alone. `--proc /proc` belongs beside it, because
+`--dev-bind / /` carries the host's procfs into the new namespace and a fixture
+that records a namespace PID then reads an absent `/proc/<pid>/stat`;
+`searxng-launch.sh` reads a launched instance's identity through
+`process_start_time` and reports the empty read as `the instance left before
+its identity could be read`, which `test-install-searxng.sh` surfaces as a
+failed `verify_passes_through_launch_path`. `QWEN_HOME` stays unexported,
+because `qwen-home.sh` derives it as `.runtime` beside each tree's own
+`remote/` and an ambient value replaces that derivation for every fixture at
+once, which makes a launch refuse the fixture's own temporary root as outside
+the runtime root.
+
+A rejected cell runs standalone at `main` before it is read as caused by the
+branch. A failure at both heads names the invocation and a failure at the
+branch head alone names the diff, so that comparison separates a harness defect
+from a regression at the cost of one test run.
+
+Teardown proves absence. `git worktree remove` refuses an unclean worktree, and
+that refusal is the check: read `git status --porcelain` and the untracked set,
+commit or retain whatever is unique, and remove without `--force`. Commit
+ancestry describes commits, and the working tree it stays silent on is exactly
+what `--force` discards, so a merged branch settles the removal of its history
+rather than the removal of its edits.
+
+A branch carrying unique history whose content the tree already holds is pushed
+to `origin` as `archive/<name>` before the local branch goes, so a prune that
+the content justifies leaves the history reachable.
+
+Two branches touching one surface are reconciled rather than decided by side.
+The merge keeps every distinct invariant both inputs state, and where two
+mechanisms disagree the resolution follows the claim that is checkable against
+the tree or against a measurement. Dropping a test, a refusal, or a recorded
+falsifier from either side is a scope cut, so the merge names it as one. The
+merged result therefore answers more than either input did, which is the
+standard a conflict resolution meets.
+
 ## Prose and comments
 
 Use affirmative, mechanism-centered prose. Describe what the system does, the
