@@ -16,9 +16,13 @@ two arms are identical by construction.
 
 ## Falsifiers, stated before the numbers
 
-- A null binary quadruple whose interval excludes unity refutes the interval as
-  an uncertainty statement, since the two arms execute the same 92015c14 bytes
-  on the same model and the true ratio is 1 by construction.
+- A null binary quadruple whose interval excludes unity is a signal about the
+  procedure rather than a verdict on it: the two arms execute the same 92015c14
+  bytes on the same model, so the true ratio is 1 by construction, and a
+  calibrated 95% interval still excludes the truth in about one sample in
+  twenty. An exclusion therefore warrants inspecting the sampling unit, the
+  pairing, and the dependence between replicates, and one exclusion refutes
+  nothing on its own.
 - The thread quadruple resolves the CPU-side share of a prefill only where its
   interval clears unity. An interval spanning unity leaves the direction
   unresolved whatever the mean ratio reads.
@@ -40,26 +44,35 @@ and leaves the KV allocation alone. Means over the four `C` arms of each rung:
 Prefill falls 28.7% from 512 to 16384 and decode falls 26.8% over the same
 prompts, so a deep prompt costs the tail of its own turn as well as its fill.
 
-## The null control refutes the narrow interval
+## What the null control shows about the sampling unit
 
 At 512 the null quadruple reports `prompt_tok_s` at a mean ratio of 1.0007 with
-a 95% interval of [1.0003, 1.0011], which the summarizer reads as `above` unity.
-The two arms are one binary, one model, and one tuple, so the true ratio is 1
-and the interval excludes it. The falsifier above is met.
+a nominal 95% interval of [1.0003, 1.0011], which the summarizer reads as
+`above` unity. The two arms are one binary, one model, and one tuple, so the
+true ratio is 1 and this interval excludes it.
 
-The mechanism is the replicate count rather than the instrument: two replicates
-that agree to 0.007% produce an interval narrower than the between-arm scatter
-the same ladder shows elsewhere, and the 16384 thread quadruple shows that
-scatter directly -- its two `C` replicates read 35.40 and 33.29 tok/s, 6.0%
-apart, against two `T` replicates at 33.35 and 33.38 that agree to 0.09%. A
-prefill ladder interval built on two replicates therefore reports the agreement
-inside a pair rather than the agreement between pairs, exactly as this tree's
-decode campaigns record for `llama-bench` repetitions.
+One such exclusion is not a refutation of the interval. A calibrated 95%
+procedure excludes the truth in about one sample in twenty by construction, and
+a single null quadruple is one sample. What the exclusion warrants is inspection
+of the three things the procedure assumes: the sampling unit, the pairing, and
+the independence of the replicates within a pair.
 
-The consequence is a reading rule: at 512 the ladder resolves a real difference
-only above about 0.1%, and at 16384 the same construction leaves a 2.8% mean
-difference unresolved, so a prefill claim on this machine states the replicate
-count it rests on.
+The ladder's own arms bear on that inspection. The 16384 thread quadruple's two
+`C` replicates read 35.40 and 33.29 tok/s, 6.0% apart, while its two `T`
+replicates read 33.35 and 33.38 and agree to 0.09%; at 512 the null pair's two
+replicates agree to 0.007%. Replicates taken adjacently in one queue therefore
+vary far less than arms of the same construction taken further apart, so the two
+replicates inside a pair are not independent draws from the distribution that
+separates pairs. An interval computed from within-pair spread describes the
+sampling unit it was computed over -- adjacent replicates -- rather than the
+unit a binary or thread claim is about.
+
+That is a statement about which variance the procedure estimates, and it is
+consistent with what this tree already records for `llama-bench` repetitions,
+where repetitions inside one arm agree far more closely than an arm agrees with
+its own reverse. Separating the two variance components needs more quadruples
+than this run holds, so how wide a correctly-scoped interval would be is
+unmeasured here, and this record states no resolution floor.
 
 ## Threads
 
