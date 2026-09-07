@@ -84,6 +84,8 @@ The edit is left to the operator; this window changed no `execution_policy`.
 `run.log`, `browser-turn.json` (the page's own request log, transcript, and
 dialog), the search and fetch responses, the audit rows, the generated preset
 and profile copy, the launch, server, broker, instance, and teardown logs, and
-the instance's resident cost. The signing keys and the broker state directory
+the instance's resident cost. `weblookup/audit-rows.tsv` carries `<emoji>` where
+a third-party result title held one, the substitution convention the retained
+MAC addresses already take, since checked-in text is emoji-free. The signing keys and the broker state directory
 are excluded from the copy. Paths name `$HOME` and the host reads
 `qwen-laptop`.
