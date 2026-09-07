@@ -1,0 +1,23 @@
+profile_row	observed	model=qwen38-2b-distill context=32768 max_results=5 max_fetches=2 primary=qwen-open fallback=- minimum=1 url=http://127.0.0.1:8888
+ordinary_router_recorded	pass	running=0 server=3d5b158160b08cf8
+depth_claim	observed	context=32768 validated_filled_depth=32768 override=0
+preset_generated	pass	1 section
+preset_carries_search_policy	pass	url=http://127.0.0.1:8888 primary=qwen-open fallback=- minimum=1
+web_launch	pass	web_launch presets=/tmp/webreader/web-presets.ini unvalidated_depth_marker=absent authorizer_ready=1 bind=127.0.0.1 lan_exposure=0 lan_address=- lan_name=- lan_open=0;web_launch searxng=owned url=http://127.0.0.1:8888 port=8888;web_launch broker_port=8571 broker_state_dir=/tmp/webreader/web-mcp signing_key=configured profile=web-reader provider=searxng review_section=- models_max=1;web_launch static_path=$HOME/Github/qwen-apu/remote/../webui;web_launch exposure=loopback router=127.0.0.1:8080 broker=127.0.0.1:8571;
+api_key_minted	pass	mode=600 path=$HOME/Github/qwen-apu/.runtime/state/api.key
+searxng_child_recorded	pass	searxng_pid=3886495 start_time=84818430 port=8888
+searxng_listener_loopback	pass	127.0.0.1:8888,
+searxng_health	pass	status=200
+router_roster	pass	web-reader,
+tool_enumeration	pass	web_fetch_exa,web_search_exa, via http://127.0.0.1:8080
+session_secret_issued	pass	status=200
+grant_issued	pass	status=200 bytes=447
+search_executed	pass	results=5 sources=5 minimum=1 engines=bing, elapsed=2.607536s
+fetch_by_result_id	pass	chars=12347 elapsed=1.155102s
+audit_names_category_and_holds_no_query	pass	category=qwen-open rows=262
+browser_turn_completed	fail	TimeoutError: waited 600s for the approval dialog 
+searxng_cost	observed	after-browser-turn rss_kib=77064 peak_rss_kib=77064 threads=5 cpu_ticks=103 utc=2026-09-07T15:56:22Z
+secret_hygiene	pass	key, grant, and session secret absent from process images, logs, and status
+web_teardown	pass	torn down: no server, tmux session, probe, approval broker, image service, search instance, or router snapshot; port 8080 free
+absence_proved	pass	router, child, broker, search instance, secret, and all three ports
+ordinary_restore	pass	no ordinary router was running at admission start

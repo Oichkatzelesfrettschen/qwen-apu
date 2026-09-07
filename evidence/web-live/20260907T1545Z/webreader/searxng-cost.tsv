@@ -1,0 +1,4 @@
+before-queries	rss_kib=65672	peak_rss_kib=65796	threads=2	cpu_ticks=86	utc=2026-09-07T15:45:47Z
+after-search	rss_kib=77064	peak_rss_kib=77064	threads=5	cpu_ticks=97	utc=2026-09-07T15:45:52Z
+after-fetch	rss_kib=77064	peak_rss_kib=77064	threads=5	cpu_ticks=97	utc=2026-09-07T15:45:53Z
+after-browser-turn	rss_kib=77064	peak_rss_kib=77064	threads=5	cpu_ticks=103	utc=2026-09-07T15:56:22Z
