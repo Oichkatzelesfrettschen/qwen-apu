@@ -67,12 +67,12 @@ statement. It names `llama_cpp_commit=f280b26` and the build path
 the digest. A commit alone underdetermines the artifact: this tree's builds
 apply an ordered patch series over that same commit, and
 `remote/verify-llama-patch-series.sh` exists because the series rather than the
-commit decides the source. The manifest's `checkpoint_semantics` of `unknown` is
-the direct evidence that the series is unidentified --
-`remote/classify-checkpoint-semantics.sh` writes `natural-boundary-v1` only
-against source hashing to `3744317b...` and `forced-tail-v1` only against the
-pinned commit's own `a79cf9e1...`, and every other source reads `unknown`. This
-binary's source matched neither.
+commit decides the source. The manifest's `checkpoint_semantics` of `unknown`
+sits beside that and states less than it appears to: the file is hand-written
+rather than produced by `remote/classify-checkpoint-semantics.sh`, so the field
+records that no declaration was earned rather than a verdict that the source
+hashed to neither `3744317b...` nor `a79cf9e1...`. It is consistent with an
+unidentified series and measures nothing about the source.
 
 A rebuild from `f280b26` therefore reproduces neither the source nor the
 executable. Which patches it carried, in what order, under which compiler and

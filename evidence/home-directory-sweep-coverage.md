@@ -39,12 +39,15 @@ directory for all 126, beside the producer and storage columns.
 | --- | ---: | ---: | --- |
 | `campaigns/qwen-test-models` | 674.4 MiB over 109 digests | 59.0% | is the synthetic corpus regenerable |
 | `campaigns/qwen-frozen-binaries` | 55.1 MiB over 1 digest | 4.8% | is the frozen server recoverable by rebuild |
-| everything else | 413.4 MiB over 7,317 digests | 36.2% | -- |
+| everything else | 412.9 MiB over 7,292 digests | 36.2% | -- |
 
 Almost two thirds of the irreplaceable bytes reduce to two questions that were
-already registered rather than to a long tail. Both remain open here: this
-classification states what has no second copy and decides nothing about whether
-a copy is needed.
+already registered rather than to a long tail. Both are answered below and
+neither answer authorizes a removal: the synthetic corpus regenerates at
+different weights because its seed is gone, and the frozen server does not
+rebuild at all because no manifest records what produced it. What has no second
+copy is what this classification states; whether a copy is needed stays a
+decision.
 
 The remainder is dominated by kernel-census campaign directories at 29 to 59
 MiB each, whose raw dispatch records are the inputs behind
@@ -93,12 +96,12 @@ that decision needs.
 ## Coverage is split at its source
 
 `refresh-evidence-manifest.sh` enumerates through `git ls-files`, so
-`evidence/SHA256SUMS` names the 3.0 MiB retained under
+`evidence/SHA256SUMS` names the 3.2 MiB retained under
 `evidence/home-sweep-recovery/`, and a swept file whose bytes were copied there
 matches its own copy. Counting that as coverage answers "this was saved" where
 the question asked is "was this already saved": one is the result of an act
 taken after the sweep and the other is what the sweep found. `independent` and
-`recovered` therefore stay separate columns, and 229 files land in the second.
+`recovered` therefore stay separate columns, and 254 files land in the second.
 
 The split has to be written to hold. The reader's first form took the recovery
 prefix relative to `evidence/` where a manifest path is repository-relative, so
