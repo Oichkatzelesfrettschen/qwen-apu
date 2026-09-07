@@ -276,6 +276,9 @@ gate_cell test-admit-web-router-live derive \
     remote/test-admit-web-router-live.sh remote/test-admit-web-router-live.sh
 gate_cell test-qwen-lan-launch derive remote/test-qwen-lan-launch.sh \
     remote/test-qwen-lan-launch.sh
+gate_cell test-run-device-window derive \
+    'remote/test-run-device-window.sh remote/run-device-window.sh remote/qwen-home.sh remote/open-verified-lock-descriptor.py' \
+    remote/test-run-device-window.sh
 gate_cell test-prefix-checkpoint-key derive \
     'remote/test-prefix-checkpoint-key.sh remote/test-fixtures/prefix-checkpoint-key-probe.cpp patches/llama-server-prefix-checkpoint.patch' \
     remote/test-prefix-checkpoint-key.sh

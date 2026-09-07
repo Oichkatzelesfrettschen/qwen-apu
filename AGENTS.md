@@ -1705,6 +1705,36 @@ the symlink swap and refuses a rollback to a target the current policy cannot
 launch, since a rollback that leaves the appliance refusing every launch trades
 a wrong answer for an outage nobody chose.
 
+A maintenance command that needs the device idle -- a build, a fetch, a
+firmware read -- stops the running session first, and every path back out of
+that command has to bring the session back the same way it left. `run-device-window.sh`
+names that whole operation. It takes one exclusive advisory lock on
+`$QWEN_HOME/state/device-window.lock` through `open-verified-lock-descriptor.py`,
+the private-leaf construction `runtime-root.sh` applies to its own deletion
+lock, so a second window refuses rather than queuing behind the first: a
+queued window would tear the appliance down again while the first window's
+command is still using the idle device. It reads the running session's own
+`state=running` line for the relaunch profile -- `lan_boundary`,
+`lan_address`, `port`, and the Vulkan submission `profile` -- rather than
+taking one as an argument, so a window reproduces the launch it stopped
+without the caller repeating every decision that launch made. A
+`lan-open-approved` boundary was admitted only because the operator supplied
+`QWEN_WEB_LAN_TRUSTED_CONNECTIONS` naming a trusted NetworkManager connection,
+and that variable is a policy input rather than a session fact, so it carries
+no record on the status line; a window opened without it in its own
+environment relaunches `lan-authenticated` instead and records the
+substitution rather than silently narrowing the exposure it hands back. The
+window writes one ledger row per run under `$QWEN_HOME/results/device-windows/`
+naming the moment it opened, the relaunch command it derived, and the command
+it ran, then stops the session through `qwen-teardown.sh`, requiring its exit
+0 before the caller's command starts. An EXIT trap covering normal exit,
+failure, INT, and TERM alike relaunches through `qwen-lan-launch.sh` on every
+one of those paths, verifies the relaunched session's own `state=running` line
+and a `GET /health` against the address and port that line names, and appends
+the relaunch outcome to the ledger. The window's own exit status is the
+command's exit status, or 4 where the relaunch itself failed, so a caller
+reads device downtime off one number rather than off two scripts run by hand.
+
 ## LAN resource bounds
 
 An open household-LAN launch admits any reachable peer to chat, and the
@@ -1927,6 +1957,17 @@ QWEN_WEB_LAN_TRUSTED_CONNECTIONS=$(nmcli -t -f UUID,DEVICE connection show --act
 # folding it into the ordinary exposure line.
 remote/qwen-teardown.sh
 remote/qwen-webui-control.sh status
+
+# A named window in which the appliance stands torn down for a maintenance
+# command, bounded by an advisory lock that admits one window at a time and
+# an EXIT trap that relaunches the session on every path out of the window --
+# normal exit, a failing command, INT, and TERM alike. The relaunch profile
+# comes from the running session's own status line rather than from an
+# argument; a lan-open-approved boundary downgrades to lan-authenticated
+# where QWEN_WEB_LAN_TRUSTED_CONNECTIONS is absent from the window's own
+# environment, and the downgrade is recorded rather than silent.
+remote/run-device-window.sh NAME COMMAND [ARG...]
+remote/run-device-window.sh status
 
 # Select a checkpoint, a listener, and the inference core
 QWEN_MODEL_PATH=$HOME/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf \
@@ -2282,6 +2323,7 @@ remote/test-unified-router-launch.sh
 node remote/test-fallback-webui-mixed-roster.mjs
 node remote/test-fallback-webui-lan-bounds.mjs
 remote/test-qwen-web-launch.sh
+remote/test-run-device-window.sh
 remote/test-web-search-live.sh
 remote/test-image-registry.sh
 remote/test-qwen-image-launch.sh
