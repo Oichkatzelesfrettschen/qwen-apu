@@ -379,6 +379,17 @@ run_arm() {
     if ! baseline_served_tuple "$arm_directory" "$state_directory"; then
         arm_status=failed
         arm_reason=served_tuple
+    elif ! baseline_compare_tuple "$arm_directory/served-tuple.tsv" \
+        "$registry_context" "$registry_batch" "$registry_ubatch" \
+        "$registry_cache_k" "$registry_cache_v" "$registry_flash" \
+        "$ctx_checkpoints"; then
+        # Recording the served tuple beside the registry row states two claims
+        # and settles neither, so the arm requires them equal: a preset section,
+        # a cache override, or a validated-depth clamp that moved one of the
+        # seven fields serves a checkpoint the identity record does not describe,
+        # and the rate it produced belongs to that other tuple.
+        arm_status=failed
+        arm_reason=tuple_mismatch
     fi
     if [ "$arm_status" = completed ] && \
         ! baseline_first_token "$arm_directory" "$endpoint" "$ttft_body" "$api_key"; then

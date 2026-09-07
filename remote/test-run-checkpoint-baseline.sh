@@ -78,7 +78,20 @@ cp -- "$harness" "$scratch/run-checkpoint-baseline.sh"
 cp -- "$summarizer" "$scratch/summarize-checkpoint-baseline.py"
 chmod +x "$scratch/run-checkpoint-baseline.sh" "$scratch/summarize-checkpoint-baseline.py"
 
-model_file=$("$script_directory/model-registry.sh" id "$model_id" model_file)
+registry_field() {
+    "$script_directory/model-registry.sh" id "$model_id" "$1"
+}
+model_file=$(registry_field model_file)
+# The stub launcher writes the registry row's own tuple into the served argv,
+# since the arm compares the two and a fixture stating unrelated numbers would
+# exercise the projection while leaving the comparison unreached.
+tuple_context=$(registry_field context_default)
+tuple_batch=$(registry_field batch)
+tuple_ubatch=$(registry_field ubatch)
+tuple_cache_k=$(registry_field cache_type_k)
+tuple_cache_v=$(registry_field cache_type_v)
+tuple_flash=$(registry_field flash_attention)
+tuple_checkpoints=$("$script_directory/model-registry.sh" ctx-checkpoint "$model_id")
 model_path=$models_directory/$model_file
 mkdir -p "$(dirname -- "$model_path")"
 printf 'fixture checkpoint bytes\n' >"$model_path"
@@ -138,9 +151,11 @@ QWEN_FAKE_SERVER_STATE_DIRECTORY="\$state/fake-server" \\
 QWEN_FAKE_SERVER_TOKENS="\${QWEN_FIXTURE_TOKENS:-10 11 12 13 14 15 16 17}" \\
 QWEN_FAKE_SERVER_FIRST_TOKEN_DELAY_S=0.05 \\
     sh -c '"\$0" "\$@"; exit \$?' $fake_server \\
-    --port $serving_port --ctx-size 16384 --batch-size 128 \\
-    --ubatch-size 32 --cache-type-k f16 --cache-type-v f16 --flash-attn on \\
-    --ctx-checkpoints 2 >"\$state/server.log" 2>&1 &
+    --port $serving_port --ctx-size \${QWEN_FIXTURE_CONTEXT:-$tuple_context} \\
+    --batch-size $tuple_batch --ubatch-size $tuple_ubatch \\
+    --cache-type-k $tuple_cache_k --cache-type-v $tuple_cache_v \\
+    --flash-attn $tuple_flash --ctx-checkpoints $tuple_checkpoints \\
+    >"\$state/server.log" 2>&1 &
 server_pid=\$!
 printf '%s\n' "\$server_pid" >"\$state/server.pid"
 printf 'state=running server_pid=%s\n' "\$server_pid" >"\$state/session.status"
@@ -272,9 +287,9 @@ done
 # The tuple the summary rests on is the one the launched process ran under
 # rather than the registry row the policy read, so it is compared against the
 # argv the stub launcher gave the served process.
-if ! grep -qx 'context	16384' "$arm_directory/served-tuple.tsv" || \
-    ! grep -qx 'batch	128' "$arm_directory/served-tuple.tsv" || \
-    ! grep -qx 'ctx_checkpoints	2' "$arm_directory/served-tuple.tsv"; then
+if ! grep -qx "context	$tuple_context" "$arm_directory/served-tuple.tsv" || \
+    ! grep -qx "batch	$tuple_batch" "$arm_directory/served-tuple.tsv" || \
+    ! grep -qx "ctx_checkpoints	$tuple_checkpoints" "$arm_directory/served-tuple.tsv"; then
     printf 'the served tuple was not projected out of the process argv\n' >&2
     cat "$arm_directory/served-tuple.tsv" >&2
     exit 1
@@ -373,6 +388,18 @@ fi
 if ! grep -q 'clock_invariant' "$temporary_directory/no-sidecar/arms.tsv"; then
     printf 'the arm ledger named another reason for an unsampled arm\n' >&2
     cat "$temporary_directory/no-sidecar/arms.tsv" >&2
+    exit 1
+fi
+
+active_fixture=a_served_tuple_that_left_the_registry_row_fails_the_arm
+if QWEN_FIXTURE_CONTEXT=8192 run_harness "$temporary_directory/tuple-moved" \
+    QWEN_FIXTURE_CONTEXT=8192; then
+    printf 'the runner measured a server whose depth left the registry row\n' >&2
+    exit 1
+fi
+if ! grep -q 'tuple_mismatch' "$temporary_directory/tuple-moved/arms.tsv"; then
+    printf 'the arm ledger named another reason for a moved tuple\n' >&2
+    cat "$temporary_directory/tuple-moved/arms.tsv" >&2
     exit 1
 fi
 

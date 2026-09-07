@@ -39,7 +39,12 @@ the policy read. Each arm then writes `served-tuple.tsv` from the argv of the
 process the session recorded as `server_pid`, because
 `qwen-capacity-policy.sh` is what builds the tuple and the registry is its
 input: a preset section, a cache override, or a validated-depth bound would
-leave a registry read stating a tuple no process served.
+leave a registry read stating a tuple no process served. The seven fields are
+compared rather than recorded side by side -- context, batch, ubatch, both cache
+types, flash attention, and the checkpoint count, over the literals the registry
+states and `qwen-capacity-policy.sh` writes into the single-model argv -- and an
+arm whose served tuple left the row fails as `tuple_mismatch` naming the field
+that moved.
 
 The resolved checkpoint is held to `remote/model-artifacts.tsv` at preflight, so
 a file replaced, truncated, or re-fetched under a row that still resolves

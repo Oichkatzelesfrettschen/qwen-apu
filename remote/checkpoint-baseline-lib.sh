@@ -340,3 +340,39 @@ with open(output, "w", encoding="utf-8") as handle:
         handle.write(f"{name}\t{values[name]}\n")
 PY
 }
+
+# baseline_compare_tuple SERVED_TUPLE CONTEXT BATCH UBATCH CACHE_K CACHE_V \
+#     FLASH CTX_CHECKPOINTS
+#
+# The seven fields the registry states and qwen-capacity-policy.sh writes into
+# the single-model argv under the same spellings: `--flash-attn` carries the
+# registry's own `on` or `off` and the cache types carry the registry's own
+# names, so the comparison is over literals rather than over a normalization
+# that would admit two readings of one field. A difference names the field, the
+# served value, and the registry value, because a tuple that moved is read by
+# which field moved.
+baseline_compare_tuple() {
+    baseline_tuple_file=$1
+    shift
+    baseline_tuple_mismatch=0
+    baseline_tuple_names='context batch ubatch cache_type_k cache_type_v flash_attention ctx_checkpoints'
+    for baseline_tuple_name in $baseline_tuple_names; do
+        baseline_tuple_expected=$1
+        shift
+        baseline_tuple_served=$(awk -F'\t' -v name="$baseline_tuple_name" \
+            '$1 == name { count++; value = $2 }
+            END { if (count != 1) exit 1; print value }' "$baseline_tuple_file") || {
+            printf 'the served tuple record names %s other than once: %s\n' \
+                "$baseline_tuple_name" "$baseline_tuple_file" >&2
+            baseline_tuple_mismatch=1
+            continue
+        }
+        if [ "$baseline_tuple_served" != "$baseline_tuple_expected" ]; then
+            printf 'the served %s is %s where the registry row states %s\n' \
+                "$baseline_tuple_name" "$baseline_tuple_served" \
+                "$baseline_tuple_expected" >&2
+            baseline_tuple_mismatch=1
+        fi
+    done
+    [ "$baseline_tuple_mismatch" -eq 0 ]
+}
