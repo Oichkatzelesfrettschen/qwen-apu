@@ -70,11 +70,18 @@ models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
 envelope_snapshot=${QWEN_POWER_ENVELOPE_SNAPSHOT:-$state_directory/power-envelope-snapshot.tsv}
 cpu_cap_snapshot=${QWEN_CPU_FREQUENCY_CAP_SNAPSHOT:-$state_directory/cpu-frequency-cap-snapshot.tsv}
 cooldown_seconds=${QWEN_POWER_FACTORIAL_COOLDOWN_S:-30}
-# 2400 generated tokens is a margin over the 200 s STAPM/PPT averaging window
-# at every measured decode rate in CLAUDE.md's own class table (9.46 tok/s on
-# the fastest of them would still take 254 s); a slower checkpoint only widens
-# the margin.
+# The sustained arm exists to span the 200 s STAPM/PPT averaging window, and
+# a token count states a duration only against a rate. 2400 tokens clears that
+# window at 12 tok/s and falls short of it above them: the 0.8B class decodes
+# at 15 to 19 tok/s, where 2400 tokens is about 125 to 160 s. The count is
+# therefore a request rather than a proof, and the arm records the count it
+# ran so summarize-power-factorial.py divides it by that arm's own measured
+# rate and refuses a package receipt whose window the run did not span.
 sustained_generate_tokens=${QWEN_POWER_FACTORIAL_SUSTAINED_GENERATE:-2400}
+# The horizon the sustained arm must span, from the stock envelope's own
+# STAPM averaging window.
+sustained_window_seconds=${QWEN_POWER_FACTORIAL_SUSTAINED_WINDOW_S:-200}
+export QWEN_POWER_FACTORIAL_SUSTAINED_WINDOW_S=$sustained_window_seconds
 campaign_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 case $campaign_directory in

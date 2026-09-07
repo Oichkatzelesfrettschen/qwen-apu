@@ -301,6 +301,7 @@ if [ "$instrument" = served ]; then
         printf 'model_id\t%s\n' "$model_id"
         printf 'compute_state_profile\t%s\n' "$compute_state_profile"
         printf 'served_status\t%s\n' "$served_status"
+        printf 'generate_tokens\t%s\n' "$bench_generate"
         printf 'decode_tok_s\t%s\n' \
             "$(summary_field decode_tok_s "$inner_arm_directory/arm-summary.tsv")"
         printf 'package_watts\t%s\n' \

@@ -294,6 +294,9 @@ gate_cell test-read-package-energy derive remote/test-read-package-energy.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-read-package-energy.py'
 gate_cell test-summarize-power-envelope derive remote/test-summarize-power-envelope.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-power-envelope.py'
+gate_cell test-summarize-power-factorial derive \
+    'remote/test-summarize-power-factorial.py remote/summarize-power-factorial.py' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-power-factorial.py'
 gate_cell test-power-envelope derive remote/test-power-envelope.sh \
     remote/test-power-envelope.sh
 gate_cell test-cpu-frequency-cap derive remote/test-cpu-frequency-cap.sh \

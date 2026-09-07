@@ -93,7 +93,7 @@ promotes a candidate only where it clears a **one-sided 5% bound** against
 its own registered reference arm -- the bound CLAUDE.md's own E4-ladder rung
 7 (`run-served-binary-ab.sh`, mirrored C K K C quadruples) states for a
 mirrored, control-bracketed comparison on this machine. A candidate that
-decodes slower, or faster by less than 5%, reads `not_promoted`: the null
+decodes slower, or faster by less than 5%, reads `not_screened`: the null
 result the falsifier above predicts if the hypothesis is wrong.
 
 | Arm | Slot | Profile | Reference | Nice | CPU cap | FCLK | Package |
@@ -135,6 +135,24 @@ KV-cache warm state, no HTTP layer, no launch-chain monitor) is large enough
 to move the verdict, and the pair's own reading would need to be retracted.
 
 ## The sustained arm and the P4 telemetry gate
+
+A verdict from this campaign is a screening result. The comparison reads
+largely single arms, admits 20% drift between the two bracketing controls, and
+calls a point gain above 5% `screened`, which orders factors by promise
+without bounding confidence, so a factor that screens reaches the matched
+confirmation harness before production policy moves. A comparison whose
+candidate and reference were measured by different instruments reads
+`diagnostic` and promotes nothing, since the difference carries the instrument
+beside the factor. Retained outputs from before this reading keep the
+`promoted`/`not_promoted` words their own run wrote.
+
+The sustained arm's duration is measured rather than assumed. Its token count
+states a duration only against a rate: 2400 tokens clears the 200 s window at
+12 tok/s and falls short above it, so the 0.8B class at 15 to 19 tok/s runs
+about 125 to 160 s on the same count. The arm records the count it ran,
+`summarize-power-factorial.py` divides that by the arm's own measured rate,
+and a run under the window withholds P4 rather than reading a package receipt
+whose snapshots bracket part of the window.
 
 The stock envelope (STAPM 15 W / 200 s averaging window, PPT fast 25 W, PPT
 slow 20 W) is restored on the laptop and is the state every non-power arm in
