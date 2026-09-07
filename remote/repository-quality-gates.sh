@@ -117,8 +117,11 @@ gate_cell test-qwen-home derive \
     'remote/test-qwen-home.sh remote/qwen-home.sh remote/qwen_home.py' \
     remote/test-qwen-home.sh
 gate_cell test-runtime-root derive \
-    'remote/test-runtime-root.sh remote/runtime-root.sh remote/qwen-home.sh' \
+    'remote/test-runtime-root.sh remote/runtime-root.sh remote/qwen-home.sh remote/check-deletion-plan.sh remote/open-verified-lock-descriptor.py' \
     remote/test-runtime-root.sh
+gate_cell test-deletion-plan derive \
+    'remote/test-deletion-plan.sh remote/check-deletion-plan.sh remote/runtime-root.sh remote/qwen-home.sh remote/open-verified-lock-descriptor.py' \
+    remote/test-deletion-plan.sh
 gate_cell test-verify-models derive \
     'remote/test-verify-models.sh remote/verify-models.sh remote/qwen-home.sh' \
     remote/test-verify-models.sh

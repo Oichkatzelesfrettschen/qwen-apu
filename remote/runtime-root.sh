@@ -14,9 +14,16 @@ set -eu
 # and the transient system state a campaign writes and restores, classified
 # as declared, legacy-known, foreign, or transient-system-state and touched
 # by nothing. `uninstall` and `purge` remove the root only where the marker
-# proves the directory is one this script laid out, and `purge-legacy`
-# removes the enumerated predecessor paths and nothing else, under an
-# explicit opt-in.
+# proves the directory is one this script laid out and
+# `check-deletion-plan.sh` proves every object their selection holds
+# disposable, and `purge-legacy` removes the enumerated predecessor paths and
+# nothing else, under an explicit opt-in.
+#
+# The confirm each removal takes proves an operator meant to run the command.
+# The preflight answers the separate question of what the command selected: a
+# measurement acquisition or a deployment bundle that is unreviewed, held,
+# changed since its review, locked by a producer, or unmanaged refuses the
+# whole plan before the first sibling goes.
 #
 # The three verifications answer three different questions and fail for three
 # different reasons, so they are three actions rather than one. `verify-layout`
@@ -40,9 +47,11 @@ set -eu
 #   QWEN_DOCTOR_HOME             doctor reads this in place of $HOME (fixtures)
 #   QWEN_DOCTOR_SYSTEM_PREFIX    doctor prefixes absolute legacy paths (fixtures)
 #   QWEN_DOCTOR_ACCOUNT_LOOKUP   command that tests a legacy account (fixtures)
+#   QWEN_DELETION_JOURNAL        absolute path the removal records itself to,
+#                                required for purge and refused inside the root
 
 usage() {
-    sed -n '33,42p' "$0" >&2
+    sed -n '33,44p' "$0" >&2
     exit 2
 }
 
@@ -254,7 +263,7 @@ doctor_report() {
         for entry in "$qwen_home"/* "$qwen_home"/.[!.]*; do
             [ -e "$entry" ] || [ -L "$entry" ] || continue
             entry_name=${entry##*/}
-            case " $layout_directories manifest.tsv .qwen-runtime-root .gitkeep " in
+            case " $layout_directories manifest.tsv .qwen-runtime-root .deletion.lock .gitkeep " in
                 *" $entry_name "*) ;;
                 *) printf 'foreign\t%s\tunder the root and outside the layout\n' "$entry" ;;
             esac
@@ -309,7 +318,7 @@ verify_layout() {
     for entry in "$qwen_home"/* "$qwen_home"/.[!.]*; do
         [ -e "$entry" ] || [ -L "$entry" ] || continue
         entry_name=${entry##*/}
-        case " $layout_directories manifest.tsv .qwen-runtime-root .gitkeep " in
+        case " $layout_directories manifest.tsv .qwen-runtime-root .deletion.lock .gitkeep " in
             *" $entry_name "*) ;;
             *)
                 printf 'layout_foreign=%s\n' "$entry"
@@ -470,18 +479,142 @@ case $action in
                 "$qwen_home" "$qwen_tree_root" >&2
             exit 2
         fi
-        for entry in "$qwen_home"/* "$qwen_home"/.[!.]*; do
+        # The journal records what the removal did, so it lives where the
+        # removal cannot reach it. `state` survives uninstall and carries the
+        # default; purge removes `state` too, so it requires a path an
+        # operator names outside the root rather than writing the record of an
+        # operation into the bytes that operation destroys.
+        deletion_journal=${QWEN_DELETION_JOURNAL:-}
+        if [ "$action" = purge ] && [ -z "$deletion_journal" ]; then
+            printf 'purge removes %s whole, the state directory included; set QWEN_DELETION_JOURNAL to a path outside that root\n' \
+                "$qwen_home" >&2
+            exit 2
+        fi
+        [ -n "$deletion_journal" ] || deletion_journal=$qwen_home_state/deletion-journal.tsv
+        case $deletion_journal in
+            /*) ;;
+            *)
+                printf 'QWEN_DELETION_JOURNAL must be an absolute path: %s\n' "$deletion_journal" >&2
+                exit 2
+                ;;
+        esac
+        if [ "$action" = purge ]; then
+            journal_directory=$(CDPATH='' cd -- "$(dirname -- "$deletion_journal")" 2>/dev/null && pwd -P) || journal_directory=
+            if [ -z "$journal_directory" ]; then
+                printf 'the journal directory does not resolve: %s\n' "$deletion_journal" >&2
+                exit 2
+            fi
+            case $journal_directory in
+                "$qwen_home" | "$qwen_home"/*)
+                    printf 'the journal %s resolves inside %s, which purge removes; name a path outside that root\n' \
+                        "$deletion_journal" "$qwen_home" >&2
+                    exit 2
+                    ;;
+            esac
+        fi
+
+        # One exclusion covers the classification and the removal together. A
+        # plan verified by a process that then exits leaves the interval
+        # between the check and the act open to a producer that starts inside
+        # it, so the descriptor is opened before the plan runs and held until
+        # the last entry is gone. The helper refuses a symlink, a directory, a
+        # foreign owner, a multiply-linked leaf, and a group-writable mode,
+        # and carries descriptor 7 across the one exec.
+        deletion_lock_path=$qwen_home/.deletion.lock
+        case ${QWEN_DELETION_LOCK_DESCRIPTOR_INHERITED:-0} in
+            0)
+                QWEN_DELETION_LOCK_DESCRIPTOR_INHERITED=1
+                export QWEN_DELETION_LOCK_DESCRIPTOR_INHERITED
+                exec "$script_directory/open-verified-lock-descriptor.py" open \
+                    --normalize-legacy-mode "$deletion_lock_path" 7 "$0" "$action"
+                ;;
+            1)
+                "$script_directory/open-verified-lock-descriptor.py" verify "$deletion_lock_path" 7
+                ;;
+            *)
+                printf 'invalid deletion-lock inheritance marker: %s\n' \
+                    "$QWEN_DELETION_LOCK_DESCRIPTOR_INHERITED" >&2
+                exit 2
+                ;;
+        esac
+        flock -x 7
+
+        # The complete selection is classified before the first byte goes, so
+        # a plan holding one object it cannot prove disposable refuses whole
+        # and no sibling is removed while a protected object stands
+        # unresolved.
+        deletion_plan_report=$(mktemp "${TMPDIR:-/tmp}/deletion-preflight.XXXXXX")
+        if ! "$script_directory/check-deletion-plan.sh" plan "$action" >"$deletion_plan_report" 2>&1; then
+            cat "$deletion_plan_report" >&2
+            rm -f "$deletion_plan_report"
+            exit 1
+        fi
+        cat "$deletion_plan_report"
+        deletion_plan_identity=$(sed -n 's/.*plan_sha256=\([0-9a-f]*\).*/\1/p' "$deletion_plan_report" | head -n 1)
+
+        mkdir -p -- "$(dirname -- "$deletion_journal")"
+        printf 'field\tvalue\naction\t%s\nroot\t%s\nplan_sha256\t%s\nbegan_at\t%s\n' \
+            "$action" "$qwen_home" "$deletion_plan_identity" \
+            "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" >"$deletion_journal"
+
+        # The removal iterates the root-level rows of the plan it just read
+        # rather than taking a second reading of the root, so an entry that
+        # appeared after the classification is outside what this loop can
+        # reach instead of being removed unclassified. A row whose path lies
+        # directly under the root is one such entry; the expanded acquisition
+        # and deployment rows below them are covered by their container.
+        deletion_entries=$(mktemp "${TMPDIR:-/tmp}/deletion-entries.XXXXXX")
+        awk -F'\t' -v root="$qwen_home/" '
+            NR > 1 && index($4, root) == 1 {
+                relative = substr($4, length(root) + 1)
+                if (relative !~ /\//) { print $4 }
+            }
+        ' "$deletion_plan_report" | LC_ALL=C sort -u >"$deletion_entries"
+
+        deletion_incomplete=0
+        while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
             [ -e "$entry" ] || [ -L "$entry" ] || continue
             entry_name=${entry##*/}
             case $entry_name in
-                .gitkeep) continue ;;
                 state | models)
-                    [ "$action" = purge ] || { printf 'kept %s\n' "$entry"; continue; }
+                    if [ "$action" != purge ]; then
+                        printf 'kept %s\n' "$entry"
+                        printf 'kept\t%s\n' "$entry" >>"$deletion_journal"
+                        continue
+                    fi
                     ;;
             esac
-            rm -rf -- "$entry"
+            rm -rf -- "$entry" 2>/dev/null || true
+            if [ -e "$entry" ] || [ -L "$entry" ]; then
+                # A sequence of removals is one sequence rather than one
+                # transaction, and bytes already gone do not return. The
+                # journal states where the run stopped and what still stands
+                # rather than reporting a success the tree does not hold.
+                printf 'residue\t%s\n' "$entry" >>"$deletion_journal"
+                printf 'residue %s\n' "$entry" >&2
+                deletion_incomplete=1
+                break
+            fi
             printf 'removed %s\n' "$entry"
-        done
+            printf 'removed\t%s\n' "$entry" >>"$deletion_journal"
+        done <"$deletion_entries"
+        rm -f "$deletion_entries" "$deletion_plan_report"
+        # The exclusion leaf stays out of the plan so its creation cannot move
+        # the plan identity, so purge removes it here rather than leaving the
+        # one entry behind in a root it emptied. The descriptor this shell
+        # holds outlives the name.
+        [ "$action" != purge ] || rm -f "$deletion_lock_path"
+        deletion_state=complete
+        [ "$deletion_incomplete" -eq 0 ] || deletion_state=incomplete
+        printf 'ended_at\t%s\njournal\t%s\n' \
+            "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$deletion_state" >>"$deletion_journal"
+        printf 'deletion_journal=%s state=%s\n' "$deletion_journal" "$deletion_state"
+        if [ "$deletion_incomplete" -ne 0 ]; then
+            printf '%s stopped part way; %s names what was removed and what stands\n' \
+                "$action" "$deletion_journal" >&2
+            exit 1
+        fi
         if [ "$action" = uninstall ]; then
             write_marker
         fi
