@@ -1,0 +1,4 @@
+artifact	sha256	bytes
+sweep-inventory/sha256.txt.gz	b4c818706c6f18f835434e2a156a199bb067d7886a32a3fa97770fe3f89e8917	615432
+sweep-inventory/nodes.tsv.gz	52cd0a13d18a8e2d55476fbf65315b791ad726a7ab6ea99c27f8173cc4485988	127081
+sweep-inventory/MANIFEST.tsv	53aff4425aef2e0f6bc50472a05564f705143b6cb1ff16c08fc1cbf2ec9543f1	8862
