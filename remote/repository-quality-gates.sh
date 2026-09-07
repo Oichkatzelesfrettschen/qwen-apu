@@ -349,6 +349,12 @@ gate_cell test-qwen-image-launch derive remote/test-qwen-image-launch.sh \
     remote/test-qwen-image-launch.sh
 gate_cell test-check-runtime-tree derive remote/test-check-runtime-tree.sh \
     remote/test-check-runtime-tree.sh
+gate_cell test-installer-prefix-resolution derive \
+    'remote/test-installer-prefix-resolution.sh remote/qwen-home.sh remote/fetch-shaderc-toolchain.sh remote/build-spirv-shader-pack.sh remote/install-yacy.sh remote/shaderc-toolchain.tsv' \
+    remote/test-installer-prefix-resolution.sh
+gate_cell test-run-repository-gate derive \
+    'remote/test-run-repository-gate.sh remote/run-repository-gate.sh' \
+    remote/test-run-repository-gate.sh
 gate_cell test-prepare-llama-vulkan-source derive \
     remote/test-prepare-llama-vulkan-source.sh \
     remote/test-prepare-llama-vulkan-source.sh

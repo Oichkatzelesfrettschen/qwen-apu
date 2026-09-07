@@ -13,8 +13,10 @@ set -eu
 # rather than read from the publisher is a fabricated pin.
 #
 # usage: fetch-shaderc-toolchain.sh [PREFIX_ROOT]
-#   PREFIX_ROOT   directory the prefix is created under, default ~/opt or
-#                 QWEN_SHADERC_PREFIX_ROOT. build-spirv-shader-pack.sh resolves
+#   PREFIX_ROOT   directory the prefix is created under, default
+#                 QWEN_SHADERC_PREFIX_ROOT or the runtime root's own
+#                 `opt/shaderc`, which qwen-home.sh names as
+#                 `qwen_home_shaderc_root`. build-spirv-shader-pack.sh resolves
 #                 its own default compiler through the same variable and the
 #                 same ledger row, so the two agree on where the fetch put it.
 

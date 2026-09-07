@@ -1,5 +1,11 @@
 # CLAUDE.md
 
+> This file is a frozen copy of the repository doctrine as it stood when the
+> lane it belongs to was cut, retained so a lane's own reading of the rules
+> stays readable beside its diff. It is superseded: `AGENTS.md` at the tree
+> root is the authority, and the paths below name a runtime layout the
+> declared runtime root replaced. Run nothing from this copy.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with
 code in this repository.
 
