@@ -140,6 +140,22 @@ while [ "$count" -lt "${FAKE_MUL_LO:-0}" ]; do
     printf 'v_mul_lo_u32 v0, v1, v2\n' >>"$output_directory/isa/002.s"
     count=$((count + 1))
 done
+# The family's second reduction variant expands the same products under another
+# reduction, which is the listing that makes the shape selection non-unique.
+if [ -n "${FAKE_SECOND_VARIANT_ADD3:-}" ]; then
+    : >"$output_directory/isa/003.s"
+    count=0
+    while [ "$count" -lt "${FAKE_MUL24:-224}" ]; do
+        printf 'v_mul_i32_i24_sdwa v0, v1, v2 src0_sel:BYTE_0 src1_sel:BYTE_0\n' \
+            >>"$output_directory/isa/003.s"
+        count=$((count + 1))
+    done
+    count=0
+    while [ "$count" -lt "$FAKE_SECOND_VARIANT_ADD3" ]; do
+        printf 'v_add3_u32 v0, v1, v2\n' >>"$output_directory/isa/003.s"
+        count=$((count + 1))
+    done
+fi
 COLLECTOR
 chmod 0755 "$collector"
 
@@ -161,6 +177,7 @@ run_subject() {
     FAKE_ADD3=${FAKE_ADD3:-140} \
     FAKE_MUL_LO=${FAKE_MUL_LO:-0} \
     FAKE_DECOY_PIPELINE=${FAKE_DECOY_PIPELINE:-} \
+    FAKE_SECOND_VARIANT_ADD3=${FAKE_SECOND_VARIANT_ADD3:-} \
         "$subject" "$out" "$server" "$model" "${1:-$prefix}" \
         >"$work_root/out.log" 2>&1 || status=$?
     printf '%s' "$status"
@@ -231,6 +248,30 @@ status=$(FAKE_ADD3=98 run_subject out-generic)
 report "$status" 'the generic lowering exits 0'
 report "$(grep -q 'aco_lowering=generic' "$work_root/out.log" && echo 0 || echo 1)" \
     'the generic lowering is named rather than refuted'
+
+# One candidate row is the unique match, and the verdict says so.
+report "$(grep -qx 'aco_candidate_rows	1' "$work_root/out-accepted/verdict.tsv" && echo 0 || echo 1)" \
+    'a unique expansion records one candidate row'
+
+# A second listing carrying the same 224 products under the same reduction
+# leaves the lowering determined, since the candidates agree.
+status=$(FAKE_SECOND_VARIANT_ADD3=140 run_subject out-agreeing-variants)
+report "$status" 'two agreeing expansion candidates exit 0'
+report "$(grep -qx 'aco_candidate_rows	2' "$work_root/out-agreeing-variants/verdict.tsv" && echo 0 || echo 1)" \
+    'both agreeing candidates are counted'
+report "$(grep -qx 'aco_lowering	mr2115' "$work_root/out-agreeing-variants/verdict.tsv" && echo 0 || echo 1)" \
+    'agreeing candidates read the lowering they share'
+
+# Two candidates disagreeing on the reduction leave it undetermined, because
+# RADV's dump carries no pipeline name to select the executed one by.
+status=$(FAKE_SECOND_VARIANT_ADD3=98 run_subject out-ambiguous-variants)
+report "$status" 'two disagreeing expansion candidates still exit 0'
+report "$(grep -qx 'aco_lowering	ambiguous' "$work_root/out-ambiguous-variants/verdict.tsv" && echo 0 || echo 1)" \
+    'disagreeing candidates read the lowering as ambiguous'
+report "$(grep -qx 'aco_candidate_reductions	2' "$work_root/out-ambiguous-variants/verdict.tsv" && echo 0 || echo 1)" \
+    'the distinct reduction count is recorded'
+report "$(grep -qx 'module_identity	proven' "$work_root/out-ambiguous-variants/verdict.tsv" && echo 0 || echo 1)" \
+    'an ambiguous lowering leaves module identity proven'
 
 # An absent q8_1 pipeline ends the rung as a completed negative.
 status=$(FAKE_PIPELINE='' run_subject out-no-pipeline)
