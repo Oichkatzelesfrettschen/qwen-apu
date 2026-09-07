@@ -54,6 +54,7 @@ remote/signal-process-group.py
 remote/test-signal-process-group.py
 remote/summarize-fixed64-served-campaign.py
 remote/test-summarize-fixed64-served-campaign.py
+remote/summarize-checkpoint-baseline.py
 remote/test-verify-external-vulkan-lease.py
 remote/verify-external-vulkan-lease.py
 remote/summarize-stage-timing.py
@@ -336,6 +337,9 @@ gate_cell sweep-coverage-current derive \
     'python3 remote/classify-sweep-coverage.py --check'
 gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
     remote/test-run-served-binary-ab.sh
+gate_cell test-run-checkpoint-baseline derive \
+    'remote/test-run-checkpoint-baseline.sh remote/run-checkpoint-baseline.sh remote/checkpoint-baseline-lib.sh remote/summarize-checkpoint-baseline.py remote/test-fixtures/fake-llama-server.sh' \
+    remote/test-run-checkpoint-baseline.sh
 gate_cell test-run-kernel-delta-witness derive remote/test-run-kernel-delta-witness.sh \
     remote/test-run-kernel-delta-witness.sh
 gate_cell test-receipt-diff derive remote/raven2-shader-lab/test-receipt-diff.sh \
