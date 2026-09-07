@@ -1,0 +1,5 @@
+[41743] 0.03.287.911 I cmn  common_init_: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+[41743] 0.03.657.163 I srv  workload_lea: vulkan workload lease armed: path=$HOME/Github/qwen-apu/.runtime/state/vulkan-workload.lock
+[41743] 0.03.671.947 I srv  workload_lea: vulkan workload lease acquired: path=$HOME/Github/qwen-apu/.runtime/state/vulkan-workload.lock waited_ms=0
+[41743] 0.05.010.740 I slot      release: id  0 | task 0 | stop processing: n_tokens = 20, truncated = 0
+[41743] 0.05.010.799 I srv  workload_lea: vulkan workload lease released: path=$HOME/Github/qwen-apu/.runtime/state/vulkan-workload.lock
