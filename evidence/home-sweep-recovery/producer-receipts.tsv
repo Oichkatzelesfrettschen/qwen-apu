@@ -1,0 +1,20 @@
+directory	receipt_path	evidence	derived_role
+campaigns/bundle-router-regression-20260901T2054Z	campaigns/bundle-router-regression-20260901T2054Z/emergency-bundle-manifest.tsv	-	unknown
+campaigns/bundle-router-regression-20260901T2054Z	campaigns/bundle-router-regression-20260901T2054Z/natural-bundle-manifest.tsv	-	unknown
+campaigns/bundle-router-regression-20260901T2055Z	campaigns/bundle-router-regression-20260901T2055Z/emergency-bundle-manifest.tsv	-	unknown
+campaigns/bundle-router-regression-20260901T2055Z	campaigns/bundle-router-regression-20260901T2055Z/natural-bundle-manifest.tsv	-	unknown
+campaigns/bundle-router-regression-20260901T2255Z	campaigns/bundle-router-regression-20260901T2255Z/emergency-bundle-manifest.tsv	-	unknown
+campaigns/bundle-router-regression-20260901T2255Z	campaigns/bundle-router-regression-20260901T2255Z/natural-bundle-manifest.tsv	-	unknown
+campaigns/bundle-router-regression-20260901T2352Z	campaigns/bundle-router-regression-20260901T2352Z/emergency-bundle-manifest.tsv	-	unknown
+campaigns/bundle-router-regression-20260901T2352Z	campaigns/bundle-router-regression-20260901T2352Z/natural-bundle-manifest.tsv	-	unknown
+campaigns/e1-lab-20260902	campaigns/e1-lab-20260902/e4-candidate-nsh/receipt.tsv	RADV RAVEN2	raven2-appliance
+campaigns/e1-lab-20260902	campaigns/e1-lab-20260902/e4-candidate-shmem/receipt.tsv	RADV RAVEN2	raven2-appliance
+campaigns/e1-lab-20260902	campaigns/e1-lab-20260902/e4-control-nsh/receipt.tsv	RADV RAVEN2	raven2-appliance
+campaigns/e1-lab-20260902	campaigns/e1-lab-20260902/e4-control-shmem/receipt.tsv	RADV RAVEN2	raven2-appliance
+campaigns/e1-lab-20260902	campaigns/e1-lab-20260902/q4k-exec-rerun/receipt.tsv	RADV RAVEN2	raven2-appliance
+campaigns/e1-lab-20260902	campaigns/e1-lab-20260902/q4k-exec/receipt.tsv	RADV RAVEN2	raven2-appliance
+campaigns/e1-lab-20260902	campaigns/e1-lab-20260902/q6k-exec/receipt.tsv	RADV RAVEN2	raven2-appliance
+campaigns/evidence-out	campaigns/evidence-out/promotion-natural-boundary/artifact-manifest-head.tsv	-	unknown
+campaigns/fixed64-scoreboard-20260901T1810Z	campaigns/fixed64-scoreboard-20260901T1810Z/campaign-inputs.tsv	qwen-laptop	raven2-appliance
+campaigns/fixed64-scoreboard-20260901T1930Z	campaigns/fixed64-scoreboard-20260901T1930Z/campaign-inputs.tsv	qwen-laptop	raven2-appliance
+campaigns/raven2-kernel-census-20260902T0035Z-2b-calibration	campaigns/raven2-kernel-census-20260902T0035Z-2b-calibration/campaign-inputs.tsv	qwen-laptop	raven2-appliance

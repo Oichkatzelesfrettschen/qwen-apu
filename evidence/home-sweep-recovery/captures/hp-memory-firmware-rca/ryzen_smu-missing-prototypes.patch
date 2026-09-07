@@ -1,0 +1,38 @@
+--- /tmp/ryzen_smu-upstream/smu.c	2021-12-05 09:30:14.000000000 -0800
++++ /tmp/ryzen_smu-master/smu.c	2026-08-26 15:32:08.306216284 -0700
+@@ -64,7 +64,7 @@
+ static DEFINE_MUTEX(amd_pci_mutex);
+ static DEFINE_MUTEX(amd_smu_mutex);
+ 
+-int smu_smn_rw_address(struct pci_dev* dev, u32 address, u32* value, int write) {
++static int smu_smn_rw_address(struct pci_dev* dev, u32 address, u32* value, int write) {
+     int err;
+ 
+     // This may work differently for multi-NUMA systems.
+@@ -206,7 +206,7 @@
+     return SMU_Return_OK;
+ }
+ 
+-int smu_resolve_cpu_class(struct pci_dev* dev) {
++static int smu_resolve_cpu_class(struct pci_dev* dev) {
+     u32 cpuid, cpu_family, cpu_model, stepping, pkg_type;
+ 
+     // https://en.wikichip.org/wiki/amd/cpuid
+@@ -444,7 +444,7 @@
+     return g_smu.mp1_if_ver;
+ }
+ 
+-u64 smu_get_dram_base_address(struct pci_dev* dev) {
++static u64 smu_get_dram_base_address(struct pci_dev* dev) {
+     u32 fn[3], ret, parts[2];
+     smu_req_args_t args;
+ 
+@@ -612,7 +612,7 @@
+     return ret;
+ }
+ 
+-u32 smu_update_pmtable_size(u32 version) {
++static u32 smu_update_pmtable_size(u32 version) {
+     // These sizes are actually accurate and not just "guessed".
+     // Source: Ryzen Master.
+     switch (g_smu.codename) {

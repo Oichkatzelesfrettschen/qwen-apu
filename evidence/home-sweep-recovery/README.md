@@ -72,6 +72,29 @@ in the five production-series acquisitions and
 candidate alone, so the candidate arm swaps exactly one module against the
 series and the other twenty-seven are the same bytes compiled again.
 
+## The memory and firmware captures
+
+`captures/` holds 25 files at 442 KiB that the file-level coverage join read as
+existing in one place: the 18 top-level nodes of the HP memory and firmware
+root-cause acquisition, including both SPD EEPROM images, and seven of the GPU
+decomposition, including `raven2-vbios.rom` and the five per-target ISA
+disassemblies. Every source digest was verified against `sweep-inventory/`
+before the copy. `remote/sanitize-capture.py` performed each one under the same
+three substitutions `retain-acquisition.sh` applies and records
+`sanitizer_sha256` beside the two content digests, so a retained record binds
+its substitutions to the reader that made them. The three binary artifacts pass
+through byte-for-byte, since substituting inside a register dump or a ROM image
+corrupts the artifact its digest identifies.
+
+## What wrote each acquisition
+
+`producer-receipts.tsv` carries one row per receipt read inside a directory the
+artifact-marker rule left unattributed, its matched token, and the role that
+token derives. It records the silent receipts too, because a receipt opened and
+found to name no machine is a result. `classify-sweep-coverage.py` folds it into
+`producer_role` without inferring from location, and a directory whose marker
+and whose receipt disagree reads `mixed` rather than either.
+
 ## The sweep's own inventory
 
 `sweep-inventory/` holds the per-file population the retention join was
@@ -121,9 +144,14 @@ rather than a finding about disposability.
 `qwen-frozen-binaries` holds one `llama-server` byte-identical to
 `deployments/emergency-forced-tail-40f7b775/llama-server` and its `-r2`. That
 establishes duplication and not recoverability: all three copies live under the
-same runtime root, which `uninstall` and `purge` both clear, so an
-independently recoverable historical control stands before the sweep copy is
-authorized for removal.
+same runtime root, which `uninstall` and `purge` both clear.
+`frozen-binary-control.md` answers the recoverability question and answers it
+no. No artifact manifest in the tree or on the appliance names that binary's
+digest beside a commit, a patch series digest, and compiler and CMake flags; the
+two that name it at all are the deployment bundle's own two-row records, and
+`frozen-binary/artifact-manifest.tsv` retains one of them verbatim at the
+`81c73bbb...` three committed bundle manifests bind. The directory stays because
+the artifact cannot be rebuilt rather than pending a check of whether it can.
 
 The 96 partly covered directories are classified per directory and not per
 file. Each needs its unmatched files given a disposition, and a verified
