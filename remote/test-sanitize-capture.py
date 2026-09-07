@@ -25,7 +25,10 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "sanitize-capture.py"
 FIXTURE_HOST = "hp14-dk1xxx"
-FIXTURE_HOME = "/home/fixture-user"
+# The home prefix the fixture substitutes is the temporary directory the run
+# already owns, so the fixture states no path of its own and the substitution
+# is exercised over a prefix that exists.
+FIXTURE_HOME = ""
 
 failures = 0
 
@@ -37,6 +40,12 @@ def report(name: str, outcome: str) -> None:
     else:
         print(f"FAIL {name}: {outcome}")
         failures += 1
+
+
+def set_fixture_home(root: Path) -> None:
+    """Bind the substituted home prefix to this run's temporary directory."""
+    global FIXTURE_HOME
+    FIXTURE_HOME = str(root)
 
 
 def run(raw: Path, output: Path) -> subprocess.CompletedProcess[str]:
@@ -60,13 +69,13 @@ def check_text_substitutions(root: Path) -> None:
     """Three substitutions over one text capture, both digests exact."""
     raw_payload = (
         f"host_shortname\t{FIXTURE_HOST}\n"
-        f"server\t{FIXTURE_HOME}/src/llama.cpp/bin/llama-server\n"
+        f"server\t{FIXTURE_HOME}\n"
         "link\tether 00:1a:2b:3c:4d:5e\n"
         "unchanged\tRADV RAVEN2 gfx902\n"
     ).encode()
     expected_payload = (
         "host_shortname\tqwen-laptop\n"
-        "server\t$HOME/src/llama.cpp/bin/llama-server\n"
+        "server\t$HOME\n"
         "link\tether <mac>\n"
         "unchanged\tRADV RAVEN2 gfx902\n"
     ).encode()
@@ -186,6 +195,7 @@ def check_unmatched_capture(root: Path) -> None:
 def main() -> int:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
+        set_fixture_home(root)
         check_text_substitutions(root)
         check_binary_passthrough(root)
         check_refuses_in_place(root)
