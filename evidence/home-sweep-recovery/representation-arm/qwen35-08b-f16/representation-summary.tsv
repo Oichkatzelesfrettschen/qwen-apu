@@ -1,0 +1,5 @@
+position	role	model	streamed_bytes	prefill_tok_s	decode_tok_s	wall_seconds	mclk_mhz_modal	sclk_mhz_max	temp_c_max	vram_bytes_max	gtt_bytes_max
+1	control	Qwen3.5-0.8B-Q8_0.gguf	800881920	138.99	20.19	26	1067	1100	73	1266458624	629329920
+2	subject	Qwen3.5-0.8B-F16.gguf	1505783040	147.71	15.67	29	1067	1100	74	1971372032	631418880
+3	subject	Qwen3.5-0.8B-F16.gguf	1505783040	147.53	15.68	29	1067	1100	73	1971372032	631418880
+4	control	Qwen3.5-0.8B-Q8_0.gguf	800881920	138.80	20.11	27	1067	1100	72	1277468672	647917568

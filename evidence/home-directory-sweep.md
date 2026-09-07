@@ -40,9 +40,12 @@ over 109 files. A reclamation figure taken from this sweep is therefore
 1.31 GiB of disk against 1.26 GiB of content, and the difference is block
 overhead rather than a compression or hard-link saving.
 
-Content repeats inside the sweep. The 17,607 files carry 10,702 distinct
-SHA-256 digests, so 6,906 files duplicate an earlier one and 96.52 MiB of the
-1293.77 MiB is a second copy of something already present.
+Content repeats inside the sweep, and the count states its population.
+`MANIFEST.tsv` carries a digest no other file matches, so it moves the file
+count and the distinct-digest count together: 17,608 files over 10,702
+distinct digests, and the 17,607 the manifest itself describes over 10,701.
+Either reading leaves 6,906 files duplicating an earlier one and 96.52 MiB of
+the 1293.77 MiB a second copy of something already present.
 
 ## What committed evidence already holds
 
@@ -152,7 +155,11 @@ transcript and has no counterpart under `remote/`.
 
 Promoting any of these into `evidence/` is a separate decision per directory,
 and this record exists so that decision reads from a measurement rather than
-from a directory listing.
+from a directory listing. `evidence/home-sweep-recovery/` carries the first
+of those decisions: both named gaps, the 29 executed SPIR-V modules the E1
+receipts identify by digest and no committed file held, the sweep's own
+per-file inventory, and the loose analysis script, each with the
+transformation record `remote/retain-acquisition.sh` wrote beside it.
 
 ## The sweep now sits inside a deletion boundary
 
