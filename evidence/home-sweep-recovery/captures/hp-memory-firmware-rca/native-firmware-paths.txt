@@ -1,0 +1,641 @@
+2026-08-26T22:37:22Z
+
+PROBE fwupdmgr-version
+Idle…: 0%
+compile   info.libusb                   1.0.27
+compile   com.hughsie.libxmlb           0.3.24
+compile   com.hughsie.libjcat           0.2.3
+compile   org.freedesktop.fwupd         2.0.20
+runtime   org.freedesktop.fwupd-efi     1.4
+runtime   com.hughsie.libxmlb           0.3.24
+runtime   com.hughsie.libjcat           0.2.3
+runtime   org.kernel                    7.0.0-28-generic
+runtime   org.freedesktop.fwupd         2.0.20
+
+PROBE_STATUS fwupdmgr-version 0
+
+PROBE fwupdmgr-remotes
+Idle…: 0%
+HP HP Laptop 14-dk1xxx
+│
+├─  Remote ID:          vendor-directory
+│     Type:               directory
+│     Enabled:            true
+│     Priority:           1000
+│     Filename:           /usr/share/fwupd/remotes.d/vendor/firmware
+│     Filename Signature: /usr/share/fwupd/remotes.d/vendor/firmware.jcat
+│     Filename Source:    /etc/fwupd/remotes.d/vendor-directory.conf
+│   
+├─  Remote ID:          lvfs-testing
+│     Type:               download
+│     Enabled:            false
+│     P2P Metadata:       true
+│     P2P Firmware:       false
+│     Refresh Interval:   24 hours
+│     Priority:           1
+│     Filename:           /var/lib/fwupd/metadata/lvfs-testing/firmware.xml.zst
+│     Filename Signature: /var/lib/fwupd/metadata/lvfs-testing/firmware.xml.zst.jcat
+│     Filename Source:    /etc/fwupd/remotes.d/lvfs-testing.conf
+│     Metadata URI:       https://cdn.fwupd.org/downloads/firmware-testing.xml.zst
+│     Metadata Signature: https://cdn.fwupd.org/downloads/firmware-testing.xml.zst.jcat
+│     Firmware Base URI:  https://fwupd.org/downloads
+│     Report URI:         https://fwupd.org/lvfs/firmware/report
+│     Automatic Reporting: false
+│   
+└─  Remote ID:          lvfs
+      Type:               download
+      Enabled:            true
+      P2P Metadata:       true
+      P2P Firmware:       false
+      Checksum:           8854c2ff1776c9f3a8258318e8ad2b715da22d321d238ec0eb1995b607cfc8a1
+      Age:                5 hours
+      Refresh Interval:   24 hours
+      Filename:           /var/lib/fwupd/metadata/lvfs/firmware.xml.zst
+      Filename Signature: /var/lib/fwupd/metadata/lvfs/firmware.xml.zst.jcat
+      Filename Source:    /etc/fwupd/remotes.d/lvfs.conf
+      Metadata URI:       https://cdn.fwupd.org/downloads/firmware.xml.zst
+      Metadata Signature: https://cdn.fwupd.org/downloads/firmware.xml.zst.jcat
+      Firmware Base URI:  https://fwupd.org/downloads
+      Report URI:         https://fwupd.org/lvfs/firmware/report
+      Automatic Reporting: false
+    
+PROBE_STATUS fwupdmgr-remotes 0
+
+PROBE fwupdmgr-devices
+Idle…: 0%
+HP HP Laptop 14-dk1xxx
+│
+├─0708:00 04F3:30A0:
+│     Device ID:          8a9dafb0f7946f6ea36040214e49a75256ddaa26
+│     Current version:    0x0001
+│     Bootloader Version: 0x0000
+│     Vendor:             Elan (HIDRAW:0x04F3)
+│     GUIDs:              04b4645a-a5d7-58cf-a407-80955f1aef3a ← HIDRAW\VEN_04F3&DEV_30A0
+│                         fce9c013-980d-5d83-83c9-0ae5ad238249 ← HIDRAW\VEN_04F3&DEV_30A0&MOD_00B8
+│                         7c13d6c8-d1b7-5178-8178-fe6b5da4e3f5 ← ELANTP\ICTYPE_0D&MOD_00B8
+│                         80dfa690-bd3f-5252-9202-4e53a82bd6c4 ← ELANTP\ICTYPE_0D&MOD_00B8&DRIVER_HID
+│     Device Flags:       • Internal device
+│                         • Updatable
+│                         • Unsigned Payload
+│                         • Can tag for emulation
+│   
+├─Athlon Silver 3050U with Radeon Graphics:
+│ │   Device ID:          4bde70ba4e39b28f9eab1628f9dd6e6244c03027
+│ │   Current version:    0x08108109
+│ │   Vendor:             AMD
+│ │   GUIDs:              38cd08d3-c885-5730-bff8-fdf71774a4a2 ← CPUID\PRO_0&FAM_17&MOD_18
+│ │                       cbe5ceff-2b79-5935-9e79-ad728587b62f ← CPUID\PRO_0&FAM_17&MOD_18&STP_1
+│ │   Device Flags:       • Internal device
+│ │ 
+│ ├─Radeon Graphics:
+│ │     Device ID:        04e17fcf7d3de91da49a163ffe4907855c3648be
+│ │     Summary:          Raven2 Generic VBIOS
+│ │     Current version:  117
+│ │     Vendor:           AMD (PCI:0x1002)
+│ │     GUID:             da9f9e01-b69c-5a94-b7a0-faded1568b7b ← AMD\113-RAVEN2
+│ │     Device Flags:     • Internal device
+│ │                       • Can tag for emulation
+│ │   
+│ └─Secure Processor:
+│       Device ID:        c54ab0237d7a8db8c717b68e0be78e4374a2a079
+│       Current version:  00.08.00.8a
+│       Bootloader Version: 00.08.00.8a
+│       Vendor:           AMD (PCI:0x1022)
+│       GUID:             0e8dc554-a0a2-51fb-b439-1eb72b14ec38 ← PCI\VEN_1022&DEV_15DF
+│       Device Flags:     • Internal device
+│                         • Can tag for emulation
+│     
+├─SSD 970 EVO Plus 2TB:
+│     Device ID:          71b677ca0f1bc2c5b804fa1d59e52064ce589293
+│     Summary:            NVM Express solid state drive
+│     Current version:    4B2QEXM7
+│     Vendor:             Samsung (PCI:0x144D)
+│     Serial Number:      S6S2NS0T317931N
+│     GUIDs:              47335265-a509-51f7-841e-1c94911af66b ← NVME\VEN_144D&DEV_A808
+│                         c9d531ea-ee7d-5562-8def-c64d0d144813 ← NVME\VEN_144D&DEV_A808&SUBSYS_144DA801
+│                         66cc31b5-6dc4-55da-9008-bf73c91a0826 ← Samsung SSD 970 EVO Plus 2TB
+│     Device Flags:       • Internal device
+│                         • Updatable
+│                         • System requires external power source
+│                         • Needs a reboot after installation
+│                         • Device is usable for the duration of the update
+│                         • Signed Payload
+│                         • Can tag for emulation
+│   
+├─System Firmware:
+│     Device ID:          515ed4e199341e4016800b34b34ec66ac65f8236
+│     Summary:            UEFI System Resource Table device (updated via NVRAM)
+│     Current version:    258539520
+│     Minimum Version:    258539520
+│     Vendor:             HP (DMI:AMI)
+│     Update State:       Success
+│     GUID:               d60df924-ec58-4ef8-bbbf-9cf34e766f74
+│     Device Flags:       • Internal device
+│                         • Updatable
+│                         • System requires external power source
+│                         • Needs a reboot after installation
+│                         • Cryptographic hash verification is available
+│                         • Device is usable for the duration of the update
+│     Device Requests:    • Message
+│   
+└─TPM:
+      Device ID:          1d8d50a4dbc65618f5c399c2ae827b632b3ccc11
+      Current version:    3.87.0.4
+      Vendor:             AMD (TPM:AMD)
+      GUIDs:              9305de1c-1e12-5665-81c4-37f8e51219b8 ← TPM\VEN_AMD&DEV_0001
+                          78a291ae-b499-5b0f-8f1d-74e1fefd0b1c ← TPM\VEN_AMD&MOD_AMD
+                          65a3fced-b423-563f-8098-bf5c329fc063 ← TPM\VEN_AMD&DEV_0001&VER_2.0
+                          5e704f0d-83cb-5364-8384-f46d725a23b8 ← TPM\VEN_AMD&MOD_AMD&VER_2.0
+      Device Flags:       • Internal device
+                          • System requires external power source
+                          • Needs a reboot after installation
+                          • Device can recover flash failures
+                          • Signed Payload
+                          • Can tag for emulation
+    
+PROBE_STATUS fwupdmgr-devices 0
+
+PROBE fwupdmgr-devices-json
+{
+  "Devices" : [
+    {
+      "Name" : "0708:00 04F3:30A0",
+      "DeviceId" : "8a9dafb0f7946f6ea36040214e49a75256ddaa26",
+      "InstanceIds" : [
+        "HIDRAW\\VEN_04F3&DEV_30A0",
+        "HIDRAW\\VEN_04F3&DEV_30A0&MOD_00B8",
+        "ELANTP\\ICTYPE_0D&MOD_00B8",
+        "ELANTP\\ICTYPE_0D&MOD_00B8&DRIVER_HID"
+      ],
+      "Guid" : [
+        "04b4645a-a5d7-58cf-a407-80955f1aef3a",
+        "fce9c013-980d-5d83-83c9-0ae5ad238249",
+        "7c13d6c8-d1b7-5178-8178-fe6b5da4e3f5",
+        "80dfa690-bd3f-5252-9202-4e53a82bd6c4"
+      ],
+      "Plugin" : "elantp",
+      "Protocols" : [
+        "tw.com.emc.elantp"
+      ],
+      "Flags" : [
+        "internal",
+        "updatable",
+        "unsigned-payload",
+        "can-emulation-tag"
+      ],
+      "Vendor" : "Elan",
+      "VendorIds" : [
+        "HIDRAW:0x04F3"
+      ],
+      "Version" : "0x0001",
+      "VersionBootloader" : "0x0000",
+      "VersionFormat" : "hex",
+      "VersionRaw" : 1,
+      "Icons" : [
+        "input-touchpad"
+      ],
+      "Created" : 1786941387
+    },
+    {
+      "DeviceId" : "d324166a5e48e27ba0360ac27eeaa89559930203",
+      "ParentDeviceId" : "04e17fcf7d3de91da49a163ffe4907855c3648be",
+      "CompositeId" : "4bde70ba4e39b28f9eab1628f9dd6e6244c03027",
+      "InstanceIds" : [
+        "DRM\\VEN_VSC&DEV_313C"
+      ],
+      "Guid" : [
+        "a5e6d294-e012-55e2-ab48-a12357cc0a2e"
+      ],
+      "Serial" : "WMM233920995",
+      "Plugin" : "linux_display",
+      "Flags" : [
+        "can-emulation-tag"
+      ],
+      "VendorIds" : [
+        "PNP:VSC"
+      ],
+      "Created" : 1786941387
+    },
+    {
+      "DeviceId" : "aec1a869eb0df71b7cea6b3ac71d39b830faf164",
+      "ParentDeviceId" : "04e17fcf7d3de91da49a163ffe4907855c3648be",
+      "CompositeId" : "4bde70ba4e39b28f9eab1628f9dd6e6244c03027",
+      "InstanceIds" : [
+        "DRM\\VEN_LGD&DEV_060F"
+      ],
+      "Guid" : [
+        "ce97d0dd-e4d7-51f4-8b7e-c0661ae53c3a"
+      ],
+      "Plugin" : "linux_display",
+      "Flags" : [
+        "can-emulation-tag"
+      ],
+      "VendorIds" : [
+        "PNP:LGD"
+      ],
+      "Created" : 1786941387
+    },
+    {
+      "Name" : "Athlon Silver 3050U with Radeon Graphics",
+      "DeviceId" : "4bde70ba4e39b28f9eab1628f9dd6e6244c03027",
+      "InstanceIds" : [
+        "CPUID\\PRO_0&FAM_17&MOD_18",
+        "CPUID\\PRO_0&FAM_17&MOD_18&STP_1"
+      ],
+      "Guid" : [
+        "38cd08d3-c885-5730-bff8-fdf71774a4a2",
+        "cbe5ceff-2b79-5935-9e79-ad728587b62f"
+      ],
+      "Plugin" : "cpu",
+      "Flags" : [
+        "internal"
+      ],
+      "Vendor" : "AMD",
+      "Version" : "0x08108109",
+      "VersionFormat" : "hex",
+      "VersionRaw" : 135299337,
+      "Icons" : [
+        "computer"
+      ],
+      "Created" : 1786941387
+    },
+    {
+      "Name" : "Radeon Graphics",
+      "DeviceId" : "04e17fcf7d3de91da49a163ffe4907855c3648be",
+      "ParentDeviceId" : "4bde70ba4e39b28f9eab1628f9dd6e6244c03027",
+      "CompositeId" : "4bde70ba4e39b28f9eab1628f9dd6e6244c03027",
+      "InstanceIds" : [
+        "AMD\\113-RAVEN2"
+      ],
+      "Guid" : [
+        "da9f9e01-b69c-5a94-b7a0-faded1568b7b"
+      ],
+      "Summary" : "Raven2 Generic VBIOS",
+      "Plugin" : "amd_gpu",
+      "Flags" : [
+        "internal",
+        "can-emulation-tag"
+      ],
+      "Vendor" : "AMD",
+      "VendorIds" : [
+        "PCI:0x1002"
+      ],
+      "Version" : "117",
+      "VersionFormat" : "number",
+      "VersionRaw" : 117,
+      "Icons" : [
+        "video-display"
+      ],
+      "Created" : 1786941387
+    },
+    {
+      "Name" : "SSD 970 EVO Plus 2TB",
+      "DeviceId" : "71b677ca0f1bc2c5b804fa1d59e52064ce589293",
+      "InstanceIds" : [
+        "NVME\\VEN_144D&DEV_A808",
+        "NVME\\VEN_144D&DEV_A808&SUBSYS_144DA801",
+        "Samsung SSD 970 EVO Plus 2TB"
+      ],
+      "Guid" : [
+        "47335265-a509-51f7-841e-1c94911af66b",
+        "c9d531ea-ee7d-5562-8def-c64d0d144813",
+        "66cc31b5-6dc4-55da-9008-bf73c91a0826"
+      ],
+      "Serial" : "S6S2NS0T317931N",
+      "Summary" : "NVM Express solid state drive",
+      "Plugin" : "nvme",
+      "Protocols" : [
+        "org.nvmexpress"
+      ],
+      "Flags" : [
+        "internal",
+        "updatable",
+        "require-ac",
+        "needs-reboot",
+        "usable-during-update",
+        "signed-payload",
+        "can-emulation-tag"
+      ],
+      "Vendor" : "Samsung",
+      "VendorIds" : [
+        "PCI:0x144D"
+      ],
+      "Version" : "4B2QEXM7",
+      "VersionFormat" : "plain",
+      "Icons" : [
+        "drive-harddisk"
+      ],
+      "Created" : 1786941387
+    },
+    {
+      "Name" : "Secure Processor",
+      "DeviceId" : "c54ab0237d7a8db8c717b68e0be78e4374a2a079",
+      "ParentDeviceId" : "4bde70ba4e39b28f9eab1628f9dd6e6244c03027",
+      "CompositeId" : "4bde70ba4e39b28f9eab1628f9dd6e6244c03027",
+      "InstanceIds" : [
+        "PCI\\VEN_1022&DEV_15DF"
+      ],
+      "Guid" : [
+        "0e8dc554-a0a2-51fb-b439-1eb72b14ec38"
+      ],
+      "Plugin" : "pci_psp",
+      "Flags" : [
+        "internal",
+        "can-emulation-tag"
+      ],
+      "Vendor" : "AMD",
+      "VendorIds" : [
+        "PCI:0x1022"
+      ],
+      "Version" : "00.08.00.8a",
+      "VersionBootloader" : "00.08.00.8a",
+      "VersionFormat" : "plain",
+      "Icons" : [
+        "computer"
+      ],
+      "Created" : 1786941387
+    },
+    {
+      "Name" : "System Firmware",
+      "DeviceId" : "515ed4e199341e4016800b34b34ec66ac65f8236",
+      "Guid" : [
+        "d60df924-ec58-4ef8-bbbf-9cf34e766f74"
+      ],
+      "Summary" : "UEFI System Resource Table device (updated via NVRAM)",
+      "Plugin" : "uefi_capsule",
+      "Protocols" : [
+        "org.uefi.capsule"
+      ],
+      "Flags" : [
+        "internal",
+        "updatable",
+        "require-ac",
+        "needs-reboot",
+        "can-verify",
+        "usable-during-update"
+      ],
+      "RequestFlags" : [
+        "allow-generic-message"
+      ],
+      "Checksums" : [
+        "d410dacf1670c41a4d8b331138b5715097f40271dad52e8c3f4d19a9bd1e5895"
+      ],
+      "Vendor" : "HP",
+      "VendorIds" : [
+        "DMI:AMI"
+      ],
+      "Version" : "258539520",
+      "VersionLowest" : "258539520",
+      "VersionFormat" : "number",
+      "VersionRaw" : 258539520,
+      "VersionLowestRaw" : 258539520,
+      "Icons" : [
+        "computer"
+      ],
+      "Created" : 1786941387,
+      "UpdateState" : 2
+    },
+    {
+      "Name" : "TPM",
+      "DeviceId" : "1d8d50a4dbc65618f5c399c2ae827b632b3ccc11",
+      "InstanceIds" : [
+        "TPM\\VEN_AMD&DEV_0001",
+        "TPM\\VEN_AMD&MOD_AMD",
+        "TPM\\VEN_AMD&DEV_0001&VER_2.0",
+        "TPM\\VEN_AMD&MOD_AMD&VER_2.0"
+      ],
+      "Guid" : [
+        "9305de1c-1e12-5665-81c4-37f8e51219b8",
+        "78a291ae-b499-5b0f-8f1d-74e1fefd0b1c",
+        "65a3fced-b423-563f-8098-bf5c329fc063",
+        "5e704f0d-83cb-5364-8384-f46d725a23b8"
+      ],
+      "Plugin" : "tpm",
+      "Protocols" : [
+        "org.trustedcomputinggroup.tpm2"
+      ],
+      "Flags" : [
+        "internal",
+        "require-ac",
+        "needs-reboot",
+        "self-recovery",
+        "signed-payload",
+        "can-emulation-tag"
+      ],
+      "Vendor" : "AMD",
+      "VendorIds" : [
+        "TPM:AMD"
+      ],
+      "Version" : "3.87.0.4",
+      "VersionFormat" : "quad",
+      "VersionRaw" : 844798592286724,
+      "Icons" : [
+        "computer"
+      ],
+      "Created" : 1786941387
+    }
+  ]
+}
+PROBE_STATUS fwupdmgr-devices-json 0
+
+PROBE fwupdmgr-refresh
+Idle…: 0%
+Updating lvfs
+Downloading…: 0%
+Downloading…: 36%
+Downloading…: 54%
+Downloading…: 72%
+Downloading…: 90%
+Downloading…: 100%
+Idle…: 100%
+Successfully downloaded new metadata:
+ • 3 devices are updatable
+ • 0 devices are supported in the enabled remotes (an update has been published)
+PROBE_STATUS fwupdmgr-refresh 0
+
+PROBE fwupdmgr-updates
+Idle…: 0%
+Devices with no available firmware updates:
+ • 0708:00 04F3:30A0
+ • SSD 970 EVO Plus 2TB
+ • System Firmware
+No updatable devices
+PROBE_STATUS fwupdmgr-updates 2
+
+PROBE fwupdmgr-updates-json
+{
+  "Devices" : []
+}
+PROBE_STATUS fwupdmgr-updates-json 0
+
+PROBE fwupdmgr-history
+Idle…: 0%
+No history
+PROBE_STATUS fwupdmgr-history 2
+
+PROBE fwupdmgr-bios-settings
+Idle…: 0%
+:
+  Current Value:        Run without '--no-authenticate' to see
+  Description:          
+  Read Only:            False
+
+pending_reboot:
+  Current Value:        0
+  Description:          Settings will apply after system reboots
+  Read Only:            True
+
+PROBE_STATUS fwupdmgr-bios-settings 0
+
+PROBE mokutil-secure-boot
+SecureBoot disabled
+Platform is in Setup Mode
+PROBE_STATUS mokutil-secure-boot 0
+
+PROBE bootctl-status
+$HOME/evidence/hp-memory-firmware-rca/hp-firmware-native-paths-readonly.sh: line 8: bootctl: command not found
+PROBE_STATUS bootctl-status 127
+
+PROBE efibootmgr
+BootCurrent: 0001
+Timeout: 0 seconds
+BootOrder: 0001,0000,0007,0003,0002,0008,9999
+Boot0000* GRUB	HD(1,GPT,43dbf917-6401-491d-bb61-6824f7f238f4,0x1000,0x1f4000)/File(\EFI\GRUB\grubx64.efi)
+      dp: 04 01 2a 00 01 00 00 00 00 10 00 00 00 00 00 00 00 40 1f 00 00 00 00 00 17 f9 db 43 01 64 1d 49 bb 61 68 24 f7 f2 38 f4 02 02 / 04 04 30 00 5c 00 45 00 46 00 49 00 5c 00 47 00 52 00 55 00 42 00 5c 00 67 00 72 00 75 00 62 00 78 00 36 00 34 00 2e 00 65 00 66 00 69 00 00 00 / 7f ff 04 00
+Boot0001* Ubuntu	HD(1,GPT,abc10348-862c-4cb3-bc06-099ec0bbec76,0x800,0x100000)/File(\EFI\ubuntu\shimx64.efi)
+      dp: 04 01 2a 00 01 00 00 00 00 08 00 00 00 00 00 00 00 00 10 00 00 00 00 00 48 03 c1 ab 2c 86 b3 4c bc 06 09 9e c0 bb ec 76 02 02 / 04 04 34 00 5c 00 45 00 46 00 49 00 5c 00 75 00 62 00 75 00 6e 00 74 00 75 00 5c 00 73 00 68 00 69 00 6d 00 78 00 36 00 34 00 2e 00 65 00 66 00 69 00 00 00 / 7f ff 04 00
+Boot0002* Fedora	HD(1,GPT,8af4baaf-9ed8-45ac-8b82-78b0314b7072,0x800,0x100000)/File(\EFI\fedora\shimx64.efi)
+      dp: 04 01 2a 00 01 00 00 00 00 08 00 00 00 00 00 00 00 00 10 00 00 00 00 00 af ba f4 8a d8 9e ac 45 8b 82 78 b0 31 4b 70 72 02 02 / 04 04 34 00 5c 00 45 00 46 00 49 00 5c 00 66 00 65 00 64 00 6f 00 72 00 61 00 5c 00 73 00 68 00 69 00 6d 00 78 00 36 00 34 00 2e 00 65 00 66 00 69 00 00 00 / 7f ff 04 00
+Boot0003* Windows Boot Manager	HD(1,GPT,acbf2d79-bcfb-4aed-ae62-5ff294482bb3,0x800,0x32000)/File(\EFI\Microsoft\Boot\bootmgfw.efi)57494e444f5753000100000088000000780000004200430044004f0042004a004500430054003d007b00390064006500610038003600320063002d0035006300640064002d0034006500370030002d0061006300630031002d006600330032006200330034003400640034003700390035007d00000064000100000010000000040000007fff0400
+      dp: 04 01 2a 00 01 00 00 00 00 08 00 00 00 00 00 00 00 20 03 00 00 00 00 00 79 2d bf ac fb bc ed 4a ae 62 5f f2 94 48 2b b3 02 02 / 04 04 46 00 5c 00 45 00 46 00 49 00 5c 00 4d 00 69 00 63 00 72 00 6f 00 73 00 6f 00 66 00 74 00 5c 00 42 00 6f 00 6f 00 74 00 5c 00 62 00 6f 00 6f 00 74 00 6d 00 67 00 66 00 77 00 2e 00 65 00 66 00 69 00 00 00 / 7f ff 04 00
+    data: 57 49 4e 44 4f 57 53 00 01 00 00 00 88 00 00 00 78 00 00 00 42 00 43 00 44 00 4f 00 42 00 4a 00 45 00 43 00 54 00 3d 00 7b 00 39 00 64 00 65 00 61 00 38 00 36 00 32 00 63 00 2d 00 35 00 63 00 64 00 64 00 2d 00 34 00 65 00 37 00 30 00 2d 00 61 00 63 00 63 00 31 00 2d 00 66 00 33 00 32 00 62 00 33 00 34 00 34 00 64 00 34 00 37 00 39 00 35 00 7d 00 00 00 64 00 01 00 00 00 10 00 00 00 04 00 00 00 7f ff 04 00
+Boot0007* Linux Boot Manager	HD(1,GPT,43dbf917-6401-491d-bb61-6824f7f238f4,0x1000,0x1f4000)/File(\EFI\systemd\systemd-bootx64.efi)
+      dp: 04 01 2a 00 01 00 00 00 00 10 00 00 00 00 00 00 00 40 1f 00 00 00 00 00 17 f9 db 43 01 64 1d 49 bb 61 68 24 f7 f2 38 f4 02 02 / 04 04 46 00 5c 00 45 00 46 00 49 00 5c 00 73 00 79 00 73 00 74 00 65 00 6d 00 64 00 5c 00 73 00 79 00 73 00 74 00 65 00 6d 00 64 00 2d 00 62 00 6f 00 6f 00 74 00 78 00 36 00 34 00 2e 00 65 00 66 00 69 00 00 00 / 7f ff 04 00
+Boot0008* Internal Hard Disk	PciRoot(0x0)/Pci(0x1,0x2)/Pci(0x0,0x0)/NVMe(0x1,00-25-38-53-21-42-52-01)/HD(1,GPT,abc10348-862c-4cb3-bc06-099ec0bbec76,0x800,0x100000)0000424f
+      dp: 02 01 0c 00 d0 41 03 0a 00 00 00 00 / 01 01 06 00 02 01 / 01 01 06 00 00 00 / 03 17 10 00 01 00 00 00 00 25 38 53 21 42 52 01 / 04 01 2a 00 01 00 00 00 00 08 00 00 00 00 00 00 00 00 10 00 00 00 00 00 48 03 c1 ab 2c 86 b3 4c bc 06 09 9e c0 bb ec 76 02 02 / 7f ff 04 00
+    data: 00 00 42 4f
+Boot9999* USB Drive (UEFI)	PciRoot(0x0)/Pci(0x1d,0x0)/USB(16,0)0000424f
+      dp: 02 01 0c 00 d0 41 03 0a 00 00 00 00 / 01 01 06 00 00 1d / 03 05 06 00 10 00 / 7f ff 04 00
+    data: 00 00 42 4f
+PROBE_STATUS efibootmgr 0
+
+PROBE efi-variable-directory
+LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+MokListTrustedRT-605dab50-e046-4300-abb6-3dd810dd8b23
+SbatLevelRT-605dab50-e046-4300-abb6-3dd810dd8b23
+MokListXRT-605dab50-e046-4300-abb6-3dd810dd8b23
+MokListRT-605dab50-e046-4300-abb6-3dd810dd8b23
+TimeOutDefault-0ee72c08-8185-427a-a58a-855b78b7ba0b
+PlatformLangDefault-0ee72c08-8185-427a-a58a-855b78b7ba0b
+SetupDefault-0ee72c08-8185-427a-a58a-855b78b7ba0b
+BootCurrent-8be4df61-93ca-11d2-aa0d-00e098032b8c
+HPSignFlag-0ee72c08-8185-427a-a58a-855b78b7ba0b
+SysDiagsBiosData-5e1affe6-e52f-4c15-960a-8f87405004b6
+SysDiagsBiosData2010-14090d43-63e6-4aa6-8269-df5b8b8c4ce4
+SysDiagsBiosData2010-e090f249-2355-48fc-9bee-9b1ef9b16eb1
+OsIndicationsSupported-8be4df61-93ca-11d2-aa0d-00e098032b8c
+PlatformLangCodes-8be4df61-93ca-11d2-aa0d-00e098032b8c
+MPMUnlock-0ee72c08-8185-427a-a58a-855b78b7ba0b
+WindowsToGo-0ee72c08-8185-427a-a58a-855b78b7ba0b
+ErrOutDev-8be4df61-93ca-11d2-aa0d-00e098032b8c
+BootOptionSupport-8be4df61-93ca-11d2-aa0d-00e098032b8c
+OEMDeviceStatus-0ee72c08-8185-427a-a58a-855b78b7ba0b
+ConInDev-8be4df61-93ca-11d2-aa0d-00e098032b8c
+ConOutDev-8be4df61-93ca-11d2-aa0d-00e098032b8c
+AmdAcpiVar-79941ecd-ed36-49d0-8124-e4c31ac75cd4
+EEPM_PTR-0ee72c08-8185-427a-a58a-855b78b7ba0b
+FPDT_Volatile-01368881-c4ad-4b1d-b631-d57a8ec8db6b
+AtadSmiBuffer-6f431b9f-57e2-1049-5a3b-69504aed4f57
+TpmServFlags-7d3dceee-cbce-4ea7-8709-6e552f1edbde
+PKDefault-8be4df61-93ca-11d2-aa0d-00e098032b8c
+KEKDefault-8be4df61-93ca-11d2-aa0d-00e098032b8c
+dbDefault-8be4df61-93ca-11d2-aa0d-00e098032b8c
+dbxDefault-8be4df61-93ca-11d2-aa0d-00e098032b8c
+GNVS_PTR-0a602c5b-05a0-40c4-9181-edcd891d0013
+HideFanAlwaysOn-0ee72c08-8185-427a-a58a-855b78b7ba0b
+HideCdromBootOption-0ee72c08-8185-427a-a58a-855b78b7ba0b
+UefiFixedBootNum-0ee72c08-8185-427a-a58a-855b78b7ba0b
+FixedBootNum-0ee72c08-8185-427a-a58a-855b78b7ba0b
+VendorKeys-8be4df61-93ca-11d2-aa0d-00e098032b8c
+SignatureSupport-8be4df61-93ca-11d2-aa0d-00e098032b8c
+SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c
+SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c
+PCI_COMMON-aca9f304-21e2-4852-9875-7ff4881d67a5
+ALCSetup-ec87d643-eba4-4bb5-a1e5-3f3e36b20da9
+UsbSupport-ec87d643-eba4-4bb5-a1e5-3f3e36b20da9
+AMITSESetup-c811fa38-42c8-4579-a9bb-60e94eddfb34
+PlatformLang-8be4df61-93ca-11d2-aa0d-00e098032b8c
+Boot9999-8be4df61-93ca-11d2-aa0d-00e098032b8c
+HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+NewHPSetupData-206bc44a-c8a7-4000-896f-0da25fb37702
+Boot0008-8be4df61-93ca-11d2-aa0d-00e098032b8c
+MSFTDebugPolicy-0ee72c08-8185-427a-a58a-855b78b7ba0b
+AmiHardwareSignatureSetupUpdateCountVar-81c76078-bfde-4368-9790-570914c01a65
+SIDSUPPORT-7d3dceee-cbce-4ea7-8709-6e552f1edbde
+ErrOut-8be4df61-93ca-11d2-aa0d-00e098032b8c
+MemoryOverwriteRequestControl-e20939be-32d4-41be-a150-897f85d49829
+MemoryOverwriteRequestControlLock-bb983ccf-151d-40e1-a07b-4a17be168292
+MaximumTableSize-4b3082a3-80c6-4d7e-9cd0-583917265df1
+SmbiosScratchBuffer-4b3082a3-80c6-4d7e-9cd0-583917265df1
+SmbiosV3EntryPointTable-4b3082a3-80c6-4d7e-9cd0-583917265df1
+SmbiosEntryPointTableF000-4b3082a3-80c6-4d7e-9cd0-583917265df1
+SmbiosEntryPointTable-4b3082a3-80c6-4d7e-9cd0-583917265df1
+WriteOnceStatus-4b3082a3-80c6-4d7e-9cd0-583917265df1
+ApSyncFlagNv-ad3f6761-f0a3-46c8-a4cb-19b70ffdb305
+TPMPERBIOSFLAGS-7d3dceee-cbce-4ea7-8709-6e552f1edbde
+AmdSetup-3a997502-647a-4c82-998e-52ef9486a247
+AMD_PBS_SETUP-a339d746-f678-49b3-9fc7-54ce0f9df226
+HwErrRecSupport-8be4df61-93ca-11d2-aa0d-00e098032b8c
+InternalDisallowTpmFlag-70fff0ff-a543-45b9-8be3-1bdb90412080
+Timeout-8be4df61-93ca-11d2-aa0d-00e098032b8c
+Setup-ec87d643-eba4-4bb5-a1e5-3f3e36b20da9
+SecureBootSetup-7b59104a-c00d-4158-87ff-f04d6396a915
+Boot0002-8be4df61-93ca-11d2-aa0d-00e098032b8c
+Boot0003-8be4df61-93ca-11d2-aa0d-00e098032b8c
+Boot0001-8be4df61-93ca-11d2-aa0d-00e098032b8c
+Boot0007-8be4df61-93ca-11d2-aa0d-00e098032b8c
+Boot0000-8be4df61-93ca-11d2-aa0d-00e098032b8c
+BootOrder-8be4df61-93ca-11d2-aa0d-00e098032b8c
+HPTimeout-206bc44a-c8a7-4000-896f-0da25fb37702
+DisplayTpmMsg-0ee72c08-8185-427a-a58a-855b78b7ba0b
+HpBiosUpdStatus1-0ee72c08-8185-427a-a58a-855b78b7ba0b
+HPSkipBUCountdown-0ee72c08-8185-427a-a58a-855b78b7ba0b
+HpBiosUpdStatus0-0ee72c08-8185-427a-a58a-855b78b7ba0b
+HPSetupData-206bc44a-c8a7-4000-896f-0da25fb37702
+HpSysDiagStatus-0ee72c08-8185-427a-a58a-855b78b7ba0b
+HpSysDiagCommand-0ee72c08-8185-427a-a58a-855b78b7ba0b
+ClearEventLog-0ee72c08-8185-427a-a58a-855b78b7ba0b
+ResetSecurityPending-0ee72c08-8185-427a-a58a-855b78b7ba0b
+PinLoadDefaults-0ee72c08-8185-427a-a58a-855b78b7ba0b
+OOBE-0ee72c08-8185-427a-a58a-855b78b7ba0b
+CurrentPolicy-77fa9abd-0359-4d32-bd60-28f4e78f784b
+MSysCfg-53fd8004-5c72-47df-b38f-b1e23965a809
+OptVar-1bad711c-d451-4241-b1f3-8531815e0c7a
+HPC_SUPPORT-8208c5e9-1834-47aa-8c83-eb0b62dab642
+HpBiosUpdCommand-0ee72c08-8185-427a-a58a-855b78b7ba0b
+ConIn-8be4df61-93ca-11d2-aa0d-00e098032b8c
+ConOut-8be4df61-93ca-11d2-aa0d-00e098032b8c
+WiMAXModuleID-0ee72c08-8185-427a-a58a-855b78b7ba0b
+ComboBTModuleID-0ee72c08-8185-427a-a58a-855b78b7ba0b
+BTModuleID-0ee72c08-8185-427a-a58a-855b78b7ba0b
+PreviousTpmDevice-0ee72c08-8185-427a-a58a-855b78b7ba0b
+RtcLostPower-0ee72c08-8185-427a-a58a-855b78b7ba0b
+PreviousSecureBoot-0ee72c08-8185-427a-a58a-855b78b7ba0b
+PlatformKey-0ee72c08-8185-427a-a58a-855b78b7ba0b
+PendingAction-0ee72c08-8185-427a-a58a-855b78b7ba0b
+TpmOldvar-135902e7-9709-4b41-8fd2-4069daf0546a
+AMITCGPPIVAR-a8a2093b-fefa-43c1-8e62-ce526847265e
+HPALCSetup-206bc44a-c8a7-4000-896f-0da25fb37702
+HPPlatformLang-206bc44a-c8a7-4000-896f-0da25fb37702
+MonotonicCounter-01368881-c4ad-4b1d-b631-d57a8ec8db6b
+HPAmiTse-206bc44a-c8a7-4000-896f-0da25fb37702
+FactoryCmdStatus-0ee72c08-8185-427a-a58a-855b78b7ba0b
+FactoryCmdData-0ee72c08-8185-427a-a58a-855b78b7ba0b
+TpmClearCount-0ee72c08-8185-427a-a58a-855b78b7ba0b
+PspNvramClearCount-0ee72c08-8185-427a-a58a-855b78b7ba0b
+CleanNvram-0ee72c08-8185-427a-a58a-855b78b7ba0b
+FeatureByteFlag-0ee72c08-8185-427a-a58a-855b78b7ba0b
+DeploymentModeNv-97e8965f-c761-4f48-b6e4-9ffa9cb2a2d6
+StdDefaults-4599d26f-1a11-49b8-b91f-858745cff824
+PROBE_STATUS efi-variable-directory 0

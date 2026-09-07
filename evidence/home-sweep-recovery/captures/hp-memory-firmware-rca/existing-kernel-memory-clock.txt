@@ -1,0 +1,50 @@
+2026-08-26T22:34:29Z
+FILE /sys/class/drm/card1/device/pp_dpm_mclk
+0: 0Mhz 
+1: 400Mhz 
+2: 933Mhz *
+3: 1067Mhz 
+FILE /sys/class/drm/card1/device/pp_dpm_fclk
+
+FILE /sys/class/drm/card1/device/pp_dpm_socclk
+
+FILE /sys/class/drm/card1/device/pp_dpm_dcefclk
+
+/sys/devices/system/edac/uevent
+/sys/devices/system/edac/power/runtime_active_time
+0
+/sys/devices/system/edac/power/runtime_active_kids
+0
+/sys/devices/system/edac/power/runtime_usage
+0
+/sys/devices/system/edac/power/runtime_status
+unsupported
+/sys/devices/system/edac/power/autosuspend_delay_ms
+/sys/devices/system/edac/power/async
+disabled
+/sys/devices/system/edac/power/runtime_suspended_time
+0
+/sys/devices/system/edac/power/runtime_enabled
+disabled
+/sys/devices/system/edac/power/control
+auto
+/sys/devices/system/edac/mc/uevent
+/sys/devices/system/edac/mc/power/runtime_active_time
+0
+/sys/devices/system/edac/mc/power/runtime_active_kids
+0
+/sys/devices/system/edac/mc/power/runtime_usage
+0
+/sys/devices/system/edac/mc/power/runtime_status
+unsupported
+/sys/devices/system/edac/mc/power/autosuspend_delay_ms
+/sys/devices/system/edac/mc/power/async
+disabled
+/sys/devices/system/edac/mc/power/runtime_suspended_time
+0
+/sys/devices/system/edac/mc/power/runtime_enabled
+disabled
+/sys/devices/system/edac/mc/power/control
+auto
+$HOME/evidence/hp-memory-firmware-rca/hp-memory-clock-readonly.sh: line 32: rg: command not found
+00:18.7 Host bridge [0600]: Advanced Micro Devices, Inc. [AMD] Raven/Raven2 Device 24: Function 7 [1022:15ef]

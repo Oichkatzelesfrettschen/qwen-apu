@@ -33,9 +33,21 @@ digest repeats inside the sweep at a path that is covered loses nothing when
 this copy goes. What remains after those three is the population that exists
 in one place.
 
-usage: classify-sweep-coverage.py [--tree-root DIRECTORY] [--check]
+Production is attributed from two sources that make two claims. A device-only
+artifact basename states that the directory holds bytes produced on the Raven2.
+A receipt read inside the directory states what wrote the record, and
+`evidence/home-sweep-recovery/producer-receipts.tsv` carries one row per receipt
+read, its matched token, and the role that token derives. Neither source infers
+from location, and where they disagree the directory reads `mixed` rather than
+one of them silently winning.
+
+usage: classify-sweep-coverage.py [--tree-root DIRECTORY]
+                                  [--producer-receipts PATH] [--check]
   --check   regenerate into memory and compare against the committed
             documents, exiting non-zero where either differs
+  --producer-receipts  read the receipt ledger from another path, which a
+            fixture names; the committed ledger is read where it exists, so
+            the generator and `--check` derive one document by construction
 """
 
 from __future__ import annotations
@@ -55,6 +67,11 @@ EVIDENCE_MANIFEST = Path("evidence/SHA256SUMS")
 RETENTION_DOCUMENT = Path("evidence/home-directory-sweep-retention.tsv")
 COVERAGE_DOCUMENT = Path("evidence/home-directory-sweep-coverage.tsv")
 DIRECTORY_DOCUMENT = Path("evidence/home-directory-sweep-producers.tsv")
+PRODUCER_RECEIPTS = Path("evidence/home-sweep-recovery/producer-receipts.tsv")
+
+# The roles a receipt derives. `mixed` is not derivable from one receipt: it
+# names a directory whose artifact marker and whose receipt disagree.
+PRODUCER_ROLES = ("raven2-appliance", "workstation", "unknown")
 
 # Artifacts the appliance alone writes. The graphics-latency probe and the
 # kernel-hazard watcher run inside the guarded launch chain against the Vulkan
@@ -224,6 +241,70 @@ def read_retention_classes(document_path: Path) -> dict[str, str]:
     return classes
 
 
+def read_producer_receipts(ledger_path: Path) -> dict[str, dict[str, list[str]]]:
+    """Return each directory's receipt-derived roles and the receipts naming them.
+
+    The ledger records every receipt read, including one that named no token,
+    because a receipt read and found silent is a result rather than a gap. A
+    row deriving `unknown` therefore contributes no role and no evidence: the
+    role it would name is the reading a directory already has.
+    """
+    derived: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+    if not ledger_path.is_file():
+        return {}
+    with ledger_path.open(encoding="utf-8") as handle:
+        header = handle.readline().rstrip("\n").split("\t")
+        expected = ["directory", "receipt_path", "evidence", "derived_role"]
+        if header != expected:
+            raise ClassificationError(f"{ledger_path} carries an unexpected header")
+        for line in handle:
+            if not line.strip():
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) != len(expected):
+                raise ClassificationError(f"unparsed receipt row: {line[:80]}")
+            directory, receipt_path, evidence, role = fields
+            if role not in PRODUCER_ROLES:
+                raise ClassificationError(f"unknown derived role: {role}")
+            # The row states the directory it attributes and the receipt it
+            # read; a row whose receipt sits under another directory would
+            # attribute bytes it never read, which is the inference by location
+            # this ledger exists to replace.
+            if directory_of(receipt_path) != directory:
+                raise ClassificationError(
+                    f"receipt outside its directory: {receipt_path}"
+                )
+            if (role == "unknown") != (evidence == "-"):
+                raise ClassificationError(f"role and evidence disagree: {receipt_path}")
+            if role == "unknown":
+                continue
+            derived[directory][role].append(receipt_path)
+    return {directory: dict(roles) for directory, roles in derived.items()}
+
+
+def resolve_producer(
+    markers: list[str], receipt_roles: dict[str, list[str]]
+) -> tuple[str, str]:
+    """Return the producer role and the evidence naming both of its sources.
+
+    An artifact marker and a receipt state different things -- the directory
+    holds device-produced bytes, and this record was written by that machine --
+    so a disagreement is reported as `mixed` and both sources are named. A
+    reader that took one over the other would erase the claim it dropped.
+    """
+    roles = {"raven2-appliance"} if markers else set()
+    roles.update(receipt_roles)
+    evidence = [f"artifact:{marker}" for marker in markers]
+    for role in PRODUCER_ROLES:
+        for receipt_path in sorted(receipt_roles.get(role, ())):
+            evidence.append(f"receipt:{receipt_path}")
+    if not roles:
+        return "unknown", "-"
+    if len(roles) > 1:
+        return "mixed", ",".join(evidence)
+    return roles.pop(), ",".join(evidence)
+
+
 def directory_of(relative_path: str) -> str:
     """Return the swept directory a path belongs to.
 
@@ -250,10 +331,13 @@ def read_directory_basenames(inventory_directory: Path) -> dict[str, set[str]]:
 
 
 def classify(
-    tree_root: Path,
+    tree_root: Path, receipts_path: Path | None = None
 ) -> tuple[list[tuple[str, ...]], list[tuple[str, ...]], dict[str, int]]:
     """Return the file rows, the directory rows, and the summary counts."""
     inventory = tree_root / INVENTORY_DIRECTORY
+    receipt_roles = read_producer_receipts(
+        receipts_path if receipts_path is not None else tree_root / PRODUCER_RECEIPTS
+    )
     digests = read_inventory_digests(inventory)
     sizes = read_inventory_sizes(inventory)
     independent, recovered = read_evidence_digests(tree_root / EVIDENCE_MANIFEST)
@@ -344,8 +428,9 @@ def classify(
         markers = sorted(
             basenames.get(directory, set()) & set(DEVICE_PRODUCED_ARTIFACTS)
         )
-        producer_role = "raven2-appliance" if markers else "unknown"
-        producer_evidence = ",".join(markers) if markers else "-"
+        producer_role, producer_evidence = resolve_producer(
+            markers, receipt_roles.get(directory, {})
+        )
         directory_rows.append(
             (
                 directory,
@@ -363,6 +448,9 @@ def classify(
         )
     counts["device_attributed_directories"] = sum(
         1 for row in directory_rows if row[8] == "raven2-appliance"
+    )
+    counts["receipt_attributed_directories"] = sum(
+        1 for row in directory_rows if "receipt:" in row[9]
     )
     counts["directories"] = len(directory_rows)
     return rows, directory_rows, dict(counts)
@@ -385,6 +473,7 @@ def publish(document: Path, rendered: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tree-root", type=Path, default=None)
+    parser.add_argument("--producer-receipts", type=Path, default=None)
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args()
 
@@ -393,7 +482,7 @@ def main() -> int:
         tree_root = Path(__file__).resolve().parent.parent
 
     try:
-        rows, directory_rows, counts = classify(tree_root)
+        rows, directory_rows, counts = classify(tree_root, arguments.producer_receipts)
     except (ClassificationError, OSError, ValueError) as error:
         print(f"classify-sweep-coverage: {error}", file=sys.stderr)
         return 2
@@ -452,7 +541,8 @@ def main() -> int:
     print(
         f"directories={counts.get('directories', 0)} "
         f"device_attributed={counts.get('device_attributed_directories', 0)} "
-        f"producer_unknown={counts.get('directories', 0) - counts.get('device_attributed_directories', 0)}"
+        f"producer_unknown={sum(1 for row in directory_rows if row[8] == 'unknown')} "
+        f"receipt_attributed={counts.get('receipt_attributed_directories', 0)}"
     )
     return 0
 

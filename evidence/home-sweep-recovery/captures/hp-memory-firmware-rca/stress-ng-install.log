@@ -1,0 +1,41 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following packages were automatically installed and are no longer required:
+  clang-tools-17 libamd-comgr-dev libamd-comgr2 libfile-which-perl libfmt9
+  libhiprtc-builtins5 libhsa-runtime-dev libhsa-runtime64-1 libhsakmt1
+  liburi-encode-perl lld-17 rocm-device-libs-17
+Use 'sudo apt autoremove' to remove them.
+The following additional packages will be installed:
+  libipsec-mb1 libjudydebian1 libsctp1
+Suggested packages:
+  lksctp-tools
+The following NEW packages will be installed:
+  libipsec-mb1 libjudydebian1 libsctp1 stress-ng
+0 upgraded, 4 newly installed, 0 to remove and 53 not upgraded.
+Need to get 2,882 kB of archives.
+After this operation, 21.6 MB of additional disk space will be used.
+Get:1 http://mirror.arizona.edu/ubuntu noble/universe amd64 libipsec-mb1 amd64 1.5-1build1 [1,022 kB]
+Get:2 http://mirror.arizona.edu/ubuntu noble/universe amd64 libjudydebian1 amd64 1.0.5-5.1build1 [107 kB]
+Get:3 http://mirror.arizona.edu/ubuntu noble/main amd64 libsctp1 amd64 1.0.19+dfsg-2build1 [9,146 B]
+Get:4 http://mirror.arizona.edu/ubuntu noble/universe amd64 stress-ng amd64 0.17.06-1build1 [1,744 kB]
+Fetched 2,882 kB in 1s (2,219 kB/s)
+Selecting previously unselected package libipsec-mb1.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 799566 files and directories currently installed.)
+Preparing to unpack .../libipsec-mb1_1.5-1build1_amd64.deb ...
+Unpacking libipsec-mb1 (1.5-1build1) ...
+Selecting previously unselected package libjudydebian1.
+Preparing to unpack .../libjudydebian1_1.0.5-5.1build1_amd64.deb ...
+Unpacking libjudydebian1 (1.0.5-5.1build1) ...
+Selecting previously unselected package libsctp1:amd64.
+Preparing to unpack .../libsctp1_1.0.19+dfsg-2build1_amd64.deb ...
+Unpacking libsctp1:amd64 (1.0.19+dfsg-2build1) ...
+Selecting previously unselected package stress-ng.
+Preparing to unpack .../stress-ng_0.17.06-1build1_amd64.deb ...
+Unpacking stress-ng (0.17.06-1build1) ...
+Setting up libjudydebian1 (1.0.5-5.1build1) ...
+Setting up libipsec-mb1 (1.5-1build1) ...
+Setting up libsctp1:amd64 (1.0.19+dfsg-2build1) ...
+Setting up stress-ng (0.17.06-1build1) ...
+Processing triggers for man-db (2.12.0-4build2) ...
+Processing triggers for libc-bin (2.39-0ubuntu8.8) ...
