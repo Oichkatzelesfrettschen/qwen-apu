@@ -11,12 +11,17 @@ that would retire it.
 
 ## What writes what
 
-`remote/stage-timing.sh` is the one writer of `$QWEN_HOME/state/stage-timing.tsv`
-and the one reader of its shape. A row is `stage<TAB>NAME<TAB>BEGIN_NS<TAB>END_NS`
-under a header naming the clock. The record is truncated by
-`qwen-webui-session.sh` beside the state directory it lives in, ahead of every
-stage, because the launcher appends after the session reports `state=running`
-and the teardown appends after the session has gone.
+`remote/stage-timing.sh` is the one writer of the record and the one reader of
+its shape. A row is `stage<TAB>NAME<TAB>BEGIN_NS<TAB>END_NS` under a header
+naming the clock, the boot the monotonic origin belongs to, and the wall time
+the record opened. `qwen-webui-session.sh` opens one record per launch under
+`$QWEN_HOME/state/stage-timing/`, names that exact path on its `state=running`
+line, and points `$QWEN_HOME/state/stage-timing.tsv` at it, the shape the
+telemetry records already take: a later launch opens its own record and leaves
+an earlier one byte for byte, so the artifact that explains a slow start
+survives the next start. The launcher and the teardown read the named path
+rather than the symlink, since the symlink advances to whichever launch opened
+a record last.
 
 | Stage | Begins | Ends | Written by |
 | --- | --- | --- | --- |
@@ -47,13 +52,29 @@ several times.
 
 ## The clock
 
-`date +%s%N` is CLOCK_REALTIME, the clock `gate-cell-key.sh` already times cells
-on. Realtime rather than monotonic is what makes a stamp the session took
-comparable with one the teardown took in another process minutes later. Each
-stamp forks `date`, about two milliseconds by the same measurement
-`summarize-gate-timing.py` records, which sits four orders below a launch stage
-and would dominate a millisecond one. The record names the clock in its header,
-so a reader is never left inferring it.
+Every duration is measured on CLOCK_MONOTONIC through `time.monotonic_ns()`.
+Linux fixes that clock's origin per boot and shares it across every process in
+one time namespace, so a stamp `qwen-webui-session.sh` took and a stamp
+`qwen-teardown.sh` takes minutes later in another process subtract correctly,
+and neither an NTP step nor a manual clock set moves the result. The origin is
+per boot rather than absolute, so the header records
+`/proc/sys/kernel/random/boot_id` and `record` refuses a row whose boot identity
+differs from the header's: two monotonic values from two boots subtract to a
+number that means nothing.
+
+Chronology is a separate claim on a separate clock. The header's `opened_utc` is
+one CLOCK_REALTIME timestamp, which orders one record against another and
+against a telemetry log, and no duration is computed from it.
+
+Reading CLOCK_MONOTONIC from a POSIX shell costs an interpreter start, tens of
+milliseconds, because `date` reads CLOCK_REALTIME alone. That sits three orders
+below the seconds a launch stage takes and bounds what a stage of a few
+milliseconds could be read to mean.
+
+`measure-model-switch.sh` reads its own durations from `curl`'s
+`time_starttransfer`, which curl measures on its own monotonic clock, so the
+switch record names `clock=curl-elapsed` rather than claiming either of the two
+above.
 
 ## The switch harness
 
@@ -101,8 +122,9 @@ remote/qwen-teardown.sh
 remote/summarize-stage-timing.py stages "$QWEN_HOME/state/stage-timing.tsv"
 ```
 
-The teardown's row lands after the session has gone, so the second summary
-reads the record the launch truncated and the teardown completed.
+The symlink resolves to the newest record, so the second summary reads the
+record the router launch opened and the teardown completed; the single-model
+launch's own record stays beside it under `state/stage-timing/`.
 
 ## Falsifiers
 
@@ -118,8 +140,11 @@ rather than being reported as noise.
   refused by the writer, so either reaching a record means a second writer
   exists and the truncation ordering the session asserts is wrong.
 - A duration exceeds the wall time of the launch that produced it, or reads
-  negative. An NTP step landed inside the window, which is the cost realtime
-  buys, and a monotonic clock is the repair.
+  negative. CLOCK_MONOTONIC rules out a clock step, so a negative interval means
+  two origins were subtracted and the boot binding failed to catch it.
+- A record carries rows from two launches, or a launch's record is missing after
+  a later launch. The per-launch naming or the symlink advance is wrong, and the
+  retention the record exists for is gone.
 - `launch_readiness` reads shorter than the `model_load` it contains. The
   nesting the summary asserts is wrong.
 - `measure-model-switch.sh` reports `matched_lines=0` on every row. The log

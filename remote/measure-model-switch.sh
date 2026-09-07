@@ -23,7 +23,9 @@ set -eu
 # Two measurement bounds are stated rather than assumed. The request is
 # unstreamed, so `curl`'s `time_starttransfer` is the first byte of the whole
 # buffered one-token response rather than a token boundary inside a stream: the
-# field is named `first_byte_ns` and measures the complete request, and an HTTP
+# field is named `first_byte_ns` and measures the complete request. curl times
+# a transfer on its own monotonic clock rather than on the wall clock, which is
+# what the header names, and an HTTP
 # error is a switch that did not complete, which `--fail` turns into a `-` row
 # rather than a duration over a refusal. The router's log
 # carries a timestamp only where the build ran under `--log-timestamps`, which
@@ -124,7 +126,7 @@ if [ "$log_readable" -eq 1 ] &&
     log_clock=relative
 fi
 
-printf '# model_switch clock=realtime origin=%s model_a=%s model_b=%s log_clock=%s\n' \
+printf '# model_switch clock=curl-elapsed origin=%s model_a=%s model_b=%s log_clock=%s\n' \
     "$router_origin" "$model_a" "$model_b" "$log_clock" >"$switch_tsv"
 
 log_offset() {

@@ -40,14 +40,17 @@ graphics_latency_log=$state_directory/graphics-latency.log
 kernel_hazard_log=$state_directory/kernel-hazards.log
 pid_file=$state_directory/server.pid
 status_file=$state_directory/session.status
-# The stage record belongs to one launch, so it is truncated here beside the
-# state directory rather than at the first row a stage writes: the launcher
+# The stage record opens here, ahead of every stage, because the launcher
 # appends its own readiness row after this session reports `state=running` and
-# the teardown appends after the session has gone, so the truncation precedes
-# both. stage-timing.sh is the one writer and the record of what it means.
-stage_timing_file=$state_directory/stage-timing.tsv
+# the teardown appends after the session has gone. It is session-unique and the
+# convenience symlink advances to it, the shape the telemetry records take, so a
+# later launch leaves an earlier record whole rather than overwriting the one
+# artifact that explains a slow start. stage-timing.sh is the one writer and the
+# record of what its stamps mean.
+stage_timing_symlink=$state_directory/stage-timing.tsv
 stage_timing=$script_directory/stage-timing.sh
-"$stage_timing" init "$stage_timing_file" || :
+stage_timing_file=$("$stage_timing" init "$state_directory/stage-timing" \
+    "$stage_timing_symlink") || stage_timing_file=''
 api_key_file=$state_directory/api.key
 monitor_pid=""
 latency_watchdog_pid=""
@@ -815,7 +818,7 @@ stage_timing_sample_exec() {
 # arrived carries `-` rather than a fabricated end, which is what makes the
 # record of a terminated load the finding rather than a gap.
 stage_timing_seal_loading() {
-    [ -n "$stage_spawn_ns" ] || return 0
+    [ -n "$stage_spawn_ns" ] && [ -n "$stage_timing_file" ] || return 0
     "$stage_timing" record "$stage_timing_file" server_exec \
         "$stage_spawn_ns" "${stage_exec_ns:--}" || :
     if [ -n "$stage_exec_ns" ]; then
@@ -1045,7 +1048,7 @@ fi
 # directory holding a space splits this field the way it splits every other
 # field on the line, which is why the broker's secret path took a line of its
 # own.
-broker_status_field="$broker_status_field stage_timing=$stage_timing_file"
+broker_status_field="$broker_status_field stage_timing=${stage_timing_file:--}"
 # The exposure joins last for that reason. lan_exposure=0 records the loopback
 # default.
 broker_status_field="$broker_status_field lan_exposure=$lan_exposure lan_address=${lan_address:--} lan_name=${lan_name:--} lan_open=$lan_open lan_boundary=$lan_boundary"

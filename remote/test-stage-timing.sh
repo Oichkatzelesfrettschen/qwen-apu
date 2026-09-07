@@ -75,14 +75,32 @@ require_stage() {
 }
 
 # Arm one: the writer.
-writer_record=$temporary_directory/writer.tsv
-"$stage_timing" init "$writer_record"
-grep -q '^# stage_timing clock=realtime' "$writer_record" ||
-    fail 'init wrote no clock header'
+writer_directory=$temporary_directory/records
+writer_symlink=$temporary_directory/stage-timing.tsv
+writer_record=$("$stage_timing" init "$writer_directory" "$writer_symlink")
+grep -q '^# stage_timing clock=monotonic source=time.monotonic_ns boot_id=' \
+    "$writer_record" || fail 'init wrote no monotonic clock header'
+grep -q 'opened_utc=' "$writer_record" ||
+    fail 'the header carries no wall-clock chronology'
+[ "$(readlink -f "$writer_symlink")" = "$(readlink -f "$writer_record")" ] ||
+    fail 'the convenience symlink does not resolve to the opened record'
+if [ "$(sed -n 's/^# stage_timing .*boot_id=\([^ ]*\).*/\1/p' "$writer_record")" \
+    != "$("$stage_timing" boot-id)" ]; then
+    fail 'the header names a boot other than this one'
+fi
+# The stamps are monotonic, so a later one never precedes an earlier one and
+# neither reads as a wall-clock epoch value.
 first_stamp=$("$stage_timing" now)
 case $first_stamp in
     '' | *[!0-9]*) fail 'now printed something other than nanoseconds' ;;
 esac
+second_stamp=$("$stage_timing" now)
+[ "$second_stamp" -ge "$first_stamp" ] ||
+    fail 'a later monotonic stamp preceded an earlier one'
+# CLOCK_REALTIME is above 1.7e18 ns since 1970 and a monotonic value is an
+# uptime, so a stamp above that bound names the wrong clock.
+[ "$first_stamp" -lt 1700000000000000000 ] ||
+    fail 'now printed a wall-clock value rather than a monotonic one'
 "$stage_timing" record "$writer_record" server_exec 100 400
 "$stage_timing" record "$writer_record" model_load 400 -
 require_stage "$writer_record" server_exec
@@ -101,12 +119,30 @@ fi
 if "$stage_timing" record "$writer_record" launch_readiness abc 2 2>/dev/null; then
     fail 'a non-numeric begin was accepted'
 fi
-# A record absent where a stage is written gains the header rather than a bare
-# row, which is what a teardown running against a launch that wrote none does.
-absent_record=$temporary_directory/absent.tsv
-"$stage_timing" record "$absent_record" teardown_signal_to_exit 10 20
-grep -q '^# stage_timing clock=realtime' "$absent_record" ||
-    fail 'a record created by a stage carries no clock header'
+# A stage written against a path no init opened is refused, since a header
+# written there would claim this process's boot for another's stamps.
+if "$stage_timing" record "$temporary_directory/absent.tsv" \
+    teardown_signal_to_exit 10 20 2>/dev/null; then
+    fail 'a stage was recorded against a record no init opened'
+fi
+# A record whose header names another boot is refused for the same reason: two
+# monotonic origins do not subtract.
+foreign_record=$temporary_directory/foreign.tsv
+printf '# stage_timing clock=monotonic source=time.monotonic_ns boot_id=%s opened_utc=%s record=foreign\n' \
+    00000000-0000-0000-0000-000000000000 2026-01-01T00:00:00Z >"$foreign_record"
+if "$stage_timing" record "$foreign_record" model_load 10 20 2>/dev/null; then
+    fail 'a stage was recorded against a record from another boot'
+fi
+# A second init leaves the first record byte for byte and advances the symlink.
+writer_first_digest=$(sha256sum "$writer_record" | cut -d ' ' -f 1)
+second_record=$("$stage_timing" init "$writer_directory" "$writer_symlink")
+[ "$second_record" != "$writer_record" ] ||
+    fail 'a second launch reused the first record path'
+if [ "$(sha256sum "$writer_record" | cut -d ' ' -f 1)" != "$writer_first_digest" ]; then
+    fail 'a second launch rewrote the first record'
+fi
+[ "$(readlink -f "$writer_symlink")" = "$(readlink -f "$second_record")" ] ||
+    fail 'the symlink did not advance to the newer record'
 "$summarizer" stages "$writer_record" >/dev/null ||
     fail 'the summarizer refused a record carrying an unterminated stage'
 if "$summarizer" stages "$writer_record" --require-terminated >/dev/null 2>&1; then
@@ -177,7 +213,6 @@ QWEN_GPU_DEVICE_DIRECTORY=$temporary_directory/absent-gpu \
     2>"$temporary_directory/session.stderr" &
 session_pid=$!
 
-session_record=$session_state/stage-timing.tsv
 attempt=0
 while [ "$attempt" -lt 600 ]; do
     if grep -q '^state=running ' "$session_state/session.status" 2>/dev/null; then
@@ -196,11 +231,16 @@ if ! grep -q '^state=running ' "$session_state/session.status" 2>/dev/null; then
     fail 'the session never reported state=running'
 fi
 
-recorded_path=$(sed -n '1p' "$session_state/session.status" | tr ' ' '\n' |
+session_record=$(sed -n '1p' "$session_state/session.status" | tr ' ' '\n' |
     sed -n 's/^stage_timing=//p')
-if [ "$recorded_path" != "$session_record" ]; then
-    fail "the state=running line named $recorded_path rather than $session_record"
-fi
+case $session_record in
+    "$session_state"/stage-timing/*.tsv) ;;
+    *) fail "the state=running line named $session_record" ;;
+esac
+[ -f "$session_record" ] || fail 'the named record does not exist'
+[ "$(readlink -f "$session_state/stage-timing.tsv")" = \
+    "$(readlink -f "$session_record")" ] ||
+    fail 'the session symlink does not resolve to the record it named'
 require_stage "$session_record" server_exec
 require_stage "$session_record" model_load
 # The load runs from the exec observation to the readiness marker, so it begins
@@ -242,8 +282,8 @@ chmod +x "$teardown_remote"/*.sh "$teardown_bin"/*
 
 teardown_state=$temporary_directory/teardown-state
 mkdir -p "$teardown_state"
-teardown_record=$teardown_state/stage-timing.tsv
-"$stage_timing" init "$teardown_record"
+teardown_record=$("$stage_timing" init "$teardown_state/stage-timing" \
+    "$teardown_state/stage-timing.tsv")
 # The guard PIDs name processes this arm owns and expects to lose. A small
 # fixed number names whatever holds it, and inside the `--unshare-pid`
 # namespace the repository gate runs under, 2 through 4 are the harness's own

@@ -82,8 +82,13 @@ if [ -r "$status_file" ]; then
     stage_timing_file=$(sed -n '1p' "$status_file" | tr ' ' '\n' |
         sed -n 's/^stage_timing=//p')
 fi
-[ -n "$stage_timing_file" ] || stage_timing_file=$state_directory/stage-timing.tsv
-stage_signal_ns=$("$stage_timing" now) || stage_signal_ns=''
+stage_signal_ns=''
+# A launch that recorded no path opened no record, and the convenience symlink
+# beside it names whichever launch opened one last: appending this teardown's
+# stage there would attribute it to another launch's record.
+if [ -n "$stage_timing_file" ] && [ "$stage_timing_file" != - ]; then
+    stage_signal_ns=$("$stage_timing" now) || stage_signal_ns=''
+fi
 
 "$script_directory/qwen-webui-control.sh" stop || true
 

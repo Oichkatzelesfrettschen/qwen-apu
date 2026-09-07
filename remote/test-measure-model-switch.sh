@@ -133,7 +133,7 @@ switch_tsv=$output_directory/model-switch.tsv
 if [ "$(grep -c '^switch' "$switch_tsv")" != 4 ]; then
     fail 'the run recorded other than four switch rows'
 fi
-grep -q '^# model_switch clock=realtime .*log_clock=absent' "$switch_tsv" ||
+grep -q '^# model_switch clock=curl-elapsed .*log_clock=absent' "$switch_tsv" ||
     fail 'the header did not record an absent log clock'
 # The ids alternate, which is what makes each row a switch rather than a repeat.
 if [ "$(awk -F '\t' '$1 == "switch" { print $3 }' "$switch_tsv" | tr '\n' ' ')" \

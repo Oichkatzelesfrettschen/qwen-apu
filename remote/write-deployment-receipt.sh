@@ -257,10 +257,11 @@ if [ -r "$session_status" ]; then
 fi
 
 # The stage record's path is bound the way the served page's digest is: the
-# session named it on the `state=running` line, and a receipt that carries the
-# path lets a reader join a deployment to the elapsed boundaries the launch
-# crossed. The path rather than the rows travels, since the record is truncated
-# per launch and a receipt outlives the launch that produced it.
+# session named it on the `state=running` line, and a receipt carrying the path
+# lets a reader join a deployment to the elapsed boundaries that launch crossed.
+# The path rather than the rows travels, and the record is session-unique, so
+# the path a receipt carries still resolves to that launch's own rows after
+# every later launch has opened its own.
 stage_timing_identity=no-running-session
 stage_timing_source=-
 if [ -r "$session_status" ]; then

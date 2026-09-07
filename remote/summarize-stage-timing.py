@@ -12,6 +12,11 @@ wall clock several times and no total is printed. A switch series is likewise a
 sequence of independent observations of one machine, so the quantiles describe
 the samples taken and predict nothing about a switch not in the file.
 
+Durations come from CLOCK_MONOTONIC, whose origin Linux fixes per boot and
+shares across processes, so the header's `boot_id` is what makes two stamps
+from two processes subtractable and the report prints it. The header's
+`opened_utc` is CLOCK_REALTIME and carries chronology alone.
+
 A stage whose boundary never arrived carries `-` as its end, which is the
 finding on exactly the launches worth explaining: a load terminated on the
 memory reserve, a readiness loop that expired, a teardown whose wait ran out.
@@ -43,6 +48,18 @@ class StageRow:
     name: str
     begin_ns: int
     end_ns: int | None
+
+
+def read_header_field(path: Path, name: str) -> str:
+    """One header field, or `-` where the record carries no header at all."""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("# stage_timing "):
+            continue
+        for token in line.split():
+            key, separator, value = token.partition("=")
+            if separator and key == name:
+                return value
+    return "-"
 
 
 def read_stage_rows(path: Path) -> list[StageRow]:
@@ -90,7 +107,10 @@ def summarize_stages(path: Path, require_terminated: bool) -> int:
     unterminated = [row.name for row in rows if row.end_ns is None]
     print(
         f"stage_timing stages={len(rows)} unterminated={len(unterminated)} "
-        f"clock=realtime continuity=asserted-none file={path}"
+        f"clock={read_header_field(path, 'clock')} "
+        f"boot_id={read_header_field(path, 'boot_id')} "
+        f"opened_utc={read_header_field(path, 'opened_utc')} "
+        f"continuity=asserted-none file={path}"
     )
     for row in rows:
         elapsed = None if row.end_ns is None else row.end_ns - row.begin_ns

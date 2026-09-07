@@ -79,11 +79,27 @@ def write(path: Path, text: str) -> Path:
 
 
 def test_stage_reader(directory: Path) -> None:
+    header = (
+        "# stage_timing clock=monotonic source=time.monotonic_ns "
+        "boot_id=0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0 "
+        "opened_utc=2026-09-07T12:00:00Z record=20260907T120000Z-pid7\n"
+    )
     complete = write(
         directory / "complete.tsv",
-        "# stage_timing clock=realtime source=date +%s%N\n"
-        "stage\tserver_exec\t100\t400\n"
-        "stage\tmodel_load\t400\t2000000400\n",
+        header + "stage\tserver_exec\t100\t400\nstage\tmodel_load\t400\t2000000400\n",
+    )
+    check(
+        summarizer.read_header_field(complete, "clock") == "monotonic",
+        "the header names the clock the durations came from",
+    )
+    check(
+        summarizer.read_header_field(complete, "boot_id")
+        == "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+        "the header names the boot the monotonic origin belongs to",
+    )
+    check(
+        summarizer.read_header_field(complete, "absent") == "-",
+        "a field the header omits reads -",
     )
     rows = summarizer.read_stage_rows(complete)
     check(len(rows) == 2, "two rows read")
@@ -95,6 +111,9 @@ def test_stage_reader(directory: Path) -> None:
     output = captured.getvalue()
     check("elapsed_s=0.000" in output, "300 ns rounds to 0.000 s")
     check("elapsed_s=2.000" in output, "2 s prints at millisecond resolution")
+    check("clock=monotonic" in output, "the report names the clock")
+    check("boot_id=0f1e2d3c" in output, "the report names the boot identity")
+    check("opened_utc=2026-09-07T12:00:00Z" in output, "the report carries chronology")
     check("continuity=asserted-none" in output, "the report asserts no continuity")
     check(
         "\naccounted" not in output and "total" not in output,
@@ -142,7 +161,7 @@ def test_stage_reader(directory: Path) -> None:
     else:
         raise SystemExit("a three-field stage row was accepted")
 
-    empty = write(directory / "empty.tsv", "# stage_timing clock=realtime\n")
+    empty = write(directory / "empty.tsv", "# stage_timing clock=monotonic\n")
     captured = io.StringIO()
     with redirect_stdout(captured):
         status = summarizer.summarize_stages(empty, False)
@@ -150,7 +169,7 @@ def test_stage_reader(directory: Path) -> None:
 
 
 def test_switch_reader(directory: Path) -> None:
-    rows = ["# model_switch clock=realtime log_clock=absent"]
+    rows = ["# model_switch clock=curl-elapsed log_clock=absent"]
     for index in range(1, 21):
         rows.append(f"switch\t{index}\tmodel-a\t{index}\t2\tslice-{index}.log")
     switches = write(directory / "switch.tsv", "\n".join(rows) + "\n")

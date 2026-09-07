@@ -862,23 +862,30 @@ control_start_entered=1
 # Readiness as this launcher observes it: the interval from handing the session
 # to the control script through to a `state=running` line paired with a /health
 # answer. It contains the session's own `server_exec` and `model_load` stages,
-# so the three nest and no total is meaningful over them. The session truncates
-# the record while this interval runs and this row appends after `state=running`
-# is on disk, so the truncation always precedes the append.
+# so the three nest and no total is meaningful over them. Both stamps are
+# CLOCK_MONOTONIC and the session's record binds the boot they belong to, so a
+# stamp this process takes and one the session took subtract correctly.
 stage_timing=$script_directory/stage-timing.sh
-stage_timing_file=$state_directory/stage-timing.tsv
+stage_timing_file=''
 stage_launch_ns=$("$stage_timing" now) || stage_launch_ns=''
 QWEN_BIND_HOST=$bind_host QWEN_SERVER_PORT=$server_port \
 QWEN_MODEL_PATH=$model_path QWEN_MMPROJ=$mmproj \
     "$control" start "$profile"
 
 # STAGE_TIMING_RECORD_READINESS END_NS: `-` wherever readiness never arrived,
-# which is the reported failure and the expired budget alike.
+# which covers the reported failure and the expired budget alike. The record is
+# the one the session opened and named on its own status line rather than a path
+# derived here, since the convenience symlink beside it advances to whichever
+# launch opened a record last.
 stage_timing_record_readiness() {
     [ -n "$stage_launch_ns" ] || return 0
-    "$stage_timing" record "$stage_timing_file" launch_readiness \
-        "$stage_launch_ns" "$1" || :
+    stage_launch_ns_pending=$stage_launch_ns
     stage_launch_ns=''
+    stage_timing_file=$(sed -n '1p' "$state_directory/session.status" 2>/dev/null |
+        tr ' ' '\n' | sed -n 's/^stage_timing=//p') || stage_timing_file=''
+    [ -n "$stage_timing_file" ] && [ "$stage_timing_file" != - ] || return 0
+    "$stage_timing" record "$stage_timing_file" launch_readiness \
+        "$stage_launch_ns_pending" "$1" || :
     return 0
 }
 
