@@ -1,0 +1,8 @@
+constant_id	name	value
+0	BLOCK_SIZE	64
+1	NUM_ROWS	4
+2	NUM_COLS	1
+-	subgroup_size	64
+-	served_num_rows	2
+-	specialization_applied	yes
+-	layer	device
