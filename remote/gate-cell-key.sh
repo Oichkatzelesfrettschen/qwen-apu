@@ -72,6 +72,50 @@ gate_cell_key_stream=''
 gate_cell_run_count=0
 gate_cell_reused_count=0
 
+# Where a gate run spends its time, read from the boundaries the run already
+# crosses rather than from a sampler beside it. Two phases are separable here:
+# deriving a cell's read set and hashing it into a key, and executing the cell's
+# own command. An accepted record carries the execution it measured, so a later
+# reuse reports the cost it avoided instead of leaving that unquantified.
+#
+# `date +%s%N` reads CLOCK_REALTIME, so a backward step during a run would
+# produce a negative interval; a negative interval is recorded as `-` rather
+# than as a number, and no run is expected to span a step. Each boundary is one
+# fork of about two milliseconds, which is stated here because the key phase it
+# brackets is itself milliseconds: the phase separates hashing from execution
+# at that resolution rather than resolving hashing to the microsecond.
+gate_cell_timing=${QWEN_GATE_TIMING:-1}
+gate_cell_key_ns_total=0
+gate_cell_run_ns_total=0
+gate_cell_avoided_ns_total=0
+gate_cell_now_ns() {
+    if [ "$gate_cell_timing" = 1 ]; then
+        date +%s%N
+    else
+        printf '0\n'
+    fi
+}
+# A negative or unreadable interval states nothing, so it is reported as `-`
+# rather than folded into a total that would then be wrong by that much.
+gate_cell_interval_ns() {
+    if [ "$gate_cell_timing" != 1 ] || [ -z "$1" ] || [ -z "$2" ]; then
+        printf -- '-\n'
+        return 0
+    fi
+    gate_cell_interval=$(( $2 - $1 ))
+    if [ "$gate_cell_interval" -lt 0 ]; then
+        printf -- '-\n'
+        return 0
+    fi
+    printf '%s\n' "$gate_cell_interval"
+}
+gate_cell_add_ns() {
+    case $2 in
+        '' | -) printf '%s\n' "$1" ;;
+        *) printf '%s\n' "$(( $1 + $2 ))" ;;
+    esac
+}
+
 # The browser a cell drives, resolved the way repository-quality-gates.sh
 # resolves it, so the key names the executable the run would use rather than the
 # literal command string.
@@ -669,6 +713,7 @@ gate_cell() {
     cell_spec=$3
     cell_command=$4
     cell_always_runs=0
+    cell_key_begin_ns=$(gate_cell_now_ns)
     cell_manifest=$(mktemp)
 
     {
@@ -730,6 +775,10 @@ gate_cell() {
     rm -f "$cell_manifest"
     printf '%s\n' "$cell_key" >>"$gate_cell_key_stream"
     cell_record=$gate_cell_cache_directory/cells/$cell_key
+    # The key phase ends here: everything above derived the read set and hashed
+    # it, and everything below is the reuse decision and the cell's own command.
+    cell_key_ns=$(gate_cell_interval_ns "$cell_key_begin_ns" "$(gate_cell_now_ns)")
+    gate_cell_key_ns_total=$(gate_cell_add_ns "$gate_cell_key_ns_total" "$cell_key_ns")
 
     if [ "$gate_cell_sparse" = 1 ] && [ "$cell_always_runs" -eq 0 ] &&
         [ -f "$cell_record" ] &&
@@ -737,7 +786,19 @@ gate_cell() {
         grep -qx "tools=$gate_cell_tool_digest" "$cell_record" &&
         grep -qx "driver=$gate_cell_driver_digest" "$cell_record"; then
         gate_cell_reused_count=$((gate_cell_reused_count + 1))
+        # The record carries what this cell cost when it last ran, so a reuse
+        # states the execution it avoided rather than leaving the saving as an
+        # unmeasured claim. A record written before that field reads `-`.
+        cell_avoided_ns=$(awk -F= '$1 == "run_ns" { print $2; exit }' \
+            "$cell_record")
+        gate_cell_avoided_ns_total=$(gate_cell_add_ns \
+            "$gate_cell_avoided_ns_total" "${cell_avoided_ns:--}")
+        # The decision line keeps the shape its readers already match, and the
+        # timing is a line of its own beside it.
         printf 'cell=reused key=%s name=%s\n' "$cell_key" "$cell_name"
+        [ "$gate_cell_timing" = 1 ] &&
+            printf 'cell=timing key=%s name=%s decision=reused key_ns=%s avoided_ns=%s\n' \
+                "$cell_key" "$cell_name" "$cell_key_ns" "${cell_avoided_ns:--}"
         return 0
     fi
 
@@ -751,7 +812,12 @@ gate_cell() {
     # A failing cell writes nothing, so the next run measures it again. The
     # status is captured rather than left to errexit, which is disabled inside a
     # function whose return value is tested.
+    cell_run_begin_ns=$(gate_cell_now_ns)
     if eval "$cell_command"; then
+        cell_run_ns=$(gate_cell_interval_ns "$cell_run_begin_ns" \
+            "$(gate_cell_now_ns)")
+        gate_cell_run_ns_total=$(gate_cell_add_ns "$gate_cell_run_ns_total" \
+            "$cell_run_ns")
         cell_record_temporary=$cell_record.$$
         {
             printf 'status=accepted\n'
@@ -760,11 +826,21 @@ gate_cell() {
             printf 'tools=%s\n' "$gate_cell_tool_digest"
             printf 'driver=%s\n' "$gate_cell_driver_digest"
             printf 'read_set=%s\n' "$cell_read_set_state"
+            printf 'key_ns=%s\n' "$cell_key_ns"
+            printf 'run_ns=%s\n' "$cell_run_ns"
         } >"$cell_record_temporary"
         mv "$cell_record_temporary" "$cell_record"
+        [ "$gate_cell_timing" = 1 ] &&
+            printf 'cell=timing key=%s name=%s decision=run key_ns=%s run_ns=%s\n' \
+                "$cell_key" "$cell_name" "$cell_key_ns" "$cell_run_ns"
         return 0
     fi
+    cell_run_ns=$(gate_cell_interval_ns "$cell_run_begin_ns" \
+        "$(gate_cell_now_ns)")
     printf 'cell=rejected key=%s name=%s\n' "$cell_key" "$cell_name" >&2
+    [ "$gate_cell_timing" = 1 ] &&
+        printf 'cell=timing key=%s name=%s decision=rejected key_ns=%s run_ns=%s\n' \
+            "$cell_key" "$cell_name" "$cell_key_ns" "$cell_run_ns" >&2
     return 1
 }
 
@@ -774,4 +850,13 @@ gate_cell_summary() {
     printf 'gate=accepted cells_run=%s cells_reused=%s root=%s\n' \
         "$gate_cell_run_count" "$gate_cell_reused_count" \
         "$(sha256sum "$gate_cell_key_stream" | cut -d' ' -f1)"
+    [ "$gate_cell_timing" = 1 ] || return 0
+    # Three totals, each summed from the per-cell lines above rather than from a
+    # second clock: deriving and hashing every cell's read set, executing the
+    # cells that ran, and the execution the reused cells avoided. The third is
+    # what each record measured when it last ran, so it states the saving under
+    # the machine state of that run rather than predicting this one.
+    printf 'gate_timing key_ns=%s run_ns=%s avoided_ns=%s clock=CLOCK_REALTIME boundaries_per_cell=3\n' \
+        "$gate_cell_key_ns_total" "$gate_cell_run_ns_total" \
+        "$gate_cell_avoided_ns_total"
 }

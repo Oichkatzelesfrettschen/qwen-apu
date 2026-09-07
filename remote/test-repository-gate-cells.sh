@@ -208,6 +208,7 @@ run_fixture_gate() {
     : >"$marker_file"
     QWEN_GATE_FIXTURE_ALPHA_FAIL=${1:-0} \
         QWEN_GATE_SPARSE=${2:-1} \
+        QWEN_GATE_TIMING=${3:-1} \
         QWEN_GATE_FIXTURE_MARKER="$marker_file" \
         QWEN_GATE_CACHE_DIR="$cache_directory" \
         QWEN_CHROMIUM="$fixture_chromium" \
@@ -260,6 +261,66 @@ if [ "$(summary_field cells_run)" != 1 ] ||
 fi
 if [ "$(summary_field root)" != "$first_root" ]; then
     report_failure unchanged root_is_stable_across_runs
+fi
+# Where the run spent its time is read from the same boundaries the decisions
+# are made at, so a timing line accompanies every cell and names which decision
+# it belongs to. A reused cell states the execution it avoided, which the
+# record it reused measured when that cell last ran; a run before the field
+# existed reads `-` rather than zero, since an unrecorded cost is not a saving
+# of nothing.
+if [ "$(grep -c '^cell=timing ' "$run_output")" -ne 4 ]; then
+    report_failure unchanged every_cell_reports_timing
+fi
+if ! grep -qE '^cell=timing key=[0-9a-f]{64} name=alpha decision=reused key_ns=[0-9]+ avoided_ns=[0-9]+$' \
+    "$run_output"; then
+    report_failure unchanged reused_cell_states_the_execution_it_avoided
+fi
+if ! grep -qE '^cell=timing key=[0-9a-f]{64} name=beta decision=run key_ns=[0-9]+ run_ns=[0-9]+$' \
+    "$run_output"; then
+    report_failure unchanged running_cell_states_both_phases
+fi
+if ! grep -qE '^gate_timing key_ns=[0-9]+ run_ns=[0-9]+ avoided_ns=[0-9]+ clock=CLOCK_REALTIME boundaries_per_cell=3$' \
+    "$run_output"; then
+    report_failure unchanged summary_states_the_three_totals
+fi
+# The totals are sums of the per-cell lines rather than a second measurement, so
+# a reader recomputing them from the log reaches the same numbers.
+timing_recomputed=$(awk '
+    /^cell=timing / {
+        for (i = 1; i <= NF; i++) {
+            split($i, field, "=")
+            if (field[1] == "key_ns" && field[2] ~ /^[0-9]+$/) key += field[2]
+            if (field[1] == "run_ns" && field[2] ~ /^[0-9]+$/) run += field[2]
+            if (field[1] == "avoided_ns" && field[2] ~ /^[0-9]+$/) avoided += field[2]
+        }
+    }
+    END { printf "%d %d %d\n", key + 0, run + 0, avoided + 0 }' "$run_output")
+timing_reported=$(awk '
+    /^gate_timing / {
+        for (i = 1; i <= NF; i++) {
+            split($i, field, "=")
+            if (field[1] == "key_ns") key = field[2]
+            if (field[1] == "run_ns") run = field[2]
+            if (field[1] == "avoided_ns") avoided = field[2]
+        }
+    }
+    END { printf "%d %d %d\n", key + 0, run + 0, avoided + 0 }' "$run_output")
+if [ "$timing_recomputed" != "$timing_reported" ]; then
+    report_failure unchanged totals_recompute_from_the_cell_lines
+fi
+# The timing is an addition to the decision lines rather than a change to them,
+# so a reader that matched a cell line before this field existed still matches.
+if ! grep -qE '^cell=reused key=[0-9a-f]{64} name=alpha$' "$run_output"; then
+    report_failure unchanged decision_line_shape_is_unchanged
+fi
+# QWEN_GATE_TIMING=0 removes the clock reads entirely, for a run that wants no
+# measurement of itself at all.
+run_fixture_gate 0 1 0
+if grep -q '^cell=timing ' "$run_output" || grep -q '^gate_timing ' "$run_output"; then
+    report_failure timing-off timing_lines_absent
+fi
+if [ "$(summary_field root)" != "$first_root" ]; then
+    report_failure timing-off root_is_unmoved_by_timing
 fi
 
 # QWEN_GATE_SPARSE=0 runs every cell against the same warm cache.
