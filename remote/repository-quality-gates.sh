@@ -44,7 +44,9 @@ export GATE_CELL_DRIVER_PATH
 
 shell_files=$(find remote -type f -name '*.sh' -print | sort)
 python_files=$(find remote -type f -name '*.py' -print | sort)
-typed_python_files='remote/open-verified-lock-descriptor.py
+typed_python_files='remote/classify-sweep-coverage.py
+remote/test-classify-sweep-coverage.py
+remote/open-verified-lock-descriptor.py
 remote/test-open-verified-lock-descriptor.py
 remote/signal-process-group.py
 remote/test-signal-process-group.py
@@ -314,6 +316,14 @@ gate_cell test-measure-prefix-checkpoint-hits derive \
     remote/test-measure-prefix-checkpoint-hits.sh
 gate_cell test-feature-roster derive remote/test-feature-roster.sh \
     remote/test-feature-roster.sh
+gate_cell test-classify-sweep-coverage derive \
+    'remote/test-classify-sweep-coverage.py remote/classify-sweep-coverage.py' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-classify-sweep-coverage.py'
+# The coverage documents are derived, so an inventory or manifest edit that
+# leaves them stale fails here rather than being read later as a measurement.
+gate_cell sweep-coverage-current derive \
+    'remote/classify-sweep-coverage.py evidence/home-directory-sweep-coverage.tsv evidence/home-directory-sweep-producers.tsv evidence/home-directory-sweep-retention.tsv evidence/SHA256SUMS' \
+    'python3 remote/classify-sweep-coverage.py --check'
 gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
     remote/test-run-served-binary-ab.sh
 gate_cell test-run-kernel-delta-witness derive remote/test-run-kernel-delta-witness.sh \
