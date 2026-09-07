@@ -26,7 +26,8 @@ set -eu
 #   QWEN_SHADER_PACK_GLSLC       the pinned glslc, default the compiler
 #                                fetch-shaderc-toolchain.sh installs: the
 #                                `prefix` row of shaderc-toolchain.tsv under
-#                                QWEN_SHADERC_PREFIX_ROOT, ~/opt by default.
+#                                QWEN_SHADERC_PREFIX_ROOT, or the runtime
+#                                root's own `opt/shaderc` by default.
 #                                Both scripts read the one ledger row, so the
 #                                fetch and the pack cannot name two prefixes.
 #   QWEN_SHADERC_LEDGER          that ledger, default beside this script

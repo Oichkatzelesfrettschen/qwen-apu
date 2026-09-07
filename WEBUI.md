@@ -76,18 +76,20 @@ service-latency cost of multiple in-flight LOW jobs.
 
 ## Runtime provenance
 
-The laptop does not contain a clone of this repository. Its paths have separate
-roles:
+The laptop runs from its own checkout of this repository, and every generated
+byte lives in one declared runtime root beside it. `remote/qwen-home.sh` names
+that root as `QWEN_HOME`, defaulting to `.runtime` directly under the tree that
+holds `remote/`, and `print NAME` answers with any location derived from it:
 
-- `$HOME/qwen-laptop-setup` is the synchronized deployment mirror;
-- `$HOME/src/llama.cpp` is the earlier Git checkout at
-  `f280b26983ad0fdb705a0d9ebf0503e76f2899b0`;
-- `$HOME/src/llama.cpp-qwen-apu` is a separate checkout at the same commit with
-  the four replayed qwen-apu patches;
-- `$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server` is the
-  one-job Vulkan build produced from the isolated patched checkout; and
-- `$HOME/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf` is the external,
-  hash-pinned model.
+```sh
+remote/qwen-home.sh print qwen_home qwen_home_models qwen_home_llama_source
+```
+
+The llama.cpp source trees, the built binaries, the hash-pinned checkpoints,
+the deployment bundles, and the session state all resolve beneath that one
+root, so the checkout is the whole declaration and `make bootstrap` expands it.
+A served binary reaches the device through an activated deployment bundle
+rather than through a build directory a reader has to name.
 
 The pinned binary omits embedded SvelteKit assets but retains `--path`, `--ui`,
 OpenAI-compatible routes, API-key files, Web UI configuration, and static-file
@@ -103,20 +105,22 @@ and posts the routing key beside the tool, which the pinned build does not.
 
 ## Start and connect
 
-Replace `TARGET` with the SSH host alias or address. `qwen-webui-control.sh`
+Replace `TARGET` with the SSH host alias or address and `CHECKOUT` with the
+repository checkout path on that host; the scripts resolve the runtime root
+from that tree, so no second path is named. `qwen-webui-control.sh`
 runs the session inside the `qwen-webui` tmux session on the `qwen-runtime`
 socket, so it outlives the SSH connection that started it.
 
 Serve the network at the 24,576 token ceiling:
 
 ```sh
-ssh TARGET 'QWEN_BIND_HOST=0.0.0.0 $HOME/qwen-laptop-setup/remote/qwen-webui-control.sh start'
+ssh TARGET 'QWEN_BIND_HOST=0.0.0.0 CHECKOUT/remote/qwen-webui-control.sh start'
 ```
 
 Serve only the operator over loopback, for the SSH tunnel deployment:
 
 ```sh
-ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh start'
+ssh TARGET 'CHECKOUT/remote/qwen-webui-control.sh start'
 ```
 
 `start` defaults to 24,576 tokens against a 4,608 MiB Vulkan preflight gate,
@@ -128,7 +132,7 @@ naming it: `qwen-webui-control.sh start paced-60`.
 Read the API key and enter it in the page:
 
 ```sh
-ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh key'
+ssh TARGET 'CHECKOUT/remote/qwen-webui-control.sh key'
 ```
 
 A LAN reader opens `http://qwen-laptop:8080` directly. A loopback
@@ -144,7 +148,7 @@ When the browser-facing server port differs from the remote server port, bind
 the broker to that exact browser origin before starting the remote session:
 
 ```sh
-ssh TARGET 'QWEN_WEB_BROKER_ORIGIN=http://127.0.0.1:18080 QWEN_WEB_PROFILE=web-qwen38-4b-distill QWEN_WEB_PROVIDER=searxng $HOME/qwen-laptop-setup/remote/qwen-web-launch.sh low-serialized'
+ssh TARGET 'QWEN_WEB_BROKER_ORIGIN=http://127.0.0.1:18080 QWEN_WEB_PROFILE=web-qwen38-4b-distill QWEN_WEB_PROVIDER=searxng CHECKOUT/remote/qwen-web-launch.sh low-serialized'
 ./remote/connect-qwen-webui.sh TARGET 18080 8080
 ```
 
@@ -155,13 +159,13 @@ configuration.
 Inspect status and retained log tails:
 
 ```sh
-ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh status'
+ssh TARGET 'CHECKOUT/remote/qwen-webui-control.sh status'
 ```
 
 Stop the server and its tmux session:
 
 ```sh
-ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh stop'
+ssh TARGET 'CHECKOUT/remote/qwen-webui-control.sh stop'
 ```
 
 ## Measured throughput

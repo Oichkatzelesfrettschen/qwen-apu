@@ -29,7 +29,7 @@ existence of a file a row cites are properties of the tree, so both are
 asserted where the tree is; presence of the software is a property of a host,
 so a host run resolves no `source_ref` at all. That split is what makes the
 appliance arm runnable: `remote/sync-runtime-tree.sh:85` copies `remote/` and
-`patches/`, so a copy at `~/qwen-laptop-setup` holds neither `docs/` nor the
+`patches/`, so a synced runtime tree holds neither `docs/` nor the
 evidence a row cites, and a host run that resolved those paths would refuse
 every requirement over a directory the sync never sent. Run the host arm from
 the appliance's own Git checkout, or name the ledger as the second argument.
@@ -142,7 +142,7 @@ activated bundle under the root rather than a loose binary.
 | `HOME` | env | - | `[ -n "${HOME:-}" ]` | remote/qwen-launch.sh:17, remote/qwen-webui-control.sh:25 |
 | `gpu_busy_percent` | sysfs | - | `test -r "${QWEN_GPU_DEVICE_DIRECTORY:-/sys/class/drm/card1/device}/gpu_busy_percent"` | remote/monitor-qwen-runtime.sh:97, remote/monitor-qwen-runtime.sh:164 |
 | `mem_info_vram_used` | sysfs | - | `test -r "${QWEN_GPU_DEVICE_DIRECTORY:-/sys/class/drm/card1/device}/mem_info_vram_used"` | remote/monitor-qwen-runtime.sh:166, remote/monitor-qwen-runtime.sh:172 |
-| `vulkan-graphics-service-probe` | path | - | `test -x "${QWEN_VULKAN_LATENCY_PROBE:-$HOME/qwen-laptop-setup/build/vulkan-graphics-service-probe}"` | remote/qwen-webui-session.sh:526, remote/qwen-webui-session.sh:545 |
+| `vulkan-graphics-service-probe` | path | - | `test -x "${QWEN_VULKAN_LATENCY_PROBE:-$(remote/qwen-home.sh print qwen_home)/../build/vulkan-graphics-service-probe}"` | remote/qwen-webui-session.sh:526, remote/qwen-webui-session.sh:545 |
 | `dmesg` | command | - | `dmesg --color=never >/dev/null 2>&1` | remote/watch-qwen-kernel-hazards.sh:83 |
 | `flock` | command | - | `command -v flock >/dev/null` | remote/activate-deployment-bundle.sh:69 |
 | `python3` | command | - | `command -v python3 >/dev/null` | remote/qwen-webui-session.sh:318, remote/open-verified-lock-descriptor.py:78 |
@@ -202,7 +202,7 @@ the build script guards them with `|| true`.
 | `c++` | command | - | `command -v c++ >/dev/null` | remote/build-llama-vulkan.sh:32, remote/test-vulkan-submit-limit.sh:31 |
 | `spirv.hpp` | path | - | `test -r /usr/include/spirv/unified1/spirv.hpp \|\| test -r /usr/include/spirv-headers/spirv.hpp \|\| test -r /usr/include/spirv.hpp` | remote/build-llama-vulkan.sh:46 |
 | `git` | command | - | `command -v git >/dev/null` | remote/build-llama-vulkan.sh:25, remote/verify-llama-patch-series.sh:17 |
-| llama.cpp checkout | path | `f280b26983ad0fdb705a0d9ebf0503e76f2899b0` | `test -d "${QWEN_LLAMA_SOURCE:-$HOME/src/llama.cpp-qwen-apu}/.git"` | remote/build-llama-vulkan.sh:17, remote/build-llama-vulkan.sh:20 |
+| llama.cpp checkout | path | `f280b26983ad0fdb705a0d9ebf0503e76f2899b0` | `test -d "${QWEN_LLAMA_SOURCE:-$(remote/qwen-home.sh print qwen_home_llama_source)}/.git"` | remote/build-llama-vulkan.sh:17, remote/build-llama-vulkan.sh:20 |
 | `renice` | command | - | `command -v renice >/dev/null` | remote/verify-llama-patch-series.sh:9 |
 | `ionice` | command | - | `command -v ionice >/dev/null` | remote/verify-llama-patch-series.sh:11 |
 | `taskset` | command | - | `command -v taskset >/dev/null` | remote/verify-llama-patch-series.sh:10 |
@@ -267,8 +267,8 @@ probe of their own.
 
 | Requirement | Kind | Pin | Check | Established by |
 | --- | --- | --- | --- | --- |
-| `llama-bench` | path | - | `test -x "${QWEN_LLAMA_BENCH:-$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench}"` | remote/run-placement-sweep.sh:12, remote/run-placement-sweep.sh:23 |
-| `llama-cli` | path | - | `test -x "${QWEN_LLAMA_CLI:-$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-cli}"` | remote/run-representation-arm.sh:33 |
+| `llama-bench` | path | - | `test -x "${QWEN_LLAMA_BENCH:-$(remote/qwen-home.sh print qwen_home_llama_bench)}"` | remote/run-placement-sweep.sh:12, remote/run-placement-sweep.sh:23 |
+| `llama-cli` | path | - | `test -x "${QWEN_LLAMA_CLI:-$(remote/qwen-home.sh print qwen_home_llama_cli)}"` | remote/run-representation-arm.sh:33 |
 | `cc` | command | - | `command -v cc >/dev/null` | remote/build-vulkan-graphics-service-probe.sh:14 |
 | `/usr/include/vulkan/vulkan.h` | path | - | `test -r /usr/include/vulkan/vulkan.h` | remote/build-vulkan-graphics-service-probe.sh:18 |
 | `pp_dpm_sclk` | sysfs | - | `test -r "${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}/pp_dpm_sclk"` | remote/sample-gpu-clocks.sh:41, remote/sample-gpu-clocks.sh:64 |
@@ -386,8 +386,8 @@ protocol module, the MCP child, and the reviewer are standard-library Python.
 | `ninja` | command | - | `command -v ninja >/dev/null` | remote/build-stable-diffusion-vulkan.sh:62 |
 | `glslc` | command | - | `command -v glslc >/dev/null` | remote/build-stable-diffusion-vulkan.sh:62 |
 | `vulkaninfo` | command | - | `command -v vulkaninfo >/dev/null` | remote/build-stable-diffusion-vulkan.sh:62 |
-| stable-diffusion.cpp checkout | path | `de298c225bed97c3f9026b73cd7b71e7879bd41b` | `test -d "${QWEN_IMAGE_SOURCE:-$HOME/src/stable-diffusion.cpp-qwen-apu}/.git"` | remote/build-stable-diffusion-vulkan.sh:22, remote/build-stable-diffusion-vulkan.sh:23 |
-| `sd-cli` | path | - | `test -x "${QWEN_IMAGE_RUNTIME:-$HOME/src/stable-diffusion.cpp-qwen-apu/build-raven2/bin/sd-cli}"` | remote/run-image-standalone.sh:57 |
+| stable-diffusion.cpp checkout | path | `de298c225bed97c3f9026b73cd7b71e7879bd41b` | `test -d "${QWEN_IMAGE_SOURCE:-$(remote/qwen-home.sh print qwen_home_image_source)}/.git"` | remote/build-stable-diffusion-vulkan.sh:22, remote/build-stable-diffusion-vulkan.sh:23 |
+| `sd-cli` | path | - | `test -x "${QWEN_IMAGE_RUNTIME:-$(remote/qwen-home.sh print qwen_home_image_runtime)}"` | remote/run-image-standalone.sh:57 |
 | `python3` | command | - | `command -v python3 >/dev/null` | remote/image-service.py:1, remote/image-mcp/server.py:1 |
 | `QWEN_IMAGE_PROFILES_JSON` | env | - | `test -r "${QWEN_IMAGE_PROFILES_JSON:-/nonexistent}"` | remote/qwen-image-launch.sh:270, remote/qwen-image-launch.sh:272 |
 | lease state directory | path | - | `test -d "${QWEN_WEBUI_STATE_DIRECTORY:-$HOME/qwen-webui-state}"` | remote/image-service.py:101, remote/image-service.py:656 |
@@ -395,7 +395,7 @@ protocol module, the MCP child, and the reviewer are standard-library Python.
 The vendored ggml revision is pinned separately at
 `remote/build-stable-diffusion-vulkan.sh:23` as
 `8e800cef2948046cc47f9db6090491c6128ca42c`, so a submodule that moved fails the
-build ahead of the compiler. `~/qwen-webui-state/vulkan-workload.lock` is the
+build ahead of the compiler. The runtime root's own `state/vulkan-workload.lock` is the
 lease both the image service and a patched llama-server write, which is why the
 state directory rather than the lock file itself is the installation
 requirement: the service creates the lock and the directory is what must
@@ -412,7 +412,7 @@ publishers' BF16 artifacts into F16 with the appliance's own `llama-quantize`.
 | --- | --- | --- | --- | --- |
 | `curl` | command | - | `command -v curl >/dev/null` | remote/download-qwen35-4b-q4km.sh:55, remote/fetch-candidate-artifact.sh:60 |
 | `sha256sum` | command | - | `command -v sha256sum >/dev/null` | remote/download-qwen35-4b-q4km.sh:27, remote/fetch-candidate-artifact.sh:51 |
-| `llama-quantize` | path (laptop) | - | `test -x "${QWEN_LLAMA_QUANTIZE:-$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-quantize}"` | remote/derive-f16-artifact.sh:37, remote/derive-f16-artifact.sh:46 |
+| `llama-quantize` | path (laptop) | - | `test -x "${QWEN_LLAMA_QUANTIZE:-$(remote/qwen-home.sh print qwen_home_llama_quantize)}"` | remote/derive-f16-artifact.sh:37, remote/derive-f16-artifact.sh:46 |
 | `GGUF_PY_PATH` | optional-env (workstation) | - | `test -d "${GGUF_PY_PATH:-/nonexistent}"` | remote/test-gguf-tensor-census.py:37, remote/derive-f16-artifact.sh:25 |
 | `struct` | python-module | - | `python3 -c 'import struct'` | remote/gguf-tensor-census.py:21 |
 | `hashlib` | python-module | - | `python3 -c 'import hashlib'` | remote/admit-candidate-static.py:23, remote/gguf-tensor-census.py:18 |
