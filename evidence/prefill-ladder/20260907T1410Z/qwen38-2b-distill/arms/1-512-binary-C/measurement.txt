@@ -1,0 +1,10 @@
+ttft_ms=10104.101
+wall_ms=11674.716
+window_begin_ns=807162959778396
+window_end_ns=807174634494443
+prompt_n=512
+prompt_ms=10073.6
+prompt_per_second=50.8261
+predicted_n=16
+predicted_ms=1570.14
+predicted_per_second=9.55329

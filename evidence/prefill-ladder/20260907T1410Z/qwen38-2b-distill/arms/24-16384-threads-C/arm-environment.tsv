@@ -1,0 +1,12 @@
+name	value
+PATH	/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin
+HOME	$HOME
+TMPDIR	/tmp
+LC_ALL	C
+PYTHONDONTWRITEBYTECODE	1
+VK_DRIVER_FILES	/usr/share/vulkan/icd.d/radeon_icd.x86_64.json
+VK_ICD_FILENAMES	/usr/share/vulkan/icd.d/radeon_icd.x86_64.json
+LLAMA_NO_CPU_FALLBACK	1
+GGML_VK_LOW_PRIORITY	1
+GGML_VK_MAX_NODES_PER_SUBMIT	16
+QWEN_VULKAN_PROFILE	low-async

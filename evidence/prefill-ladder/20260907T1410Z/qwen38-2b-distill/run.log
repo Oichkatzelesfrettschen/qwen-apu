@@ -1,0 +1,50 @@
+prefill_ladder_lease=held path=$HOME/Github/qwen-apu/.runtime/state/vulkan-workload.lock
+prefill_ladder_arm=start slot=1 depth=512 quadruple=binary arm=C threads=1
+prefill_ladder_arm=completed slot=1 depth=512 quadruple=binary arm=C ttft_ms=10104.101 prompt_tok_s=50.8261 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=2 depth=512 quadruple=binary arm=K threads=1
+prefill_ladder_arm=completed slot=2 depth=512 quadruple=binary arm=K ttft_ms=10098.886 prompt_tok_s=50.8629 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=3 depth=512 quadruple=binary arm=K threads=1
+prefill_ladder_arm=completed slot=3 depth=512 quadruple=binary arm=K ttft_ms=10099.427 prompt_tok_s=50.8502 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=4 depth=512 quadruple=binary arm=C threads=1
+prefill_ladder_arm=completed slot=4 depth=512 quadruple=binary arm=C ttft_ms=10105.877 prompt_tok_s=50.8166 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=5 depth=512 quadruple=threads arm=C threads=1
+prefill_ladder_arm=completed slot=5 depth=512 quadruple=threads arm=C ttft_ms=10104.169 prompt_tok_s=50.8259 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=6 depth=512 quadruple=threads arm=T threads=2
+prefill_ladder_arm=completed slot=6 depth=512 quadruple=threads arm=T ttft_ms=10093.259 prompt_tok_s=50.8804 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=7 depth=512 quadruple=threads arm=T threads=2
+prefill_ladder_arm=completed slot=7 depth=512 quadruple=threads arm=T ttft_ms=10216.769 prompt_tok_s=50.345 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=8 depth=512 quadruple=threads arm=C threads=1
+prefill_ladder_arm=completed slot=8 depth=512 quadruple=threads arm=C ttft_ms=10098.616 prompt_tok_s=50.864 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=9 depth=4096 quadruple=binary arm=C threads=1
+prefill_ladder_arm=failed slot=9 depth=4096 quadruple=binary arm=C ttft_ms=85619.483 prompt_tok_s=47.8625 clock_invariant=- reason=clock_sidecar
+prefill_ladder_arm=start slot=10 depth=4096 quadruple=binary arm=K threads=1
+prefill_ladder_arm=completed slot=10 depth=4096 quadruple=binary arm=K ttft_ms=85610.850 prompt_tok_s=47.8729 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=11 depth=4096 quadruple=binary arm=K threads=1
+prefill_ladder_arm=completed slot=11 depth=4096 quadruple=binary arm=K ttft_ms=85573.648 prompt_tok_s=47.8878 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=12 depth=4096 quadruple=binary arm=C threads=1
+prefill_ladder_arm=completed slot=12 depth=4096 quadruple=binary arm=C ttft_ms=85435.795 prompt_tok_s=47.9774 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=13 depth=4096 quadruple=threads arm=C threads=1
+prefill_ladder_arm=completed slot=13 depth=4096 quadruple=threads arm=C ttft_ms=85568.172 prompt_tok_s=47.8962 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=14 depth=4096 quadruple=threads arm=T threads=2
+prefill_ladder_arm=completed slot=14 depth=4096 quadruple=threads arm=T ttft_ms=85588.774 prompt_tok_s=47.88 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=15 depth=4096 quadruple=threads arm=T threads=2
+prefill_ladder_arm=completed slot=15 depth=4096 quadruple=threads arm=T ttft_ms=85381.545 prompt_tok_s=47.9973 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=16 depth=4096 quadruple=threads arm=C threads=1
+prefill_ladder_arm=completed slot=16 depth=4096 quadruple=threads arm=C ttft_ms=85586.185 prompt_tok_s=47.8824 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=17 depth=16384 quadruple=binary arm=C threads=1
+prefill_ladder_arm=completed slot=17 depth=16384 quadruple=binary arm=C ttft_ms=452080.695 prompt_tok_s=36.2472 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=18 depth=16384 quadruple=binary arm=K threads=1
+prefill_ladder_arm=completed slot=18 depth=16384 quadruple=binary arm=K ttft_ms=451172.156 prompt_tok_s=36.3227 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=19 depth=16384 quadruple=binary arm=K threads=1
+prefill_ladder_arm=completed slot=19 depth=16384 quadruple=binary arm=K ttft_ms=449317.983 prompt_tok_s=36.4707 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=20 depth=16384 quadruple=binary arm=C threads=1
+prefill_ladder_arm=completed slot=20 depth=16384 quadruple=binary arm=C ttft_ms=452461.977 prompt_tok_s=36.219 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=21 depth=16384 quadruple=threads arm=C threads=1
+prefill_ladder_arm=completed slot=21 depth=16384 quadruple=threads arm=C ttft_ms=462960.329 prompt_tok_s=35.3974 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=22 depth=16384 quadruple=threads arm=T threads=2
+prefill_ladder_arm=completed slot=22 depth=16384 quadruple=threads arm=T ttft_ms=491300.625 prompt_tok_s=33.3538 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=23 depth=16384 quadruple=threads arm=T threads=2
+prefill_ladder_arm=completed slot=23 depth=16384 quadruple=threads arm=T ttft_ms=490952.056 prompt_tok_s=33.3771 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=24 depth=16384 quadruple=threads arm=C threads=1
+prefill_ladder_arm=completed slot=24 depth=16384 quadruple=threads arm=C ttft_ms=492186.778 prompt_tok_s=33.2944 clock_invariant=- reason=-
+prefill_ladder_arm=start slot=25 depth=32719 quadruple=binary arm=C threads=1
