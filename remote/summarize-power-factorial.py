@@ -35,6 +35,13 @@ SPAN_CRITERION = 0.20
 # identical flags ten minutes apart on this machine.
 MACHINE_SPREAD_FLOOR = 0.04
 PROMOTION_BOUND = 0.05
+# The stock envelope's own STAPM averaging window. The sustained arm exists to
+# span it, and a token count states a duration only against a rate, so the
+# reader divides the arm's own recorded count by its own measured rate rather
+# than inferring the duration from a class estimate.
+SUSTAINED_WINDOW_SECONDS = 200.0
+SUSTAINED_ARM = "08-sustained-stock"
+PACKAGE_ARM = "10-p4-package-25w"
 
 CONTROL_OPEN = "01-control-open"
 CONTROL_CLOSE = "09-control-close"
@@ -57,27 +64,49 @@ COMPARISONS = (
     ("10-p4-package-25w", "04-p3-fclk-range", "P4 (package 25 W) against P3"),
 )
 
-RESTORATION_RE = re.compile(r"^restoration=(held|failed) profile=(\S+)")
+RESTORATION_RE = re.compile(r"^restoration=(held|failed) profile=(\S+)$")
 
 
 def read_key_value(path):
+    """One arm's summary, refused where a key repeats or a row is malformed.
+
+    A repeated key is what makes a later `served_status=0` overwrite an
+    earlier refusal, so the reader takes a row rather than the last row: a
+    duplicate and a width other than two fields both mark the whole file
+    unreadable, which reads downstream as an arm carrying no accepted rate.
+    """
     rows = {}
     try:
         with open(path) as handle:
             for line in handle:
-                fields = line.rstrip("\n").split("\t")
-                if len(fields) == 2:
-                    rows[fields[0]] = fields[1]
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                fields = line.split("\t")
+                if len(fields) != 2:
+                    return None
+                if fields[0] in rows:
+                    return None
+                rows[fields[0]] = fields[1]
     except OSError:
         return None
     return rows
 
 
 def as_float(value):
+    """A finite float, or None.
+
+    `float()` accepts `inf` and `nan`, and an infinite rate clears every
+    threshold this reader tests while a NaN compares false against all of
+    them, so neither reaches a verdict.
+    """
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return None
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        return None
+    return parsed
 
 
 def format_optional(value, digits):
@@ -86,31 +115,59 @@ def format_optional(value, digits):
 
 
 def readable_rate(rows):
-    """The rate of an arm whose own served (or bench) runner returned zero."""
+    """The rate of an arm whose own served (or bench) runner returned zero.
+
+    A decode rate is a strictly positive finite number of tokens per second.
+    Zero and below name an arm that produced nothing rather than an arm that
+    was slow, and they divide into the relative comparison downstream.
+    """
     if rows is None:
         return None
     if rows.get("served_status") != "0":
         return None
-    return as_float(rows.get("decode_tok_s"))
+    rate = as_float(rows.get("decode_tok_s"))
+    if rate is None or rate <= 0:
+        return None
+    return rate
 
 
 def read_restoration(lease_stderr_path, lease_stdout_path):
     """The transaction's own restoration verdict for one arm.
 
     `restoration=held` reaches stdout; `restoration=failed` reaches both
-    stdout and stderr (compute-state-lease.sh prints it twice, once to each),
-    so stderr is read first and stdout is the fallback for the ordinary case.
+    stdout and stderr, since compute-state-lease.sh prints it once to each,
+    so both streams are read whole and every line is tested. An anchored
+    pattern searched over a file's entire text matches its first line alone,
+    which is why a lease log opening on any other row read `absent` while
+    carrying a real failure further down.
+
+    A failure dominates: an arm whose streams carry both verdicts left the
+    machine on a forced state whatever an earlier line claimed. Two lines
+    naming one verdict and different profiles state two transactions under
+    one arm, which no reading resolves, so that reads `conflict`.
     """
+    verdicts = []
     for path in (lease_stderr_path, lease_stdout_path):
         try:
             with open(path) as handle:
-                text = handle.read()
+                for line in handle:
+                    match = RESTORATION_RE.match(line.rstrip("\n"))
+                    if match:
+                        verdicts.append((match.group(1), match.group(2)))
         except OSError:
             continue
-        match = RESTORATION_RE.search(text)
-        if match:
-            return match.group(1), match.group(2)
-    return "absent", "unknown"
+    if not verdicts:
+        return "absent", "unknown"
+    failures = [verdict for verdict in verdicts if verdict[0] == "failed"]
+    if failures:
+        profiles = {profile for _, profile in failures}
+        if len(profiles) > 1:
+            return "conflict", ",".join(sorted(profiles))
+        return "failed", failures[0][1]
+    profiles = {profile for _, profile in verdicts}
+    if len(profiles) > 1:
+        return "conflict", ",".join(sorted(profiles))
+    return "held", verdicts[0][1]
 
 
 def collect_checkpoints(campaign_directory):
@@ -154,6 +211,7 @@ def summarize(campaign_directory, summary_path):
     for model_id in sorted(checkpoints):
         arms = checkpoints[model_id]
         checkpoint_restoration_incident = False
+        checkpoint_restoration_unproven = False
         for role in sorted(arms):
             rows = arms[role]
             table_lines.append(
@@ -176,7 +234,20 @@ def summarize(campaign_directory, summary_path):
             )
             if rows.get("restoration_state") == "failed":
                 checkpoint_restoration_incident = True
+            elif rows.get("restoration_state") in ("absent", "conflict"):
+                # A failure that was not observed is not invented: an arm
+                # whose transaction retained no readable verdict proves
+                # nothing about the state the machine was left in, which
+                # withholds promotion without claiming an incident.
+                checkpoint_restoration_unproven = True
 
+        if checkpoint_restoration_unproven and not checkpoint_restoration_incident:
+            verdict_lines.append(
+                f"{model_id}\tsweep\tunresolved\tat least one arm retained no "
+                "readable restoration verdict, so the compute state it left "
+                "behind is unproven and no arm of this checkpoint promotes"
+            )
+            continue
         if checkpoint_restoration_incident:
             verdict_lines.append(
                 f"{model_id}\tsweep\trestoration_incident\tat least one arm's "
@@ -209,13 +280,46 @@ def summarize(campaign_directory, summary_path):
         )
 
         rates = {CONTROL_OPEN: opening, CONTROL_CLOSE: closing, "control_mean": control_mean}
+
+        # The sustained arm's duration is its own token count over its own
+        # measured rate. A count chosen against one checkpoint's rate spans
+        # the window for that checkpoint alone, so the arm that actually ran
+        # is what the reader divides.
+        sustained_rows = arms.get(SUSTAINED_ARM)
+        sustained_seconds = None
+        sustained_reason = "the sustained arm did not run"
+        if sustained_rows is not None:
+            sustained_rate = readable_rate(sustained_rows)
+            sustained_tokens = as_float(sustained_rows.get("generate_tokens"))
+            if sustained_rate is None:
+                sustained_reason = "the sustained arm carries no accepted rate"
+            elif sustained_tokens is None or sustained_tokens <= 0:
+                sustained_reason = "the sustained arm records no token count"
+            else:
+                sustained_seconds = sustained_tokens / sustained_rate
+                sustained_reason = (
+                    f"{sustained_tokens:.0f} tokens at {sustained_rate:.3f} tok/s "
+                    f"is {sustained_seconds:.0f} s"
+                )
+        if sustained_seconds is not None and sustained_seconds >= SUSTAINED_WINDOW_SECONDS:
+            verdict_lines.append(
+                f"{model_id}\t{SUSTAINED_ARM}\tspans_the_window\t{sustained_reason}, "
+                f"over the {SUSTAINED_WINDOW_SECONDS:.0f} s averaging window"
+            )
+        else:
+            verdict_lines.append(
+                f"{model_id}\t{SUSTAINED_ARM}\tunresolved\t{sustained_reason}, "
+                f"under the {SUSTAINED_WINDOW_SECONDS:.0f} s averaging window, so "
+                "the package snapshots bracket part of it rather than the whole"
+            )
+
         for role, reference_role, description in COMPARISONS:
             rows = arms.get(role)
             if rows is None:
                 # P4 is absent whenever the campaign's package receipt did not
                 # show a binding budget; that is the gate working as
                 # registered rather than a missing measurement.
-                if role == "10-p4-package-25w":
+                if role == PACKAGE_ARM:
                     verdict_lines.append(
                         f"{model_id}\t{role}\tnot_run\tP4 requires a binding "
                         "package-limit receipt from the sustained arm; "
@@ -224,6 +328,16 @@ def summarize(campaign_directory, summary_path):
                     continue
                 verdict_lines.append(
                     f"{model_id}\t{role}\tunresolved\tthe arm did not run"
+                )
+                continue
+            if role == PACKAGE_ARM and (
+                sustained_seconds is None or sustained_seconds < SUSTAINED_WINDOW_SECONDS
+            ):
+                verdict_lines.append(
+                    f"{model_id}\t{role}\tunresolved\tP4 reads the sustained "
+                    f"arm's package receipt, and that arm did not span the "
+                    f"{SUSTAINED_WINDOW_SECONDS:.0f} s averaging window: "
+                    f"{sustained_reason}"
                 )
                 continue
             candidate = readable_rate(rows)
@@ -246,15 +360,41 @@ def summarize(campaign_directory, summary_path):
                 continue
             rates[role] = candidate
             relative = (candidate - reference) / reference
-            if relative >= PROMOTION_BOUND:
-                state = "promoted"
-            else:
-                state = "not_promoted"
+
+            # Two arms measured by different instruments differ by the
+            # instrument as well as by the factor, and this campaign runs one
+            # bench arm against served references. The comparison still reads,
+            # and it names an instrument difference rather than a factor
+            # effect, so it never promotes.
+            candidate_instrument = rows.get("instrument", "unknown")
+            reference_instrument = (
+                arms.get(reference_role, {}) or {}
+            ).get("instrument", "unknown") if reference_role != "control_mean" else (
+                (arms.get(CONTROL_OPEN, {}) or {}).get("instrument", "unknown")
+            )
             reason = (
                 f"{description}: {relative:+.1%} against {reference:.3f} tok/s, "
                 f"one-sided {PROMOTION_BOUND:.0%} promotion bound"
             )
-            verdict_lines.append(f"{model_id}\t{role}\t{state}\t{reason}")
+            if candidate_instrument != reference_instrument:
+                verdict_lines.append(
+                    f"{model_id}\t{role}\tdiagnostic\t{reason}; the candidate "
+                    f"reads {candidate_instrument} against a "
+                    f"{reference_instrument} reference, so the difference "
+                    "carries the instrument beside the factor and promotes "
+                    "nothing"
+                )
+                continue
+            if relative >= PROMOTION_BOUND:
+                state = "screened"
+            else:
+                state = "not_screened"
+            verdict_lines.append(
+                f"{model_id}\t{role}\t{state}\t{reason}; a point gain over "
+                "single arms is a screening result, so a promising factor "
+                "reaches the matched confirmation harness before production "
+                "policy moves"
+            )
 
     text = (
         "\n".join(table_lines)
