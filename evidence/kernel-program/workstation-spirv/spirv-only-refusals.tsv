@@ -1,0 +1,4 @@
+command	exit	message
+q8-mat-vec-receipt.sh SPV OUT --subgroup-only --num-rows 1 --num-cols 2	2	--num-rows 1 applies specialization constant 1, which reaches the compiler at pipeline creation alone; pass --allow-device on the Raven2 appliance, since --spirv-only would write the served 2 receipt under this count
+q8-mat-vec-receipt.sh SPV OUT --subgroup-only --num-rows 2 --num-cols 2	2	--num-cols 2 applies specialization constant 2, which reaches the compiler at pipeline creation alone; pass --allow-device on the Raven2 appliance, since --spirv-only would write the served 1 receipt under this count
+q8-mat-vec-receipt.sh SPV OUT --subgroup-only --num-rows 4 --num-cols 2	2	--num-rows 4 applies specialization constant 1, which reaches the compiler at pipeline creation alone; pass --allow-device on the Raven2 appliance, since --spirv-only would write the served 2 receipt under this count
