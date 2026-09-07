@@ -244,8 +244,23 @@ teardown_state=$temporary_directory/teardown-state
 mkdir -p "$teardown_state"
 teardown_record=$teardown_state/stage-timing.tsv
 "$stage_timing" init "$teardown_record"
-printf 'state=running server_pid=1 monitor_pid=2 latency_watchdog_pid=3 kernel_hazard_watchdog_pid=4 stage_timing=%s\n' \
-    "$teardown_record" >"$teardown_state/session.status"
+# The guard PIDs name processes this arm owns and expects to lose. A small
+# fixed number names whatever holds it, and inside the `--unshare-pid`
+# namespace the repository gate runs under, 2 through 4 are the harness's own
+# processes rather than the kernel threads they are on a host: the teardown
+# signals every guard PID it reads, so a made-up number ends the run measuring
+# it.
+teardown_guard_pids=''
+teardown_guard_count=0
+while [ "$teardown_guard_count" -lt 3 ]; do
+    teardown_guard_count=$((teardown_guard_count + 1))
+    sleep 120 &
+    teardown_guard_pids="$teardown_guard_pids $!"
+done
+# shellcheck disable=SC2086
+set -- $teardown_guard_pids
+printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s stage_timing=%s\n' \
+    "$1" "$1" "$2" "$3" "$teardown_record" >"$teardown_state/session.status"
 QWEN_WEBUI_STATE_DIRECTORY=$teardown_state PATH="$teardown_bin:$PATH" \
     "$teardown_remote/qwen-teardown.sh" \
     >"$temporary_directory/teardown.stdout" \
