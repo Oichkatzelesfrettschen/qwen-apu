@@ -1,0 +1,31 @@
+preset	raven2-vulkan-production
+commit	f280b26983ad0fdb705a0d9ebf0503e76f2899b0
+worktree	dirty
+build_role	serving
+serving_eligible	yes
+checkpoint_semantics	natural-boundary-v1
+checkpoint_patch	patches/llama-server-natural-checkpoint-boundary.patch
+checkpoint_patch_sha256	c9d4010594da1f632be009b934cd045f6625b8baba68d09b7ed6190b02f9ddfc
+checkpoint_source_sha256	7ef5095ae09986f2d7b244bcf72e0c389a40eab03d8ebf9744f0599218fdbe46
+checkpoint_patch_series_sha256	84c05fbfaa8255d46a48448fb4a8dd2708ce78959098c39582b3ad15ca9a8493
+checkpoint_series_tree	verified-candidate
+q4k_variants	production/4,e4/2,e4/4,e4/8,e4-scale/2,e4-scale/4,e4-scale/8,e4-scale-licm/2,e4-scale-licm/4,e4-scale-licm/8,route=arg:LLAMA_ARG_VK_Q4K_VARIANT
+candidate_series	llama-vulkan-q4k-activation-group-sums.patch,llama-vulkan-q4k-activation-sideplane.patch,llama-vulkan-q4k-scale-word-select.patch,llama-vulkan-q4k-superblock-loop-licm.patch,llama-vulkan-q4k-variant-select.patch,llama-vulkan-q4k-row-select.patch
+candidate_series_sha256	b38cf563642eb594f021eeff81819a2fd19fd0112bf604988b6b1c4170a8e5aa
+checkpoint_series_tree_sha256	8d6f479ab8be2881c7a00dd537bbaf47430dc113a9418d0660d76eb6ea22972a
+checkpoint_sources_ledger_sha256	60ab26dc7a60d3c951635b14d8cd4991b3781f485e7523ace55dfb20f86a20ef
+checkpoint_source_root	.runtime/opt/llama.cpp-lease-q4k
+compiler_flags	-march=znver1 -mtune=znver1
+cmake_flags	-DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_OPENSSL=OFF -DGGML_CCACHE=ON -DGGML_LTO=OFF -DGGML_OPENMP=OFF -DGGML_BLAS=OFF -DGGML_LLAMAFILE=OFF -DGGML_CPU=ON -DGGML_CUDA=OFF -DGGML_HIP=OFF -DGGML_OPENCL=OFF -DGGML_RPC=OFF -DGGML_SYCL=OFF -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=ON -DGGML_VULKAN_INT24_DOT=OFF -DGGML_NATIVE=OFF -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON
+file_prefix_map	-ffile-prefix-map=.runtime/opt/llama.cpp-lease-q4k=/src -ffile-prefix-map=.runtime/opt/llama.cpp-lease-q4k/build-raven2-vulkan-production=/build
+shader_pack_key	959297a460441cbb331d31ce0c028574008992c9ea2642d9fa9308707293cb3b
+shader_pack	generated
+object_cache	none
+ccache_hits	0
+ccache_misses	0
+instrument_binary_key	36d891228bc1489dc126e1da53007d2e4a17f68ddc656bb45cfc818a53499ae3
+binary	built
+executable	llama-server	58224648	510c0420346ffa4f5104d3f2b28117262a0d30b2907dc21c833d38442c3e49af
+executable	llama-cli	58396976	10f72a8cfd5a85da74dc78205b1c335c04211698e003ff1e555e7fb3367d8bb5
+executable	llama-bench	54683600	ede8d5e537f672097ac72daad101982678887af51edcec9f2de818816e393ac3
+executable	llama-mtmd-cli	56325480	a90cc8d0f7f48b0425dbbcafb0eb37cfb5495f57530d1ef2a95e3523da8248af

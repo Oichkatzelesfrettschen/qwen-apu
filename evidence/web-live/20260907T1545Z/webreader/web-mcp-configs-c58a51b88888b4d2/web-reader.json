@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "web": {
+      "command": "python3",
+      "timeout_ms": 30000,
+      "args": [
+        "$HOME/Github/qwen-apu/remote/web-mcp/server.py",
+        "--provider",
+        "searxng"
+      ],
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "QWEN_WEB_PROFILE": "web-reader",
+        "QWEN_WEB_PROVIDER": "searxng",
+        "QWEN_WEB_MAX_RESULTS": "5",
+        "QWEN_WEB_MAX_FETCHES_PER_SEARCH": "2",
+        "QWEN_WEB_MAX_CHARS_PER_FETCH": "12000",
+        "QWEN_WEB_SEARCH_AUTH": "required",
+        "QWEN_WEB_SEARXNG_URL": "http://127.0.0.1:8888",
+        "QWEN_WEB_SEARXNG_PRIMARY_CATEGORY": "qwen-open",
+        "QWEN_WEB_SEARXNG_FALLBACK_CATEGORY": "-",
+        "QWEN_WEB_SEARXNG_MINIMUM_RESULTS": "1",
+        "QWEN_WEB_TOKEN_KEY_FILE": "/tmp/webreader/keys/token.key",
+        "QWEN_WEB_STATE_DIR": "/tmp/webreader/web-mcp"
+      }
+    }
+  }
+}

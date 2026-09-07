@@ -1665,7 +1665,7 @@ unrepaired implementation. A build earns its declaration rather than asserting
 one: `build-llama-preset.sh` writes `checkpoint_semantics` as
 `natural-boundary-v1` only where the repository still holds the patch at
 `c9d40105...`, the `tools/server/server-context.cpp` it compiles hashes to the
-`3744317b...` that `verify-llama-patch-series.sh` pins for the replayed series,
+`7ef5095a...` that `verify-llama-patch-series.sh` pins for the replayed series,
 and the `checkpoint_offsets` array is absent from that source. The negative
 name is earned the same way: `forced-tail-v1` requires the source to hash to
 `a79cf9e1...`, the pinned commit's own `server-context.cpp` that the

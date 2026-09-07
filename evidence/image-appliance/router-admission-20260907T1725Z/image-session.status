@@ -1,0 +1,8 @@
+state=running server_pid=273994 monitor_pid=274357 latency_watchdog_pid=274321 kernel_hazard_watchdog_pid=274346 broker_pid=273839 image_service_pid=273917 lan_exposure=0 lan_address=- lan_name=- lan_open=0 lan_boundary=lan-authenticated profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-07T17:22:43Z
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=registry cache_type_v=registry flash_attention=registry override_context_ceiling=registry
+served_page source=$HOME/Github/qwen-apu/remote/../webui sha256=dcb26eee4d9a78ac20ba23041283163d9db51750d4f694c4a48d5afbbc3cb999 prompt_bound=- output_bound=-
+router enabled=1 presets=$HOME/Github/qwen-apu/.runtime/state/.router-presets.active.XiNUZw preset_sha256=9883e8bcac9970c00f287dafc3f4921e842d0897970867e5710dc48177e4c3c5 models_max=1
+broker secret_file=/tmp/imgadmit/web-mcp/authorize-session.secret
+broker_identity pid=273839 start_time=85400177 profile=web-image-admission provider=fake signing_key_sha256=b0ef638f588c6225dfb90fc69f1e1e4c62ae3cc17285d7a563c0d37ca7d50e59
+image_service_identity pid=273917 start_time=85400222 socket=$HOME/Github/qwen-apu/.runtime/state/images/image-service.sock listener=127.0.0.1:45939

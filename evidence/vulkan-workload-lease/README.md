@@ -185,3 +185,16 @@ no HTTP route, and `monitor-qwen-runtime.sh` reads `/proc` and sysfs rather than
 the server, so neither watchdog observes the stall. `GET /health` answers from
 the HTTP thread without posting a task, so readiness stays truthful while a turn
 waits.
+
+## The member reaches the production series
+
+`production-promotion-20260907T1650Z/` retains the promotion. The stage move
+carries the `server-context.cpp` pin from `3744317b...` to the `7ef5095a...` the
+ten-member replay produces, in the five places that state it, and the
+classifier's `checkpoint_offsets` grep keeps `natural-boundary-v1` earned over
+the new digest. A bundle built from the production series alone verifies and
+refuses to launch, because `remote/models.tsv` releases `e4-scale-licm/4` and
+that formulation is compiled by a candidate member, so a serving build is the
+production series plus the six-member candidate Q4_K selection the previous
+epoch carried. The appliance serves `lease-q4k-6b262d93-r1`, whose router child
+arms, acquires, and releases the lease around a served turn.

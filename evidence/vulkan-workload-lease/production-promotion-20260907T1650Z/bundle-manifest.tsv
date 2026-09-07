@@ -1,0 +1,12 @@
+bundle_name	lease-q4k-6b262d93-r1
+created_utc	2026-09-07T17:18:45Z
+checkpoint_semantics	natural-boundary-v1
+maximum_ledger_count	2
+server_bytes	58224648
+llama-server	510c0420346ffa4f5104d3f2b28117262a0d30b2907dc21c833d38442c3e49af
+artifact-manifest.tsv	9bd7847c7cbd1050c8a60cf61ff89f2adce07cbf3d21dbb19b7eb86ccf7dc554
+ctx-checkpoints.tsv	b8644d874a0e34b7e3be8e4d673961805991b30396edd2c84467c0b4261f419a
+router-presets.ini	d8dda784cabb2f912d83ff8b6c84e952e38fca8a8184c2eecc34d72610c1a12e
+web-presets.ini	-
+web-mcp-manifest.tsv	358805ab5fc1899847c23372e92f452efba509e1188e88c11b92f4ce14dbd4be
+q4k-policy.tsv	fa3d123b333956fe04e0237078601b224dfb728091f5fd4bcc56025676d9dfe7

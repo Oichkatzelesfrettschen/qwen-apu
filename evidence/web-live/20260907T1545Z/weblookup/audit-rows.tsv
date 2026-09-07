@@ -1,0 +1,580 @@
+buckets	authorize-minute	1788797100	1
+buckets	grant-client-minute:127.0.0.1	1788797100	1
+buckets	search-minute	1788797100	1
+buckets	pages-day	1788739200	4
+buckets	provider-day	1788739200	2
+buckets	fetch-minute	1788797100	1
+audit	2026-09-07T16:05:55Z	web-lookup	authorize	74bf9345205a7006e5f9a5086489f112d8a4e56433996f4f3a631188a3180f37		3		0	0	68	success	1788797155						0	0
+audit	2026-09-07T16:05:55Z	web-lookup	search	74bf9345205a7006e5f9a5086489f112d8a4e56433996f4f3a631188a3180f37		3		5884	2230	541	success	1788797155	gl-G8_r07vyM	qwen-open	bing	bing		0	10
+audit	2026-09-07T16:05:56Z	web-lookup	fetch			1	sunrise-sunset.org	198705	9431	622	success	1788797156						0	0
+grants	5-fP1DyBfQcIe-s0	web-lookup	searxng	1788797155	1788798055
+searches	gl-G8_r07vyM	web-lookup	searxng	1	1	1788798055
+search_results	gl-G8_r07vyM	https://sunrise-sunset.org/au/sydney	
+search_results	gl-G8_r07vyM	https://timerjoy.com/sunrise-sunset/sunrise-sunset-sydney	
+search_results	gl-G8_r07vyM	https://www.weather-temperature.net/sunrise-sunset-times/2147714/	
+content	1b1f239c226f09fb5a999bcebf3ebf6b9fa6834cc5d1b5e2f3c529ad90b9b1c5	gl-G8_r07vyM	https://sunrise-sunset.org/au/sydney	Sunrise Sunset
+<emoji>
+Explore
+Calendar
+Sunrise and sunset times in Sydney
+Home › Australia › New South Wales › Sydney
+Check out today's and tomorrow's sunrise and sunset times in Sydney, New South Wales, Australia, as well as the whole calendar for September 2026.
+Today
+September 8, 2026 . Current time: 2:05:56 am
+First light at 5:39:25 am
+Sunrise time: 6:03:06 am
+Sunset time: 5:42:51 pm
+Last light at 6:06:33 pm
+Day length: 11 hours, 39 minutes
+15 hours, 36 minutes left for today's sunset in Sydney
+Moon will rise on Sep 8 at 4:07 AM Moon will set on Sep 8 at 2:26 PMMoon phase: <emoji> Waning Crescent (15%)<emoji> New moon: Sep 11 at 1:27 PM · <emoji> Full moon: Sep 27 at 2:50 AM
+Tomorrow
+September 9, 2026
+First light at 5:38:04 am
+Sunrise time: 6:01:45 am
+Sunset time: 5:43:31 pm
+Last light at 6:07:12 pm
+Day length: 11 hours, 41 minutes
+Tomorrow will be approximately 2 minutes longer than today in Sydney
+Moon will rise on Sep 9 at 4:46 AM Moon will set on Sep 9 at 3:38 PMMoon phase: <emoji> Waning Crescent (3%)
+Sydney, New South Wales
+Latitude: -33.867851
+Longitude: 151.207321
+Time zone: Australian Eastern Standard Time (AEST, UTC+10)
+Shortest day in Sydney, New South Wales
+The shortest day of the year was 2 months and 16 days ago, during the winter solstice on June 21, 2026, with a daylight length of 9 hours and 56 minutes.
+Longest day in Sydney, New South Wales
+The longest day of the year will be in around 3 months, during the summer solstice on December 21, 2026, with a daylight length of 14 hours and 27 minutes.
+Sunrise and Sunset at the Equator
+Why Do We Have Solar Eclipses?
+Why the Shortest Day Is Not the Day With the Earliest Sunset or Latest Sunrise
+How Are Sunsets in Other Planets in Our Solar System?
+When Is the Shortest Day of the Year?
+How Long After Sunset Does It Get Dark?
+September 2026 - Sydney, New South Wales - Sunrise and sunset calendar
+Sunrise and sunset times, civil twilight start and end times as well as solar noon, and day length for every day of September in Sydney.
+The day length increases by 59 minutes over the course of September 2026 in Sydney, New South Wales - from 11 hours, 25 minutes on the first day to 12 hours, 25 minutes on the last day.
+Customize table
+Default:
+Twilight start
+Sunrise
+Sunset
+Twilight end
+Day length
+Solar noon
+Extra:
+Maximum Sun altitude
+Nautical twilight times
+Astronomical twilight times
+Night length
+Moon Phase
+Day length variation
+Change month:
+Day
+First Light
+Sunrise
+Sunset
+Last Light
+Day Length
+Day Length Variation
+Solar Noon
+Time of day when the sun reaches its highest point in the sky.
+Max Sun Altitude
+Nautical Twilight Start
+Nautical Twilight End
+Astronomical Twilight Start
+Astronomical Twilight End
+Night Length
+Calculated form this day's sunset to the next day's sunrise.
+Moon phase
+Tue, Sep 1
+5:48:38 am
+6:12:28 am
+5:38:09 pm
+6:01:58 pm
+11h 25m 41s
+11h 25m 41s
+11:55:18 am
+-25.6°
+5:19:39 am
+6:30:57 pm
+4:50:44 am
+6:59:52 pm
+12h 33m 0s
+<emoji> (87%)
+Wed, Sep 2
+5:47:20 am
+6:11:09 am
+5:38:49 pm
+6:02:37 pm
+11h 27m 40s
+1m 59s
+11:54:59 am
+-25.9°
+5:18:22 am
+6:31:35 pm
+4:49:28 am
+7:00:30 pm
+12h 31m 1s
+<emoji> (79%)
+Thu, Sep 3
+5:46:02 am
+6:09:50 am
+5:39:29 pm
+6:03:17 pm
+11h 29m 39s
+1m 59s
+11:54:40 am
+-26.3°
+5:17:05 am
+6:32:14 pm
+4:48:10 am
+7:01:09 pm
+12h 29m 1s
+<emoji> (69%)
+Fri, Sep 4
+5:44:44 am
+6:08:30 am
+5:40:10 pm
+6:03:56 pm
+11h 31m 40s
+2m 1s
+11:54:20 am
+-26.6°
+5:15:47 am
+6:32:52 pm
+4:46:52 am
+7:01:47 pm
+12h 27m 0s
+<emoji> (59%)
+Sat, Sep 5
+5:43:25 am
+6:07:10 am
+5:40:50 pm
+6:04:35 pm
+11h 33m 40s
+2m 0s
+11:54:00 am
+-27°
+5:14:29 am
+6:33:31 pm
+4:45:34 am
+7:02:26 pm
+12h 24m 59s
+<emoji> (47%)
+Sun, Sep 6
+5:42:05 am
+6:05:49 am
+5:41:31 pm
+6:05:14 pm
+11h 35m 42s
+2m 2s
+11:53:40 am
+-27.4°
+5:13:10 am
+6:34:09 pm
+4:44:14 am
+7:03:05 pm
+12h 22m 57s
+<emoji> (36%)
+Mon, Sep 7
+5:40:45 am
+6:04:28 am
+5:42:11 pm
+6:05:53 pm
+11h 37m 43s
+2m 1s
+11:53:19 am
+-27.8°
+5:11:50 am
+6:34:48 pm
+4:42:54 am
+7:03:45 pm
+12h 20m 55s
+<emoji> (25%)
+Tue, Sep 8
+5:39:25 am
+6:03:06 am
+5:42:51 pm
+6:06:33 pm
+11h 39m 45s
+2m 2s
+11:52:59 am
+-28.1°
+5:10:30 am
+6:35:28 pm
+4:41:33 am
+7:04:25 pm
+12h 18m 54s
+<emoji> (16%)
+Wed, Sep 9
+5:38:04 am
+6:01:45 am
+5:43:31 pm
+6:07:12 pm
+11h 41m 46s
+2m 1s
+11:52:38 am
+-28.5°
+5:09:09 am
+6:36:07 pm
+4:40:11 am
+7:05:05 pm
+12h 16m 52s
+<emoji> (8%)
+Thu, Sep 10
+5:36:43 am
+6:00:23 am
+5:44:12 pm
+6:07:52 pm
+11h 43m 49s
+2m 3s
+11:52:17 am
+-28.9°
+5:07:48 am
+6:36:46 pm
+4:38:49 am
+7:05:45 pm
+12h 14m 48s
+<emoji> (3%)
+Fri, Sep 11
+5:35:21 am
+5:59:00 am
+5:44:52 pm
+6:08:31 pm
+11h 45m 52s
+2m 3s
+11:51:56 am
+-29.3°
+5:06:26 am
+6:37:26 pm
+4:37:26 am
+7:06:26 pm
+12h 12m 45s
+<emoji> (0%)
+Sat, Sep 12
+5:33:59 am
+5:57:37 am
+5:45:33 pm
+6:09:11 pm
+11h 47m 56s
+2m 4s
+11:51:35 am
+-29.6°
+5:05:04 am
+6:38:06 pm
+4:36:02 am
+7:07:07 pm
+12h 10m 41s
+<emoji> (0%)
+Sun, Sep 13
+5:32:36 am
+5:56:14 am
+5:46:13 pm
+6:09:51 pm
+11h 49m 59s
+2m 3s
+11:51:14 am
+-30°
+5:03:41 am
+6:38:46 pm
+4:34:38 am
+7:07:49 pm
+12h 8m 38s
+<emoji> (3%)
+Mon, Sep 14
+5:31:14 am
+5:54:51 am
+5:46:54 pm
+6:10:31 pm
+11h 52m 3s
+2m 4s
+11:50:52 am
+-30.4°
+5:02:18 am
+6:39:27 pm
+4:33:14 am
+7:08:31 pm
+12h 6m 34s
+<emoji> (7%)
+Tue, Sep 15
+5:29:51 am
+5:53:28 am
+5:47:34 pm
+6:11:11 pm
+11h 54m 6s
+2m 3s
+11:50:31 am
+-30.8°
+5:00:55 am
+6:40:08 pm
+4:31:49 am
+7:09:13 pm
+12h 4m 30s
+<emoji> (13%)
+Wed, Sep 16
+5:28:27 am
+5:52:04 am
+5:48:15 pm
+6:11:52 pm
+11h 56m 11s
+2m 5s
+11:50:10 am
+-31.2°
+4:59:31 am
+6:40:49 pm
+4:30:23 am
+7:09:56 pm
+12h 2m 26s
+<emoji> (20%)
+Thu, Sep 17
+5:27:04 am
+5:50:41 am
+5:48:55 pm
+6:12:32 pm
+11h 58m 14s
+2m 3s
+11:49:48 am
+-31.6°
+4:58:06 am
+6:41:30 pm
+4:28:57 am
+7:10:39 pm
+12h 0m 22s
+<emoji> (29%)
+Fri, Sep 18
+5:25:40 am
+5:49:17 am
+5:49:36 pm
+6:13:13 pm
+12h 0m 19s
+2m 5s
+11:49:27 am
+-32°
+4:56:42 am
+6:42:12 pm
+4:27:30 am
+7:11:23 pm
+11h 58m 17s
+<emoji> (38%)
+Sat, Sep 19
+5:24:16 am
+5:47:53 am
+5:50:17 pm
+6:13:54 pm
+12h 2m 24s
+2m 5s
+11:49:05 am
+-32.3°
+4:55:17 am
+6:42:54 pm
+4:26:03 am
+7:12:07 pm
+11h 56m 12s
+<emoji> (47%)
+Sun, Sep 20
+5:22:52 am
+5:46:29 am
+5:50:58 pm
+6:14:35 pm
+12h 4m 29s
+2m 5s
+11:48:44 am
+-32.7°
+4:53:52 am
+6:43:36 pm
+4:24:36 am
+7:12:52 pm
+11h 54m 7s
+<emoji> (57%)
+Mon, Sep 21
+5:21:28 am
+5:45:05 am
+5:51:40 pm
+6:15:17 pm
+12h 6m 35s
+2m 6s
+11:48:23 am
+-33.1°
+4:52:26 am
+6:44:19 pm
+4:23:08 am
+7:13:37 pm
+11h 52m 2s
+<emoji> (66%)
+Tue, Sep 22
+5:20:04 am
+5:43:42 am
+5:52:21 pm
+6:15:59 pm
+12h 8m 39s
+2m 4s
+11:48:01 am
+-33.5°
+4:51:01 am
+6:45:02 pm
+4:21:40 am
+7:14:23 pm
+11h 49m 57s
+<emoji> (75%)
+Wed, Sep 23
+5:18:40 am
+5:42:18 am
+5:53:03 pm
+6:16:41 pm
+12h 10m 45s
+2m 6s
+11:47:40 am
+-33.9°
+4:49:35 am
+6:45:45 pm
+4:20:11 am
+7:15:09 pm
+11h 47m 51s
+<emoji> (83%)
+Thu, Sep 24
+5:17:15 am
+5:40:54 am
+5:53:44 pm
+6:17:23 pm
+12h 12m 50s
+2m 5s
+11:47:19 am
+-34.3°
+4:48:09 am
+6:46:29 pm
+4:18:42 am
+7:15:56 pm
+11h 45m 46s
+<emoji> (90%)
+Fri, Sep 25
+5:15:51 am
+5:39:30 am
+5:54:26 pm
+6:18:05 pm
+12h 14m 56s
+2m 6s
+11:46:58 am
+-34.7°
+4:46:43 am
+6:47:13 pm
+4:17:13 am
+7:16:43 pm
+11h 43m 41s
+<emoji> (95%)
+Sat, Sep 26
+5:14:27 am
+5:38:07 am
+5:55:08 pm
+6:18:48 pm
+12h 17m 1s
+2m 5s
+11:46:37 am
+-35.1°
+4:45:17 am
+6:47:58 pm
+4:15:44 am
+7:17:31 pm
+11h 41m 35s
+<emoji> (99%)
+Sun, Sep 27
+5:13:03 am
+5:36:43 am
+5:55:51 pm
+6:19:31 pm
+12h 19m 8s
+2m 7s
+11:46:17 am
+-35.5°
+4:43:51 am
+6:48:43 pm
+4:14:14 am
+7:18:19 pm
+11h 39m 29s
+<emoji> (100%)
+Mon, Sep 28
+5:11:38 am
+5:35:20 am
+5:56:33 pm
+6:20:15 pm
+12h 21m 13s
+2m 5s
+11:45:57 am
+-35.8°
+4:42:24 am
+6:49:29 pm
+4:12:45 am
+7:19:09 pm
+11h 37m 24s
+<emoji> (99%)
+Tue, Sep 29
+5:10:14 am
+5:33:57 am
+5:57:16 pm
+6:20:59 pm
+12h 23m 19s
+2m 6s
+11:45:36 am
+-36.2°
+4:40:58 am
+6:50:15 pm
+4:11:15 am
+7:19:58 pm
+11h 35m 18s
+<emoji> (96%)
+Wed, Sep 30
+5:08:51 am
+5:32:34 am
+5:57:59 pm
+6:21:43 pm
+12h 25m 25s
+2m 6s
+11:45:17 am
+-36.6°
+4:39:32 am
+6:51:02 pm
+4:09:45 am
+7:20:49 pm
+11h 33m 13s
+<emoji> (90%)
+<emoji> Got a cool idea? <emoji> Found any errors?
+We're always improving this website!
+If you have an idea of some content or information to include in this page or found an error, please let us know!
+Sunrise and Sunset photos in Sydney, New South Wales
+Enjoy this beautiful gallery of images of the sunset and sunrise at Sydney, New South Wales. All images provided by our fantastic community of photographers!
+Year distribution of sunrise and sunset times in Sydney, New South Wales - 2026
+The following graph shows sunrise and sunset times in Sydney, New South Wales for every day of the year. There are two jumps in the graph that represent the hour change for Daylight Saving Time (DST) in Sydney, New South Wales.
+Daylight Dawn & dusk (civil twilight) Night Solar noon · Vertical steps in the curves = DST clock change
+Earliest and latest sunrise and sunset in Sydney, New South Wales
+In Sydney, New South Wales, the earliest sunrise of 2026 is on October 3 at 5:28 am, while the latest sunrise is on April 4 at 7:08 am. The earliest sunset is on June 12 at 4:54 pm, and the latest sunset is on January 7 at 8:11 pm.
+Sydney, New South Wales gets 4h 30m more daylight on the longest day than on the shortest one (14h 27m versus 9h 56m). Averaged over the whole year, a day lasts 12h 09m.
+Places near Sydney, New South Wales
+These nearby towns and cities have almost the same sunrise and sunset times as Sydney, New South Wales — the difference is only seconds to a couple of minutes. Select any place to see its own sun calendar:
+Potts Point 2 kmKirribilli 2 kmBalmain 2 kmShell Cove 3 kmWaverton 3 kmRozelle 3 kmWoollahra 4 kmNorth Sydney 4 km
+Sunrise Sunset
+Check accurate sunrise and sunset times for any day and any location in the world.
+Sunrise-Sunset © 2014 - 2026
+Privacy Manager
+Cities
+Sydney
+Toronto
+Melbourne
+Perth
+Adelaide
+Brisbane
+Edmonton
+Halifax
+Gold Coast
+Hobart
+Darwin
+Canberra
+Information
+About us
+Free API! v2
+Contact
+Disclaimer
+Glossary
+Privacy Policy
+Terms of use
+API Status
+?>	c5a08ccc3f32c56cd73af460ba45b2316ad3974493a002ca6a0a5efc90d2a22b	0	success	1788797156	1788798055

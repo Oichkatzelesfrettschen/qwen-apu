@@ -1,0 +1,28 @@
+profile_row	observed	model=qwen35-08b context=8192 max_results=3 max_fetches=1 primary=qwen-open fallback=- minimum=1 url=http://127.0.0.1:8888
+ordinary_router_recorded	pass	running=0 server=3d5b158160b08cf8
+depth_claim	observed	context=8192 validated_filled_depth=32768 override=0
+preset_generated	pass	1 section
+preset_carries_search_policy	pass	url=http://127.0.0.1:8888 primary=qwen-open fallback=- minimum=1
+web_launch	pass	web_launch presets=/tmp/weblookup/web-presets.ini unvalidated_depth_marker=absent authorizer_ready=1 bind=127.0.0.1 lan_exposure=0 lan_address=- lan_name=- lan_open=0;web_launch searxng=owned url=http://127.0.0.1:8888 port=8888;web_launch broker_port=8571 broker_state_dir=/tmp/weblookup/web-mcp signing_key=configured profile=web-lookup provider=searxng review_section=- models_max=1;web_launch static_path=$HOME/Github/qwen-apu/remote/../webui;web_launch exposure=loopback router=127.0.0.1:8080 broker=127.0.0.1:8571;
+api_key_minted	pass	mode=600 path=$HOME/Github/qwen-apu/.runtime/state/api.key
+searxng_child_recorded	pass	searxng_pid=4041354 start_time=84939029 port=8888
+searxng_listener_loopback	pass	127.0.0.1:8888,
+searxng_health	pass	status=200
+router_roster	pass	web-lookup,
+tool_enumeration	pass	web_fetch_exa,web_search_exa, via http://127.0.0.1:8080
+session_secret_issued	pass	status=200
+grant_issued	pass	status=200 bytes=447
+search_executed	pass	results=3 sources=3 minimum=1 engines=bing, elapsed=0.739726s
+fetch_by_result_id	pass	chars=9919 elapsed=0.643510s
+audit_names_category_and_holds_no_query	pass	category=qwen-open rows=580
+browser_page_origin	pass	origin=http://127.0.0.1:8080 model=web-lookup
+browser_grant_from_broker	pass	POST http://127.0.0.1:8571/grant count=1
+browser_search_via_router	pass	POST /tools model=web-lookup tool=web_search_exa grant=present
+browser_requests_stay_on_router_and_broker	pass	every page request names http://127.0.0.1:8080 or http://127.0.0.1:8571
+browser_tool_result_in_transcript	pass	Title: Microsoft – AI, Cloud, Productivity, Computing, Gaming & Apps URL: https://www.microsoft.com/en-us?msockid=1032
+browser_final_answer	pass	Based on the search results, there is no widely recognized or officially documented standard or specific size constraint for the "subgroup" parameter in the Vulkan Compute Shader API. The term is not 
+searxng_cost	observed	after-browser-turn rss_kib=76108 peak_rss_kib=76108 threads=5 cpu_ticks=107 utc=2026-09-07T16:07:01Z
+secret_hygiene	pass	key, grant, and session secret absent from process images, logs, and status
+web_teardown	pass	torn down: no server, tmux session, probe, approval broker, image service, search instance, or router snapshot; port 8080 free
+absence_proved	pass	router, child, broker, search instance, secret, and all three ports
+ordinary_restore	pass	no ordinary router was running at admission start

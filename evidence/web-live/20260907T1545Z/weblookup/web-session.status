@@ -1,0 +1,8 @@
+state=running server_pid=4041641 monitor_pid=4041971 latency_watchdog_pid=4041933 kernel_hazard_watchdog_pid=4041958 broker_pid=4041519 searxng_pid=4041354 lan_exposure=0 lan_address=- lan_name=- lan_open=0 lan_boundary=lan-authenticated profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-07T16:05:52Z
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=registry cache_type_v=registry flash_attention=registry override_context_ceiling=registry
+served_page source=$HOME/Github/qwen-apu/remote/../webui sha256=dcb26eee4d9a78ac20ba23041283163d9db51750d4f694c4a48d5afbbc3cb999 prompt_bound=- output_bound=-
+router enabled=1 presets=$HOME/Github/qwen-apu/.runtime/state/.router-presets.active.yog4IO preset_sha256=7a75db758424ff2540e741bb60a671b5e810fa87caebde76725dab5dcb8aacd1 models_max=1
+broker secret_file=/tmp/weblookup/web-mcp/authorize-session.secret
+broker_identity pid=4041519 start_time=84939146 profile=web-lookup provider=searxng signing_key_sha256=6c906693fd8f633ce1e3d88f5f5c4e3ebedcc56b9e4f0e1702dcefcd7de4c901
+searxng_identity pid=4041354 start_time=84939029 port=8888 url=http://127.0.0.1:8888

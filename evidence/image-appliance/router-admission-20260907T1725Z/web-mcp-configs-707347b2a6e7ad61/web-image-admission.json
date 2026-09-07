@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "image": {
+      "command": "python3",
+      "timeout_ms": 360000,
+      "args": [
+        "$HOME/Github/qwen-apu/remote/image-mcp/server.py"
+      ],
+      "env": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "QWEN_IMAGE_LANGUAGE_PROFILE": "web-image-admission",
+        "QWEN_IMAGE_PROFILE": "image-sdxs-512-a",
+        "QWEN_IMAGE_TOKEN_KEY_FILE": "/tmp/imgadmit/keys/token.key",
+        "QWEN_IMAGE_STATE_DIR": "$HOME/Github/qwen-apu/.runtime/state/images",
+        "QWEN_IMAGE_SERVICE_SOCKET": "$HOME/Github/qwen-apu/.runtime/state/images/image-service.sock",
+        "QWEN_IMAGE_PROFILES_JSON": "/tmp/imgadmit/image-parameters.json",
+        "QWEN_IMAGE_MCP_TIMEOUT_S": "360"
+      }
+    }
+  }
+}

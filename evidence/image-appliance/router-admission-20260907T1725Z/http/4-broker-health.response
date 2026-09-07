@@ -1,0 +1,13 @@
+{
+  "protocol": "qwen-web-broker/1",
+  "profile": "web-image-admission",
+  "image_profile": "image-sdxs-512-a",
+  "provider": "fake",
+  "pid": 273839,
+  "start_time": 85400177,
+  "signing_key_sha256": "b0ef638f588c6225dfb90fc69f1e1e4c62ae3cc17285d7a563c0d37ca7d50e59",
+  "state_dir": "64512:12066468",
+  "origins": [
+    "http://127.0.0.1:8080"
+  ]
+}

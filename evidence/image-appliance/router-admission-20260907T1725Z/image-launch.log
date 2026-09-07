@@ -1,0 +1,55 @@
+image_launch exposure=loopback
+image_parameters_external=/tmp/imgadmit/image-parameters.json
+image_launch timeouts runtime_ms=300000 service_ms=330000 mcp_ms=360000 proxy_ms=3600000 browser_ms=660000 proxy_source=llama-server-default
+device_name=AMD Radeon Graphics (RADV RAVEN2)
+device_vendor=0x1002
+device_id=0x15d8
+heap_0_size_bytes=5956993024
+heap_0_budget_bytes=5752496128
+heap_0_usage_bytes=0
+heap_0_available_bytes=5752496128
+heap_0_flags=0x0
+heap_1_size_bytes=11913986048
+heap_1_budget_bytes=11504984064
+heap_1_usage_bytes=0
+heap_1_available_bytes=11504984064
+heap_1_flags=0x1
+aggregate_budget_bytes=17257480192
+aggregate_usage_bytes=0
+aggregate_available_bytes=17257480192
+model_bytes=1312164224
+mem_available_bytes=12143177728
+required_host_bytes=6111100928
+desktop_reserve_bytes=4294967296
+required_vulkan_bytes=1816133632
+vulkan_margin_bytes=536870912
+required_vulkan_with_margin_bytes=2353004544
+swap_used_bytes=6827556864
+host_memory_headroom=ample surplus_bytes=6032076800
+vulkan_budget_headroom=ample surplus_bytes=14904475648
+model_memory_preflight=observe
+image_launch budget artifacts_mib=1252 runtime_mib=480 required_mib=1732 sections=1
+image_launch profile=image-sdxs-512-a ledger=/tmp/imgadmit/image-profiles.tsv runtime=$HOME/Github/qwen-apu/.runtime/opt/stable-diffusion.cpp/build-raven2/bin/sd-cli parameters=/tmp/imgadmit/image-parameters.json
+web_q4k_policy_source=registry
+web_launch presets=/tmp/imgadmit/web-presets.ini unvalidated_depth_marker=absent authorizer_ready=1 bind=127.0.0.1 lan_exposure=0 lan_address=- lan_name=- lan_open=0
+web_launch broker_port=8571 broker_state_dir=/tmp/imgadmit/web-mcp signing_key=configured profile=web-image-admission provider=fake review_section=- models_max=1
+web_launch static_path=$HOME/Github/qwen-apu/remote/../webui
+web_launch exposure=loopback router=127.0.0.1:8080 broker=127.0.0.1:8571
+runtime_tree=verified git_head=6b262d93cd0bb71738f75c8fcb7d13879f44d526 payload=e4b246098b9547b29b97fac21a83d432e874959317417106464b8afb91227fb1 files=523
+active_deployment=lease-q4k-6b262d93-r1 directory=$HOME/Github/qwen-apu/.runtime/deployments/lease-q4k-6b262d93-r1
+router_q4k_policy_source=registry
+router_preflight_subject=Qwen3.8-2B-Q4_K_M.gguf bytes=1312164224
+image_parameters_external=/tmp/imgadmit/image-parameters.json
+image_launch timeouts runtime_ms=300000 service_ms=330000 mcp_ms=360000 proxy_ms=3600000 browser_ms=660000 proxy_source=llama-server-default
+image_launch owner=qwen-image-launch.sh profile=image-sdxs-512-a required_mib=1732
+runtime_tree=verified git_head=6b262d93cd0bb71738f75c8fcb7d13879f44d526 payload=e4b246098b9547b29b97fac21a83d432e874959317417106464b8afb91227fb1 files=523
+deployment_binding server=$HOME/Github/qwen-apu/.runtime/deployments/lease-q4k-6b262d93-r1/llama-server ledger=$HOME/Github/qwen-apu/.runtime/deployments/lease-q4k-6b262d93-r1/ctx-checkpoints.tsv q4k_policy=registry
+runtime_tree=verified git_head=6b262d93cd0bb71738f75c8fcb7d13879f44d526 payload=e4b246098b9547b29b97fac21a83d432e874959317417106464b8afb91227fb1 files=523
+deployment_binding server=$HOME/Github/qwen-apu/.runtime/deployments/lease-q4k-6b262d93-r1/llama-server ledger=$HOME/Github/qwen-apu/.runtime/deployments/lease-q4k-6b262d93-r1/ctx-checkpoints.tsv q4k_policy=registry
+started tmux_socket=qwen-runtime tmux_session=qwen-webui profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe model=$HOME/Github/qwen-apu/.runtime/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf server=$HOME/Github/qwen-apu/.runtime/deployments/lease-q4k-6b262d93-r1/llama-server
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=registry cache_type_v=registry flash_attention=registry override_context_ceiling=registry
+state=running server_pid=273994 monitor_pid=274357 latency_watchdog_pid=274321 kernel_hazard_watchdog_pid=274346 broker_pid=273839 image_service_pid=273917 lan_exposure=0 lan_address=- lan_name=- lan_open=0 lan_boundary=lan-authenticated profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-07T17:22:43Z
+reachable at http://127.0.0.1:8080 (loopback only)
+approval broker at http://127.0.0.1:8571 (loopback only)
+stop it with $HOME/Github/qwen-apu/remote/qwen-teardown.sh

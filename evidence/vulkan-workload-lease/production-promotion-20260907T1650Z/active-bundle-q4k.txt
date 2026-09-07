@@ -1,0 +1,12 @@
+=== active bundle manifest (q4k + series) ===
+.runtime/deployments/main-2c1fa9de-r1/artifact-manifest.tsv:checkpoint_semantics	natural-boundary-v1
+.runtime/deployments/main-2c1fa9de-r1/artifact-manifest.tsv:checkpoint_patch_series_sha256	a91a215ac769c4372b230a0084f01bfa3acfea81d777e3b480400f565a5e4bec
+.runtime/deployments/main-2c1fa9de-r1/artifact-manifest.tsv:checkpoint_series_tree	verified-candidate
+.runtime/deployments/main-2c1fa9de-r1/artifact-manifest.tsv:q4k_variants	production/4,e4/2,e4/4,e4/8,e4-scale/2,e4-scale/4,e4-scale/8,e4-scale-licm/2,e4-scale-licm/4,e4-scale-licm/8,route=arg:LLAMA_ARG_VK_Q4K_VARIANT
+.runtime/deployments/main-2c1fa9de-r1/artifact-manifest.tsv:candidate_series	llama-vulkan-q4k-activation-group-sums.patch,llama-vulkan-q4k-activation-sideplane.patch,llama-vulkan-q4k-scale-word-select.patch,llama-vulkan-q4k-superblock-loop-licm.patch,llama-vulkan-q4k-variant-select.patch,llama-vulkan-q4k-row-select.patch
+.runtime/deployments/main-2c1fa9de-r1/artifact-manifest.tsv:candidate_series_sha256	b38cf563642eb594f021eeff81819a2fd19fd0112bf604988b6b1c4170a8e5aa
+.runtime/deployments/main-2c1fa9de-r1/artifact-manifest.tsv:checkpoint_source_root	$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-q4k-release
+.runtime/deployments/main-2c1fa9de-r1/artifact-manifest.tsv:file_prefix_map	-ffile-prefix-map=$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-q4k-release=/src -ffile-prefix-map=$HOME/Github/qwen-apu/.runtime/opt/llama.cpp-q4k-release/build-raven2-vulkan-production=/build
+.runtime/deployments/main-2c1fa9de-r1/bundle-manifest.tsv:checkpoint_semantics	natural-boundary-v1
+.runtime/deployments/main-2c1fa9de-r1/bundle-manifest.tsv:q4k-policy.tsv	fa3d123b333956fe04e0237078601b224dfb728091f5fd4bcc56025676d9dfe7
+=== active q4k-policy ===

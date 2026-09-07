@@ -22,7 +22,7 @@ fi
 
 checkpoint_source=$1
 checkpoint_patch_path=$2
-natural_boundary_source_sha256=${3:-3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a}
+natural_boundary_source_sha256=${3:-7ef5095ae09986f2d7b244bcf72e0c389a40eab03d8ebf9744f0599218fdbe46}
 natural_boundary_patch_sha256=${4:-c9d4010594da1f632be009b934cd045f6625b8baba68d09b7ed6190b02f9ddfc}
 forced_tail_source_sha256=${5:-a79cf9e1d4a8d7c1f0ee608aa781628db403e8f59e25e731f997d0952d230e47}
 

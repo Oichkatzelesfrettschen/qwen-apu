@@ -90,16 +90,24 @@ if grep -q '^unset QWEN_VULKAN_WORKLOAD_LOCK$' \
 fi
 pass 'the workload lock variable survives the environment scrub'
 
-candidate_report=$temporary_directory/candidate-patches.log
-if ! QWEN_LLAMA_CANDIDATE_PATCHES=1 \
-    "$script_directory/verify-llama-patch-series.sh" \
-    >"$candidate_report" 2>&1; then
-    cat "$candidate_report" >&2
-    fail 'the candidate patch series failed to replay'
+# The lease is a production member, so the plain replay covers it and the
+# ledger row states the stage. A production replay prints one
+# patch_replay_match row per rewritten file and one accepted line naming the
+# member count rather than a per-member applies row, so the stage is read from
+# the ledger and the replay is required to accept over it.
+series_ledger=$repository_directory/remote/llama-patch-series.tsv
+if ! grep -q '^production	llama-server-vulkan-workload-lease\.patch$' \
+    "$series_ledger"; then
+    fail 'the workload lease patch is absent from the production stage'
 fi
-if ! grep -q '^candidate_patch=llama-server-vulkan-workload-lease.patch applies=yes$' \
-    "$candidate_report"; then
-    fail 'the workload lease patch is absent from the candidate stage'
+production_report=$temporary_directory/production-patches.log
+if ! "$script_directory/verify-llama-patch-series.sh" \
+    >"$production_report" 2>&1; then
+    cat "$production_report" >&2
+    fail 'the production patch series failed to replay'
+fi
+if ! grep -q '^patch_series=accepted ' "$production_report"; then
+    fail 'the production patch series replay did not accept'
 fi
 patch_digest=$(sha256sum \
     "$repository_directory/patches/llama-server-vulkan-workload-lease.patch" |

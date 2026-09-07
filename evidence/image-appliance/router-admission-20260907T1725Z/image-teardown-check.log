@@ -1,0 +1,2 @@
+vulkan workload lease is free: $HOME/Github/qwen-apu/.runtime/state/vulkan-workload.lock
+image teardown verified: no service, no runtime, no partial artifact, lease free or verified campaign-owned
