@@ -46,6 +46,8 @@ shell_files=$(find remote -type f -name '*.sh' -print | sort)
 python_files=$(find remote -type f -name '*.py' -print | sort)
 typed_python_files='remote/classify-sweep-coverage.py
 remote/test-classify-sweep-coverage.py
+remote/sanitize-capture.py
+remote/test-sanitize-capture.py
 remote/open-verified-lock-descriptor.py
 remote/test-open-verified-lock-descriptor.py
 remote/signal-process-group.py
@@ -324,8 +326,11 @@ gate_cell test-classify-sweep-coverage derive \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-classify-sweep-coverage.py'
 # The coverage documents are derived, so an inventory or manifest edit that
 # leaves them stale fails here rather than being read later as a measurement.
+gate_cell test-sanitize-capture derive \
+    'remote/test-sanitize-capture.py remote/sanitize-capture.py' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-sanitize-capture.py'
 gate_cell sweep-coverage-current derive \
-    'remote/classify-sweep-coverage.py evidence/home-directory-sweep-coverage.tsv evidence/home-directory-sweep-producers.tsv evidence/home-directory-sweep-retention.tsv evidence/SHA256SUMS' \
+    'remote/classify-sweep-coverage.py evidence/home-directory-sweep-coverage.tsv evidence/home-directory-sweep-producers.tsv evidence/home-directory-sweep-retention.tsv evidence/home-sweep-recovery/producer-receipts.tsv evidence/SHA256SUMS' \
     'python3 remote/classify-sweep-coverage.py --check'
 gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
     remote/test-run-served-binary-ab.sh

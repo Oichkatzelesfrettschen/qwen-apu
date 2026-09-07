@@ -90,6 +90,20 @@ def build_tree(root: Path) -> None:
         encoding="utf-8",
     )
 
+    # The receipt ledger states what wrote each record. It disagrees with the
+    # artifact marker on the partial directory on purpose: a device artifact
+    # says the directory holds Raven2-produced bytes and a workstation receipt
+    # says that record was written elsewhere, and both claims survive.
+    (root / "evidence/home-sweep-recovery/producer-receipts.tsv").write_text(
+        "directory\treceipt_path\tevidence\tderived_role\n"
+        "campaigns/partial\tcampaigns/partial/campaign-inputs.tsv\t"
+        "workstation-host\tworkstation\n"
+        "campaigns/whole\tcampaigns/whole/receipt.tsv\tRADV RAVEN2\t"
+        "raven2-appliance\n"
+        "campaigns/unmatched\tcampaigns/unmatched/receipt.tsv\t-\tunknown\n",
+        encoding="utf-8",
+    )
+
 
 def run(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -180,17 +194,27 @@ def main() -> int:
         )
         partial = rows["campaigns/partial"]
         report(
-            "device_artifact_attributes_the_producer",
+            "disagreeing_sources_read_mixed_and_name_both",
             "ok"
-            if partial[8] == "raven2-appliance" and partial[9] == "clock-sidecar.tsv"
+            if partial[8] == "mixed"
+            and partial[9]
+            == "artifact:clock-sidecar.tsv"
+            + ",receipt:campaigns/partial/campaign-inputs.tsv"
             else f"{partial[8]} / {partial[9]}",
         )
         report(
-            "absent_marker_reads_unknown",
+            "receipt_attributes_a_directory_carrying_no_artifact",
             "ok"
-            if rows["campaigns/whole"][8] == "unknown"
-            and rows["campaigns/whole"][9] == "-"
+            if rows["campaigns/whole"][8] == "raven2-appliance"
+            and rows["campaigns/whole"][9] == "receipt:campaigns/whole/receipt.tsv"
             else str(rows["campaigns/whole"][8:10]),
+        )
+        report(
+            "a_silent_receipt_attributes_nothing",
+            "ok"
+            if rows["campaigns/unmatched"][8] == "unknown"
+            and rows["campaigns/unmatched"][9] == "-"
+            else str(rows["campaigns/unmatched"][8:10]),
         )
         report(
             "storage_role_is_stated_not_derived",
@@ -219,6 +243,22 @@ def main() -> int:
         report(
             "check_refuses_a_stale_document",
             "ok" if stale.returncode == 1 else f"exit {stale.returncode}",
+        )
+
+        # A receipt row attributing a directory it was not read inside would
+        # infer production from location, which is the reading this ledger
+        # replaces rather than extends.
+        foreign = root / "foreign-receipts.tsv"
+        foreign.write_text(
+            "directory\treceipt_path\tevidence\tderived_role\n"
+            "campaigns/whole\tcampaigns/partial/receipt.tsv\tRADV RAVEN2\t"
+            "raven2-appliance\n",
+            encoding="utf-8",
+        )
+        refused = run(root, "--producer-receipts", str(foreign))
+        report(
+            "refuses_a_receipt_outside_its_directory",
+            "ok" if refused.returncode == 2 else f"exit {refused.returncode}",
         )
 
     if failures:
