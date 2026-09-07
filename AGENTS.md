@@ -1969,6 +1969,15 @@ remote/qwen-webui-control.sh status
 remote/run-device-window.sh NAME COMMAND [ARG...]
 remote/run-device-window.sh status
 
+# What the launch chain took rather than what it was permitted. The session
+# opens one CLOCK_MONOTONIC record per launch under
+# $QWEN_HOME/state/stage-timing/, points stage-timing.tsv at it, and names that
+# path on the state=running line; the launcher and the teardown append their
+# own rows to the named record.
+remote/summarize-stage-timing.py stages $QWEN_HOME/state/stage-timing.tsv
+remote/measure-model-switch.sh OUTPUT_DIRECTORY [SWITCH_COUNT]
+remote/summarize-stage-timing.py switches OUTPUT_DIRECTORY/model-switch.tsv
+
 # Select a checkpoint, a listener, and the inference core
 QWEN_MODEL_PATH=$HOME/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf \
 QWEN_BIND_HOST=0.0.0.0 QWEN_INFERENCE_CPU=1 \
@@ -2308,6 +2317,9 @@ directly:
 
 ```sh
 remote/test-qwen-runtime-guards.sh
+remote/test-stage-timing.sh
+remote/test-measure-model-switch.sh
+python3 remote/test-summarize-stage-timing.py
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
 remote/test-verify-models.sh
