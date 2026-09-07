@@ -1485,7 +1485,7 @@ is derived from the digest: `provenance_url` names the `.json` record and the
 page composes `/artifacts/<sha>.png` from the same value, so one reply carries
 one identity and both routes follow from it.
 
-`~/qwen-webui-state/vulkan-workload.lock` is that lease, and it is two-sided in
+`$QWEN_HOME/state/vulkan-workload.lock` is that lease, and it is two-sided in
 time rather than tied to residency. `image-service.py` holds it from job start
 to artifact rename, and its acquisition waits on a bounded deadline --
 `QWEN_IMAGE_LEASE_WAIT_S`, 60 seconds by default, zero for one non-blocking
@@ -1719,7 +1719,7 @@ place, inserting the two tags after the `qwen-web-broker` meta from the same
 `QWEN_LAN_MAX_PROMPT_TOKENS` and `QWEN_LAN_MAX_OUTPUT_TOKENS` the policy reads
 and inserting none where the launch names none; a source page that already
 carries either tag is refused, since the launch alone writes them.
-`qwen-webui-session.sh` stages into `~/qwen-webui-state/webui-served` ahead of
+`qwen-webui-session.sh` stages into `$QWEN_HOME/state/webui-served` ahead of
 the server and records the source, the copy's SHA-256, and both bounds on a
 `served_page` status line. `qwen-capacity-policy.sh` then reads the served
 page's tags back through the same script's `read` command and requires them to
@@ -1804,10 +1804,13 @@ QWEN_RUNTIME_ROOT_CONFIRM=$PWD/.runtime make uninstall
                                                 # production checkout
 QWEN_RUNTIME_ROOT_CONFIRM=$PWD/.runtime make purge
 
-# Start and stop the appliance (run on the laptop)
-~/qwen-laptop-setup/remote/qwen-launch.sh [paced-60|low-serialized|low-async]
-~/qwen-laptop-setup/remote/qwen-web-launch.sh [PROFILE]   # web presets, loopback by default
-~/qwen-laptop-setup/remote/qwen-image-launch.sh [PROFILE] # web presets with the image lane armed
+# Start and stop the appliance, from the appliance's own checkout. Every script
+# here resolves its siblings and the runtime root through qwen-home.sh, which
+# takes qwen_tree_root as the parent of its own directory, so a working copy
+# reads correctly whatever it is named and wherever it sits.
+remote/qwen-launch.sh [paced-60|low-serialized|low-async]
+remote/qwen-web-launch.sh [PROFILE]   # web presets, loopback by default
+remote/qwen-image-launch.sh [PROFILE] # web presets with the image lane armed
 
 # The web lane on the operator's own network, bearer required on every route.
 # The key exists before the listener does, so it is minted once and read out of
@@ -1815,13 +1818,13 @@ QWEN_RUNTIME_ROOT_CONFIRM=$PWD/.runtime make purge
 # QWEN_BIND_HOST left unset binds the one QWEN_WEB_LAN_ADDRESS literal rather
 # than every interface; QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 is the separate,
 # loudly-printed opt-in that widens it to 0.0.0.0.
-openssl rand -hex 32 >~/qwen-webui-state/api.key
-chmod 600 ~/qwen-webui-state/api.key
+openssl rand -hex 32 >$QWEN_HOME/state/api.key
+chmod 600 $QWEN_HOME/state/api.key
 QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
 QWEN_WEB_AUTHORIZER_READY=1 \
 QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
-    ~/qwen-laptop-setup/remote/qwen-web-launch.sh low-async
-# The session's `lan_exposure` line in ~/qwen-webui-state/session.status names
+    remote/qwen-web-launch.sh low-async
+# The session's `lan_exposure` line in $QWEN_HOME/state/session.status names
 # the page URL, which carries ?broker= and ?artifacts= because the page's meta
 # tags name the loopback. The `lan_interface` line beside it names the
 # interface index, name, MAC, prefix length, and NetworkManager connection
@@ -1840,7 +1843,7 @@ QWEN_SERVER_PORT=42069 \
 QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
 QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
 QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
-    ~/qwen-laptop-setup/remote/qwen-launch.sh low-async
+    remote/qwen-launch.sh low-async
 # The household open mode at one permanent address with no key step.
 # QWEN_WEB_LAN_OPEN=1 removes the Web UI bearer from the router, the broker,
 # and the artifact listener: every reachable peer can chat, consume model
@@ -1857,7 +1860,7 @@ QWEN_WEB_LAN_TRUSTED_CONNECTIONS=$(nmcli -t -f UUID,DEVICE connection show --act
     awk -F: '$2 == "eth0" { print $1 }') \
 QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
 QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
-    ~/qwen-laptop-setup/remote/qwen-launch.sh low-async
+    remote/qwen-launch.sh low-async
 
 # The LAN bring-up states that whole environment once, under one of two named
 # security profiles: lan-authenticated (the default, bearer required on every
@@ -1870,26 +1873,26 @@ QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
 # prints the active boundary in capitals before the name to open. The same
 # line appears first in `qwen-webui-control.sh status`, which echoes the
 # session's own recorded `state=running` line.
-~/qwen-laptop-setup/remote/qwen-lan-launch.sh lan-authenticated [low-async]
+remote/qwen-lan-launch.sh lan-authenticated [low-async]
 QWEN_WEB_LAN_TRUSTED_CONNECTIONS=$(nmcli -t -f UUID,DEVICE connection show --active | \
     awk -F: '$2 == "eth0" { print $1 }') \
-    ~/qwen-laptop-setup/remote/qwen-lan-launch.sh lan-open-approved [low-async]
+    remote/qwen-lan-launch.sh lan-open-approved [low-async]
 # QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 binds every interface instead of the one
 # selected address; the launch prints that decision loudly rather than
 # folding it into the ordinary exposure line.
-~/qwen-laptop-setup/remote/qwen-teardown.sh
-~/qwen-laptop-setup/remote/qwen-webui-control.sh status
+remote/qwen-teardown.sh
+remote/qwen-webui-control.sh status
 
 # Select a checkpoint, a listener, and the inference core
 QWEN_MODEL_PATH=$HOME/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf \
 QWEN_BIND_HOST=0.0.0.0 QWEN_INFERENCE_CPU=1 \
-    ~/qwen-laptop-setup/remote/qwen-launch.sh
+    remote/qwen-launch.sh
 
 # Measurement harnesses, each of which owns its own launch and teardown
 remote/compare-model-candidate.sh LABEL MODEL_PATH [PROFILE]
 remote/run-placement-sweep.sh [OUTPUT]
 remote/reasoning-span-probe.sh OUTPUT_JSON     # against a live server
-remote/summarize-probe.sh ~/qwen-webui-state/graphics-latency.log
+remote/summarize-probe.sh $QWEN_HOME/state/graphics-latency.log
 remote/gguf-tensor-census.py MODEL [MODEL...]   # what a Q4_K_M file holds
 remote/admit-candidate-static.py REPO REV      # a header over a range read
 remote/hash-load-closure.sh EXECUTABLE [OUT]    # identity of every loaded object
@@ -1900,7 +1903,7 @@ remote/measure-bench-repeatability.sh MODEL    # what a depth-0 rate repeats to
 remote/run-quality-suite.py ENDPOINT OUT_JSON --long-context-characters 24000
                                                 # the 75-row graded suite at explicit depth
 remote/run-quality-roster.sh [OUTPUT_DIR]      # that suite against every servable row
-QWEN_WEB_API_KEY_FILE=~/qwen-webui-state/api.key \
+QWEN_WEB_API_KEY_FILE=$QWEN_HOME/state/api.key \
     remote/run-conversational-suite.sh [OUTPUT_DIR] [MODEL_ID...]
                                                 # the suite web-off through the API and
                                                 # web-on through the served page, per
@@ -2280,7 +2283,7 @@ remote/test-power-envelope.sh
 remote/test-run-raven2-vulkan-kernel-census.sh
 remote/verify-llama-patch-series.sh
 QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh
-GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
+GGUF_PY_PATH=$QWEN_HOME/opt/llama.cpp/gguf-py \
     remote/test-gguf-tensor-census.py [MODEL...]
 ```
 
