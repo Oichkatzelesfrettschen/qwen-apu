@@ -549,12 +549,22 @@ sidecar_max_gap_ns=$((sidecar_max_gap_ms * 1000000))
 # The SMU10 kernel path reports the fabric clock through pp_dpm_mclk and leaves
 # pp_dpm_fclk empty, so a column the kernel empties at campaign start is allowed
 # to read unavailable and an absent or unreadable attribute is a different
-# telemetry state.
+# telemetry state. The emptiness is decided by reading the attribute, the
+# predicate run-raven2-vulkan-kernel-census.sh applies: sysfs reports every
+# attribute at one page in stat, so a size test reads the empty attribute as
+# full and withholds the allowance from every arm, which reaches the ledger as
+# reason=clock_sidecar over a record whose every other check accepted.
 sidecar_allowed_unavailable=''
 if [ "$sampler" = python ]; then
     fclk_path=$drm_device/pp_dpm_fclk
-    if [ -r "$fclk_path" ] && [ ! -s "$fclk_path" ]; then
-        sidecar_allowed_unavailable=pp_dpm_fclk_surface_mhz
+    if [ -r "$fclk_path" ]; then
+        set +e
+        fclk_contents=$(cat "$fclk_path")
+        fclk_status=$?
+        set -e
+        if [ "$fclk_status" -eq 0 ] && [ -z "$fclk_contents" ]; then
+            sidecar_allowed_unavailable=pp_dpm_fclk_surface_mhz
+        fi
     fi
 fi
 
