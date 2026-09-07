@@ -164,6 +164,76 @@ for bad_value in 0 -1 2.5 four '' 04; do
 done
 report malformed_row_count_refused "$outcome"
 
+# A verification pass scores several columns through the same pipeline, so the
+# column count reaches lab.sh as specialization constant 2 while the row count
+# and the block size hold at the served geometry.
+: >"$work_directory/lab-arguments"
+outcome=accepted
+run_receipt "$work_directory/two-column" --allow-device --subgroup-only \
+    --num-cols 2 >/dev/null 2>&1 || outcome=refused
+if [ "$outcome" = accepted ]; then
+    grep -q -- ' --spec 2:2 ' "$work_directory/lab-arguments" ||
+        outcome=candidate_columns_absent
+    grep -q -- ' --spec 2:1 ' "$work_directory/lab-arguments" &&
+        outcome=served_columns_also_forwarded
+    grep -q -- ' --spec 1:2 ' "$work_directory/lab-arguments" ||
+        outcome=candidate_rows_moved
+    grep -q -- ' --spec 0:64 ' "$work_directory/lab-arguments" ||
+        outcome=candidate_block_size_moved
+fi
+report candidate_forwards_its_own_column_count "$outcome"
+
+# An arm asking what a wider verification pass costs at another row count moves
+# both counts, and each reaches its own constant.
+: >"$work_directory/lab-arguments"
+outcome=accepted
+run_receipt "$work_directory/two-column-one-row" --allow-device --subgroup-only \
+    --num-rows 1 --num-cols 2 >/dev/null 2>&1 || outcome=refused
+if [ "$outcome" = accepted ]; then
+    grep -q -- ' --spec 1:1 ' "$work_directory/lab-arguments" ||
+        outcome=row_count_absent
+    grep -q -- ' --spec 2:2 ' "$work_directory/lab-arguments" ||
+        outcome=column_count_absent
+fi
+report both_counts_reach_their_own_constants "$outcome"
+
+# Constant 2 reaches ACO at pipeline creation the way constant 1 does, so a
+# spirv-only run at another column count is refused for the same reason.
+outcome=refused
+if run_receipt "$work_directory/spirv-two-column" --num-cols 2 \
+    >/dev/null 2>"$work_directory/spirv-two-column.err"; then
+    outcome=admitted
+elif grep -q 'reaches the compiler at pipeline creation alone' \
+    "$work_directory/spirv-two-column.err"; then
+    outcome=accepted
+else
+    outcome=wrong_reason
+    cat "$work_directory/spirv-two-column.err" >&2
+fi
+report spirv_only_column_candidate_refused "$outcome"
+
+# The column count takes the value space the row count takes, so the same
+# malformed and oversized values are argument errors there too.
+for bad_value in 0 -1 2.5 four '' 04 999999999999999999999999999999; do
+    outcome=refused
+    if run_receipt "$work_directory/badcol-$$-$checks" --allow-device \
+        --num-cols "$bad_value" >/dev/null 2>&1; then
+        outcome=admitted
+    else
+        status=$?
+        if [ "$status" -eq 2 ]; then
+            outcome=accepted
+        else
+            outcome=wrong_status
+        fi
+    fi
+    [ "$outcome" = accepted ] || {
+        printf 'the column count %s produced %s\n' "$bad_value" "$outcome" >&2
+        break
+    }
+done
+report malformed_column_count_refused "$outcome"
+
 # The retained directory states its own arm, because one SPIR-V module serves
 # every row count and the order two runs were taken in is not a record.
 outcome=accepted
@@ -184,6 +254,17 @@ if [ "$outcome" = accepted ]; then
     grep -qx -- '-	specialization_applied	no' \
         "$work_directory/spirv-default/specialization.tsv" ||
         outcome=spirv_layer_unstated
+    # A two-column arm and a one-column control share every other constant, so
+    # the record states the column count beside the served value it moved from.
+    grep -qx -- '2	NUM_COLS	2' \
+        "$work_directory/two-column/specialization.tsv" ||
+        outcome=candidate_column_count_unstated
+    grep -qx -- '-	served_num_cols	1' \
+        "$work_directory/two-column/specialization.tsv" ||
+        outcome=served_column_count_unstated
+    grep -qx -- '2	NUM_COLS	1' \
+        "$work_directory/default/specialization.tsv" ||
+        outcome=control_column_count_unstated
 fi
 report retained_directory_states_its_arm "$outcome"
 
