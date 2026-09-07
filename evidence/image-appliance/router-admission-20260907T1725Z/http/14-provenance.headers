@@ -1,0 +1,10 @@
+HTTP/1.1 200 OK
+Server: qwen-image-artifacts/1.0 
+Date: Mon, 07 Sep 2026 17:23:00 GMT
+Content-Type: application/json
+Content-Length: 2961
+Cache-Control: private, max-age=31536000, immutable
+ETag: "335a00face48edd16b553c491c79d8553f8ead918467dbbf5555189b19de4f6d"
+X-Content-Type-Options: nosniff
+Content-Disposition: inline; filename="335a00face48edd16b553c491c79d8553f8ead918467dbbf5555189b19de4f6d.json"
+
