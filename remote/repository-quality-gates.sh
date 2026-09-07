@@ -422,6 +422,9 @@ gate_cell test-fallback-webui-ui-switch derive remote/test-fallback-webui-ui-swi
     'node remote/test-fallback-webui-ui-switch.mjs'
 gate_cell test-fallback-webui-roster derive remote/test-fallback-webui-roster.mjs \
     'node remote/test-fallback-webui-roster.mjs'
+gate_cell test-fallback-webui-image-review derive \
+    remote/test-fallback-webui-image-review.mjs \
+    'node remote/test-fallback-webui-image-review.mjs'
 gate_cell test-fallback-webui-model-selection derive \
     remote/test-fallback-webui-model-selection.sh \
     remote/test-fallback-webui-model-selection.sh
