@@ -182,6 +182,18 @@ QWEN_PURGE_LEGACY_CONFIRM=yes QWEN_DOCTOR_HOME=$fake_home QWEN_DOCTOR_SYSTEM_PRE
 printf 'state=running server_pid=1\n' >"$QWEN_HOME/state/session.status"
 if "$tool" uninstall >/dev/null 2>&1; then report uninstall_refuses_running_session accepted; else report uninstall_refuses_running_session ok; fi
 rm -f "$QWEN_HOME/state/session.status"
+# The doctor arms above seeded a foreign entry under the root, which the
+# deletion preflight classifies as unclassified rather than reading an absent
+# declaration as permission. It refuses the removal here, so the arm that
+# tests what uninstall keeps clears it first.
+if "$tool" uninstall >/dev/null 2>&1; then
+    report uninstall_refuses_a_foreign_entry accepted
+else
+    report uninstall_refuses_a_foreign_entry ok
+fi
+[ -f "$QWEN_HOME/cache/drop" ] && report refused_uninstall_touches_nothing ok \
+    || report refused_uninstall_touches_nothing removed
+rm -rf "$QWEN_HOME/stray-directory"
 "$tool" uninstall >/dev/null
 [ -f "$QWEN_HOME/state/keep.txt" ] && [ -f "$QWEN_HOME/models/keep.gguf" ] && [ ! -e "$QWEN_HOME/cache" ] && [ ! -e "$QWEN_HOME/stray-directory" ] \
     && report uninstall_keeps_state_and_models ok || report uninstall_keeps_state_and_models "$(ls -A "$QWEN_HOME")"
@@ -193,7 +205,9 @@ if QWEN_HOME=$unmarked "$tool" uninstall >/dev/null 2>&1; then report unmarked_r
 # ---- a root bound to a production checkout takes the confirm on uninstall ----
 production_tree=$work/production-checkout
 mkdir -p "$production_tree/remote" "$production_tree/.git"
-cp "$script_directory/qwen-home.sh" "$script_directory/runtime-root.sh" "$production_tree/remote/"
+cp "$script_directory/qwen-home.sh" "$script_directory/runtime-root.sh" \
+    "$script_directory/check-deletion-plan.sh" \
+    "$script_directory/open-verified-lock-descriptor.py" "$production_tree/remote/"
 production_root=$work/production-root
 QWEN_HOME=$production_root "$production_tree/remote/runtime-root.sh" init >/dev/null
 : >"$production_root/models/keep.gguf"; : >"$production_root/cache/drop"
@@ -220,7 +234,22 @@ QWEN_HOME=$production_root "$production_tree/remote/runtime-root.sh" uninstall >
 
 # ---- purge requires the confirm to equal the root ----
 if QWEN_RUNTIME_ROOT_CONFIRM=/wrong "$tool" purge >/dev/null 2>&1; then report purge_needs_exact_confirm accepted; else report purge_needs_exact_confirm ok; fi
-QWEN_RUNTIME_ROOT_CONFIRM=$QWEN_HOME "$tool" purge >/dev/null
+# purge selects models where uninstall keeps them, so a checkpoint the
+# registry proves nothing about is an object needing a decision rather than a
+# reconstructible product. The seeded file carries none and refuses.
+if QWEN_RUNTIME_ROOT_CONFIRM=$QWEN_HOME QWEN_DELETION_JOURNAL=$work/purge-journal.tsv \
+    "$tool" purge >/dev/null 2>&1; then
+    report purge_selects_the_model_tree accepted
+else
+    report purge_selects_the_model_tree ok
+fi
+[ -f "$QWEN_HOME/models/keep.gguf" ] && report refused_purge_keeps_the_checkpoint ok \
+    || report refused_purge_keeps_the_checkpoint removed
+rm -f "$QWEN_HOME/models/keep.gguf" "$QWEN_HOME/state/keep.txt"
+# purge removes state too, so the journal it records itself to is named
+# outside the root rather than defaulted into the bytes purge destroys.
+QWEN_RUNTIME_ROOT_CONFIRM=$QWEN_HOME QWEN_DELETION_JOURNAL=$work/purge-journal.tsv \
+    "$tool" purge >/dev/null
 [ ! -e "$QWEN_HOME/models" ] && [ ! -e "$QWEN_HOME/state" ] && report purge_removes_whole ok || report purge_removes_whole "$(ls -A "$QWEN_HOME")"
 
 if [ "$failures" -ne 0 ]; then printf '%s failure(s)\n' "$failures"; exit 1; fi

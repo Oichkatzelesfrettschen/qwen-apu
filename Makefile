@@ -103,10 +103,13 @@ verify-models:
 verify: verify-layout verify-components verify-live
 
 # uninstall keeps state/ and models/; purge removes the root whole and
-# requires QWEN_RUNTIME_ROOT_CONFIRM=$(QWEN_HOME); purge-legacy removes the
-# enumerated predecessor paths outside the root and requires
+# requires QWEN_RUNTIME_ROOT_CONFIRM=$(QWEN_HOME) beside a
+# QWEN_DELETION_JOURNAL naming a path outside that root, since purge removes
+# the state directory a default journal would live in; purge-legacy removes
+# the enumerated predecessor paths outside the root and requires
 # QWEN_PURGE_LEGACY_CONFIRM=yes. Each refuses a directory carrying no
-# runtime-root marker.
+# runtime-root marker, and the first two classify their whole selection
+# through check-deletion-plan.sh before removing anything.
 uninstall:
 	$(REMOTE)/runtime-root.sh uninstall
 
