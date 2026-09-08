@@ -170,7 +170,7 @@
   <label class="chip"><input type="checkbox" id="image-tools"> image</label>
   <input class="key" type="text" id="broker-origin" placeholder="approval broker origin" autocomplete="off">
   <input class="key" type="text" id="artifact-origin" placeholder="image artifact origin" autocomplete="off">
-  <button class="act" id="clear">clear</button>
+  <button class="act" id="clear">New conversation</button>
 </header>
 
 <!--
@@ -203,6 +203,7 @@
   <aside id="conversation-panel">
     <div id="conversation-actions">
       <button class="act" id="conversation-new">new conversation</button>
+      <button class="act" id="conversation-delete-all">delete all saved</button>
     </div>
     <div id="conversation-list"></div>
   </aside>
@@ -271,7 +272,7 @@
   <div id="attached"></div>
   <div class="row">
     <label class="file chip">attach
-      <input type="file" id="file" multiple accept="text/*,.md,.txt,.log,.csv,.json,.py,.c,.h,.rs,.sh">
+      <input type="file" id="file" multiple accept="image/*,text/*,.md,.txt,.log,.csv,.json,.py,.c,.h,.rs,.sh">
     </label>
     <textarea id="input" rows="1" placeholder="Ask. Shift+Enter for a newline."></textarea>
     <button class="act" id="send">send</button>
@@ -319,6 +320,8 @@ let attachments = [];   // {name, text, tokens, tokenModel}
 let nctx = null;
 let nctxModel = null;
 let busy = false;
+let imageSendBusySequence = 0;
+let imageSendBusyOwner = 0;
 let requestModel = null;
 let modelStateGeneration = 0;
 // Every tool message names the call it answers by id, so an id stays unique
@@ -501,6 +504,10 @@ async function refreshModelContext(selectedModel, generation) {
 async function refreshAttachmentTokens(selectedModel, generation) {
   const retainedAttachments = [...attachments];
   await Promise.all(retainedAttachments.map(async attachment => {
+    if (attachment.kind === 'image') {
+      attachment.tokenModel = selectedModel;
+      return;
+    }
     let tokens = null;
     try { tokens = await serverTokenCount(attachment.text, selectedModel); }
     catch { /* an explicit unavailable count replaces the prior model's count */ }
@@ -697,15 +704,6 @@ function selectRequestModel(selectedModel, persist = true) {
   renderAttached();
   void refreshModelContext(selectedModel, generation);
   void refreshAttachmentTokens(selectedModel, generation);
-}
-
-async function tokenCountForCurrentModel(text) {
-  while (requestModel) {
-    const selectedModel = requestModel;
-    const tokens = await serverTokenCount(text, selectedModel);
-    if (selectedModel === requestModel) return { tokens, tokenModel: selectedModel };
-  }
-  throw new Error('no routable model is selected');
 }
 
 const DEMO_TOOL = [{
@@ -2125,7 +2123,47 @@ function buildReviewRequestBody(visionModel, dataUri, promptHash, constraints) {
     top_k: 1,
     seed: 1,
     stream: false,
-    chat_template_kwargs: { enable_thinking: false }
+    chat_template_kwargs: { enable_thinking: false },
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: 'image_review',
+        schema: buildReviewVerdictSchema(constraints)
+      }
+    }
+  };
+}
+
+function buildReviewVerdictSchema(constraints) {
+  // The review grammar equals remote/image-review.py's
+  // build_verdict_schema(): llama-server converts the supported
+  // response_format.json_schema.schema member into the grammar that bounds
+  // sampled tokens, while parseReviewVerdict() checks the semantics again.
+  const names = constraints.map(constraint => constraint.name);
+  return {
+    type: 'object',
+    properties: {
+      hard_constraints: {
+        type: 'array',
+        minItems: names.length,
+        maxItems: names.length,
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', enum: names },
+            passed: { type: 'boolean' },
+            observation: { type: 'string', maxLength: REVIEW_OBSERVATION_MAX_CHARS }
+          },
+          required: [...REVIEW_CONSTRAINT_KEYS],
+          additionalProperties: false
+        }
+      },
+      composition_change_required: { type: 'boolean' },
+      prompt_delta: { type: 'string', maxLength: REVIEW_PROMPT_DELTA_MAX_CHARS },
+      regenerate: { type: 'boolean' }
+    },
+    required: [...REVIEW_VERDICT_KEYS],
+    additionalProperties: false
   };
 }
 
@@ -2138,6 +2176,13 @@ function parseReviewVerdict(reply, names) {
   const choices = reply && reply.choices;
   if (!Array.isArray(choices) || choices.length !== 1) {
     throw new Error('the reply carries no single choice');
+  }
+  const finishReason = choices[0] && choices[0].finish_reason;
+  if (finishReason !== 'stop') {
+    if (finishReason === undefined || finishReason === null || finishReason === '') {
+      throw new Error('the reply carries no terminal finish reason');
+    }
+    throw new Error(`the reply ended with finish_reason ${finishReason}`);
   }
   const message = choices[0] && choices[0].message;
   if (!message || typeof message !== 'object') {
@@ -2198,6 +2243,30 @@ function parseReviewVerdict(reply, names) {
   return parsed;
 }
 
+function buildReviewResult(reply, names, requestedModel) {
+  const verdict = parseReviewVerdict(reply, names);
+  const choice = reply.choices[0];
+  const message = choice.message;
+  const reportedCompletionTokens = reply.usage?.completion_tokens;
+  if (reportedCompletionTokens !== undefined
+      && (!Number.isSafeInteger(reportedCompletionTokens) || reportedCompletionTokens < 0)) {
+    throw new Error('review usage completion_tokens is no finite nonnegative integer');
+  }
+  const responseModel = typeof reply.model === 'string' && reply.model ? reply.model : null;
+  const reasoningContent = typeof message.reasoning_content === 'string'
+    ? message.reasoning_content : null;
+  return {
+    verdict,
+    requested_model: requestedModel,
+    response_model: responseModel,
+    finish_reason: choice.finish_reason,
+    usage: reply.usage && typeof reply.usage === 'object' ? { ...reply.usage } : null,
+    completion_tokens: reportedCompletionTokens ?? null,
+    reasoning_present: Boolean(reasoningContent),
+    reasoning_content: reasoningContent
+  };
+}
+
 function reviewCorrectionAdmitted(verdict) {
   /* Three facts admit a correction: a constraint the model marked failed, the
      regenerate flag, and a delta stating what to change. Any other combination
@@ -2218,15 +2287,29 @@ function reviewCorrectionAdmitted(verdict) {
            reason: 'the verdict names a failed hard constraint and states its correction' };
 }
 
-function renderReviewChecklist(card, verdict, visionModel) {
+function renderReviewChecklist(card, reviewResult) {
+  const verdict = reviewResult.verdict;
   const existing = card.querySelector('.image-review');
   if (existing) existing.remove();
   const block = document.createElement('div');
   block.className = 'image-review';
   const heading = document.createElement('div');
   heading.className = 'meta';
-  heading.textContent = `reviewed by ${visionModel}`;
+  const responseModel = reviewResult.response_model
+    ? `; response model ${reviewResult.response_model}` : '';
+  const completionTokens = reviewResult.completion_tokens === null
+    ? '; completion tokens unreported'
+    : `; completion tokens ${reviewResult.completion_tokens}`;
+  heading.textContent = `reviewed by ${reviewResult.requested_model}`;
   block.append(heading);
+  const diagnostics = document.createElement('div');
+  diagnostics.className = 'review-diagnostics meta';
+  diagnostics.textContent = `finish ${reviewResult.finish_reason}${completionTokens}${responseModel}`;
+  block.append(diagnostics);
+  // The structured result remains attached to the live card for diagnosis.
+  // Conversation persistence never reads the card, so reasoning text and
+  // response usage reach neither saved history nor later model requests.
+  block.reviewResult = reviewResult;
   const list = document.createElement('ul');
   for (const entry of verdict.hard_constraints) {
     const item = document.createElement('li');
@@ -2357,8 +2440,10 @@ async function runImageReview(card, fields, lineage) {
     }
     const reply = await response.json();
     if (!reviewIsCurrent()) return;
-    const verdict = parseReviewVerdict(reply, constraints.map(constraint => constraint.name));
-    renderReviewChecklist(card, verdict, visionModel);
+    const reviewResult = buildReviewResult(
+      reply, constraints.map(constraint => constraint.name), visionModel);
+    const verdict = reviewResult.verdict;
+    renderReviewChecklist(card, reviewResult);
     const decision = reviewCorrectionAdmitted(verdict);
     if (!decision.admitted) {
       appendReviewNote(card, `No correction is proposed: ${decision.reason}.`);
@@ -2573,12 +2658,18 @@ function renderAttached() {
   let total = 0;
   let countsComplete = true;
   attachments.forEach(attachment => {
+    if (attachment.kind === 'image') return;
     if (attachment.tokenModel === requestModel &&
         Number.isInteger(attachment.tokens)) total += attachment.tokens;
     else countsComplete = false;
   });
   const contextReady = nctxModel === requestModel && Number.isFinite(nctx);
   attachments.forEach((a, i) => {
+    if (a.kind === 'image') {
+      box.append(chip(`${a.name} -- image for ${requestModel}`, false,
+        () => { attachments.splice(i, 1); renderAttached(); }));
+      return;
+    }
     const countReady = a.tokenModel === requestModel && Number.isInteger(a.tokens);
     const countText = countReady
       ? `${a.tokens.toLocaleString()} tokens`
@@ -2588,12 +2679,13 @@ function renderAttached() {
       `${a.name} -- ${countText}`,
       over, () => { attachments.splice(i, 1); renderAttached(); }));
   });
-  if (attachments.length && !countsComplete) {
+  const textAttachmentCount = attachments.filter(attachment => attachment.kind !== 'image').length;
+  if (textAttachmentCount && !countsComplete) {
     const w = document.createElement('span');
     w.className = 'chip over';
     w.textContent = 'token counts remain unavailable for the selected model; context fit is unknown';
     box.append(w);
-  } else if (attachments.length && contextReady && total > nctx * 0.9) {
+  } else if (textAttachmentCount && contextReady && total > nctx * 0.9) {
     const w = document.createElement('span');
     w.className = 'chip over';
     w.textContent = `about ${total.toLocaleString()} tokens against a ${nctx.toLocaleString()} context; the server will refuse this with a 400`;
@@ -2601,18 +2693,90 @@ function renderAttached() {
   }
 }
 
-$('#file').onchange = async e => {
-  for (const f of e.target.files) {
-    const text = await f.text();
+async function selectedModelAcceptsImages(expectedModel, expectedGeneration) {
+  if (!expectedModel || requestModel !== expectedModel ||
+      conversationGeneration !== expectedGeneration) return false;
+  try {
+    const response = await fetch(`./props?model=${encodeURIComponent(expectedModel)}`,
+      { headers: authHeaders() });
+    if (!response.ok) return false;
+    const props = await response.json();
+    return requestModel === expectedModel && conversationGeneration === expectedGeneration &&
+      props && props.modalities && props.modalities.vision === true;
+  } catch {
+    return false;
+  }
+}
+
+function imageFileDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === 'string'
+      ? resolve(reader.result) : reject(new Error('the image reader returned no data URL'));
+    reader.onerror = () => reject(reader.error || new Error('the image could not be read'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function composeUserContent(text, attached) {
+  let prompt = text;
+  for (const file of attached.filter(attachment => attachment.kind !== 'image')) {
+    prompt = `--- ${file.name} ---\n${file.text}\n--- end ${file.name} ---\n\n` + prompt;
+  }
+  const images = attached.filter(attachment => attachment.kind === 'image');
+  return {
+    prompt,
+    images,
+    content: images.length ? [
+      { type: 'text', text: prompt || 'Describe the attached image.' },
+      ...images.map(attachment => ({
+        type: 'image_url', image_url: { url: attachment.dataUrl }
+      }))
+    ] : prompt
+  };
+}
+
+async function attachFiles(files) {
+  // One selection belongs to one model and conversation across every file read.
+  const attachmentModel = requestModel;
+  const attachmentGeneration = conversationGeneration;
+  const attachmentModelGeneration = modelStateGeneration;
+  const selectionIsCurrent = () => requestModel === attachmentModel &&
+    conversationGeneration === attachmentGeneration &&
+    modelStateGeneration === attachmentModelGeneration;
+  for (const file of Array.from(files)) {
+    if (!selectionIsCurrent()) break;
     try {
-      const tokenState = await tokenCountForCurrentModel(text);
-      attachments.push({ name: f.name, text, ...tokenState });
+      if (typeof file.type === 'string' && file.type.startsWith('image/')) {
+        if (!await selectedModelAcceptsImages(attachmentModel, attachmentGeneration)) {
+          if (!selectionIsCurrent()) break;
+          throw new Error(`model ${requestModel || '(none)'} does not report vision capability`);
+        }
+        if (!selectionIsCurrent()) break;
+        const dataUrl = await imageFileDataUrl(file);
+        if (!selectionIsCurrent()) break;
+        attachments.push({ name: file.name, kind: 'image', mime: file.type, dataUrl,
+                           tokens: null, tokenModel: attachmentModel });
+      } else {
+        const text = await file.text();
+        if (!selectionIsCurrent()) break;
+        if (!attachmentModel) throw new Error('no routable model is selected');
+        const tokens = await serverTokenCount(text, attachmentModel);
+        if (!selectionIsCurrent()) break;
+        attachments.push({ name: file.name, kind: 'text', text, tokens,
+                           tokenModel: attachmentModel });
+      }
     } catch (error) {
-      window.alert(`Could not attach ${f.name}: ${error.message || error}`);
+      if (!selectionIsCurrent()) break;
+      window.alert(`Could not attach ${file.name}: ${error.message || error}`);
     }
   }
-  e.target.value = '';
   renderAttached();
+}
+
+$('#file').onchange = async e => {
+  await attachFiles(e.target.files);
+  e.target.value = '';
 };
 
 function turn(who, cls) {
@@ -3447,11 +3611,31 @@ async function send() {
   const text = $('#input').value.trim();
   if (!text && !attachments.length) return;
 
-  let prompt = text;
-  for (const f of attachments) {
-    prompt = `--- ${f.name} ---\n${f.text}\n--- end ${f.name} ---\n\n` + prompt;
+  const { prompt, images: imageAttachments, content } = composeUserContent(text, attachments);
+  const turnModel = requestModel;
+  const turnAdmissionGeneration = conversationGeneration;
+  const imageBusyToken = imageAttachments.length ? ++imageSendBusySequence : 0;
+  const releaseImageBusy = () => {
+    if (imageBusyToken && imageSendBusyOwner === imageBusyToken) {
+      imageSendBusyOwner = 0;
+      busy = false;
+      $('#send').disabled = false;
+    }
+  };
+  if (imageBusyToken) {
+    imageSendBusyOwner = imageBusyToken;
+    busy = true;
+    $('#send').disabled = true;
   }
-  const content = prompt;
+  if (imageAttachments.length &&
+      !await selectedModelAcceptsImages(turnModel, turnAdmissionGeneration)) {
+    releaseImageBusy();
+    const note = turn('image', '');
+    note.body.className = 'body meta bad';
+    note.body.textContent = `Model ${requestModel} does not report vision capability. ` +
+      'Select a vision model and retry the image turn.';
+    return;
+  }
   // A LAN prompt bound is enforced here rather than left to the server: the
   // server refuses an over-large prompt only once its token count meets the
   // slot's own context (server-context.cpp), which would spend a full
@@ -3466,7 +3650,13 @@ async function send() {
   // server's own slot-context refusal remains the final backstop.
   if (LAN_MAX_PROMPT_TOKENS != null) {
     const composedText = [...history, { role: 'user', content }]
-      .map(message => (typeof message.content === 'string' ? message.content : ''))
+      .map(message => {
+        if (typeof message.content === 'string') return message.content;
+        if (!Array.isArray(message.content)) return '';
+        return message.content
+          .filter(part => part && part.type === 'text' && typeof part.text === 'string')
+          .map(part => part.text).join('\n');
+      })
       .join('\n');
     let promptTokens = null;
     let tokenizeFailure = null;
@@ -3480,12 +3670,18 @@ async function send() {
       // one this launch's own ceiling names.
       tokenizeFailure = error;
     }
+    if (imageBusyToken && (requestModel !== turnModel ||
+        conversationGeneration !== turnAdmissionGeneration)) {
+      releaseImageBusy();
+      return;
+    }
     if (tokenizeFailure != null) {
       const note = turn('limit', '');
       note.body.className = 'body meta bad';
       note.body.textContent = 'This launch admits at most ' +
         `${LAN_MAX_PROMPT_TOKENS} prompt tokens, and this page could not measure ` +
         `this conversation's length (${tokenizeFailure.message}). Retry, or start a new conversation.`;
+      releaseImageBusy();
       return;
     }
     if (promptTokens != null && promptTokens > LAN_MAX_PROMPT_TOKENS) {
@@ -3494,6 +3690,7 @@ async function send() {
       note.body.textContent = `This conversation is at least ${promptTokens} tokens, above the ` +
         `${LAN_MAX_PROMPT_TOKENS}-token bound this launch admits. Shorten this message, ` +
         'remove an attachment, or start a new conversation.';
+      releaseImageBusy();
       return;
     }
   }
@@ -3511,7 +3708,11 @@ async function send() {
     ? '\n' + attachments.map(a => `[${a.name}]`).join(' ') : '');
   turn('you', 'me').body.textContent = shown;
   history.push({ role: 'user', content });
-  rememberUserMessage(content, shown);
+  const durableContent = imageAttachments.length
+    ? `${prompt}\n\n${imageAttachments.map(attachment =>
+        `[image attachment omitted from saved conversation: ${attachment.name}, ${attachment.mime}]`).join('\n')}`
+    : content;
+  rememberUserMessage(durableContent, shown);
   // Saved here rather than after the completion, so an HTTP error, a dropped
   // connection, or the page closing during a long generation leaves the
   // prompt in the store it belongs to instead of only in memory.
@@ -3604,6 +3805,7 @@ async function send() {
       }
     }
   } finally {
+    if (imageBusyToken) imageSendBusyOwner = 0;
     busy = false; $('#send').disabled = false;
     $('#input').focus();
   }
@@ -3747,7 +3949,8 @@ function indexedDatabaseConversationStore(database) {
       return (await run('readonly', store => store.get(id))) || null;
     },
     async write(record) { await run('readwrite', store => store.put(record)); },
-    async remove(id) { await run('readwrite', store => store.delete(id)); }
+    async remove(id) { await run('readwrite', store => store.delete(id)); },
+    async clear() { await run('readwrite', store => store.clear()); }
   };
 }
 
@@ -3791,6 +3994,17 @@ function browserStorageConversationStore() {
     async remove(id) {
       storage.removeItem(CONVERSATION_RECORD_PREFIX + id);
       writeIndexOrThrow(readIndex().filter(entry => entry.id !== id));
+    },
+    async clear() {
+      const ownedRecordKeys = [];
+      for (let index = 0; index < storage.length; index++) {
+        const key = storage.key(index);
+        if (typeof key === 'string' && key.startsWith(CONVERSATION_RECORD_PREFIX)) {
+          ownedRecordKeys.push(key);
+        }
+      }
+      for (const key of ownedRecordKeys) storage.removeItem(key);
+      storage.removeItem(CONVERSATION_INDEX_KEY);
     }
   };
 }
@@ -3802,7 +4016,8 @@ function memoryConversationStore() {
     async list() { return [...records.values()].map(conversationSummary); },
     async read(id) { return records.get(id) || null; },
     async write(record) { records.set(record.id, record); },
-    async remove(id) { records.delete(id); }
+    async remove(id) { records.delete(id); },
+    async clear() { records.clear(); }
   };
 }
 
@@ -3874,6 +4089,22 @@ async function resolveConversationStore() {
 }
 
 let conversationStoreRead = null;
+let conversationMutationTail = Promise.resolve();
+let conversationDeletionEpoch = 0;
+
+function queueConversationMutation(operation, deletionEpoch = conversationDeletionEpoch) {
+  /* Serialize persistent mutations so delete-all has one ordered boundary.
+     Incrementing conversationDeletionEpoch invalidates every older mutation;
+     the queue then lets an already-running store request settle before the
+     clear runs, while an older retry cannot migrate or write into a fallback
+     after that clear. */
+  const run = conversationMutationTail.then(
+    () => deletionEpoch === conversationDeletionEpoch
+      ? operation(() => deletionEpoch === conversationDeletionEpoch)
+      : false);
+  conversationMutationTail = run.catch(() => {});
+  return run;
+}
 
 function conversationStore() {
   if (!conversationStoreRead) conversationStoreRead = resolveConversationStore();
@@ -4003,7 +4234,7 @@ async function migrateReadableRecords(failedStore, nextStore) {
   }
 }
 
-async function writeThroughFallbackStore(operation) {
+async function writeThroughFallbackStore(operation, mutationIsCurrent = () => true) {
   /* Run one mutating store call -- write() or remove() -- through demotion,
      migration, and retry, so a rename or a delete does not silently fail
      against a store that answered its own probe but refuses this real
@@ -4023,14 +4254,18 @@ async function writeThroughFallbackStore(operation) {
      memoryConversationStore() never throws, so at most three attempts are
      ever needed. */
   for (let attempt = 0; attempt < 3; attempt++) {
+    if (!mutationIsCurrent()) return false;
     const activeStore = await conversationStore();
+    if (!mutationIsCurrent()) return false;
     try {
       await operation(activeStore);
       return true;
     } catch {
+      if (!mutationIsCurrent()) return false;
       rememberDemotedConversationStore(activeStore.name);
       conversationStoreRead = null;
       const nextStore = await conversationStore();
+      if (!mutationIsCurrent()) return false;
       await migrateReadableRecords(activeStore, nextStore);
     }
   }
@@ -4053,8 +4288,12 @@ async function saveConversation() {
   } catch {
     return;
   }
-  await writeThroughFallbackStore(store => store.write(record));
-  await renderConversationList();
+  await queueConversationMutation(async mutationIsCurrent => {
+    const written = await writeThroughFallbackStore(
+      store => store.write(record), mutationIsCurrent);
+    if (written && mutationIsCurrent()) await renderConversationList();
+    return written;
+  });
 }
 
 function restoredCallSequence(messages) {
@@ -4197,6 +4436,8 @@ function restoreTranscript() {
 
 function resetConversationState() {
   conversationGeneration++;
+  attachments = [];
+  renderAttached();
   history = [];
   toolCallSequence = 0;
   conversationMessages = [];
@@ -4252,8 +4493,11 @@ async function switchConversation(id, route = true) {
     setConversationHash(conversationId);
     return false;
   }
+  const switchGeneration = conversationGeneration;
+  const switchDeletionEpoch = conversationDeletionEpoch;
   const record = await readConversationRecord(id);
-  if (busy) {
+  if (busy || switchGeneration !== conversationGeneration ||
+      switchDeletionEpoch !== conversationDeletionEpoch) {
     // A send started during this read now owns the in-flight turn, so this
     // switch leaves it running rather than discarding it with a reset; the
     // address bar returns to the conversation actually on screen, the way
@@ -4273,8 +4517,9 @@ async function switchConversation(id, route = true) {
 }
 
 async function renameConversation(id) {
+  const renameDeletionEpoch = conversationDeletionEpoch;
   const record = await readConversationRecord(id);
-  if (!record) return;
+  if (!record || renameDeletionEpoch !== conversationDeletionEpoch) return;
   let proposed = null;
   try {
     proposed = window.prompt('Conversation name', record.title || '');
@@ -4286,14 +4531,79 @@ async function renameConversation(id) {
     proposed.trim().replace(/\s+/g, ' ') || 'untitled', CONVERSATION_TITLE_CHARACTER_CAP);
   record.title = title;
   if (id === conversationId) conversationTitle = title;
-  await writeThroughFallbackStore(store => store.write(record));
-  await renderConversationList();
+  await queueConversationMutation(async mutationIsCurrent => {
+    const written = await writeThroughFallbackStore(
+      store => store.write(record), mutationIsCurrent);
+    if (written && mutationIsCurrent()) await renderConversationList();
+    return written;
+  }, renameDeletionEpoch);
 }
 
 async function deleteConversation(id) {
-  await writeThroughFallbackStore(store => store.remove(id));
+  const removed = await queueConversationMutation(mutationIsCurrent =>
+    writeThroughFallbackStore(store => store.remove(id), mutationIsCurrent));
+  if (!removed) return;
   if (id === conversationId) startNewConversation();
   await renderConversationList();
+}
+
+async function deleteAllSavedConversations() {
+  let confirmed = false;
+  try {
+    confirmed = window.confirm(
+      'Delete every saved conversation from this browser? This cannot be undone.');
+  } catch { /* a context without confirmation refuses deletion */ }
+  if (!confirmed) return false;
+  // Reset first: an in-flight turn keeps running at the transport layer, but
+  // its generation can no longer append to or save the conversation removed
+  // by the clear. The fresh unsaved conversation receives its identity at
+  // confirmation, before any queued clear can yield to a new user turn.
+  resetConversationState();
+  const deletionEpoch = ++conversationDeletionEpoch;
+  conversationId = newConversationId();
+  conversationTitle = '';
+  rememberSelectedConversation(conversationId);
+  setConversationHash(conversationId);
+  return queueConversationMutation(async mutationIsCurrent => {
+    const outcomes = [];
+    const activeStore = await conversationStore();
+    if (activeStore.name === 'memory') {
+      try { await activeStore.clear(); outcomes.push('memory=cleared'); }
+      catch (error) { outcomes.push(`memory=failed:${error.message || error}`); }
+    }
+    if (typeof indexedDB === 'undefined' || !indexedDB) {
+      outcomes.push('indexeddb=unavailable');
+    } else {
+      try {
+        const database = await openConversationDatabase();
+        await indexedDatabaseConversationStore(database).clear();
+        outcomes.push('indexeddb=cleared');
+      } catch (error) {
+        outcomes.push(`indexeddb=failed:${error.message || error}`);
+      }
+    }
+    try {
+      const storage = window['localStorage'];
+      if (!storage) outcomes.push('localstorage=unavailable');
+      else {
+        await browserStorageConversationStore().clear();
+        outcomes.push('localstorage=cleared');
+      }
+    } catch (error) {
+      outcomes.push(`localstorage=failed:${error.message || error}`);
+    }
+    if (!mutationIsCurrent()) return false;
+    writeBrowserStorage('localStorage', CONVERSATION_SELECTED_KEY, null);
+    rememberSelectedConversation(conversationId);
+    await renderConversationList();
+    const failures = outcomes.filter(outcome => outcome.includes('=failed:'));
+    if (failures.length) {
+      try { window.alert(`Saved conversation deletion is incomplete. ${outcomes.join('; ')}`); }
+      catch { /* the returned false remains the programmatic result */ }
+      return false;
+    }
+    return true;
+  }, deletionEpoch);
 }
 
 async function renderConversationList() {
@@ -4362,6 +4672,7 @@ async function initConversations() {
 }
 
 $('#conversation-new').onclick = () => { startNewConversation(); };
+$('#conversation-delete-all').onclick = () => { void deleteAllSavedConversations(); };
 
 if (typeof window.addEventListener === 'function') {
   window.addEventListener('hashchange', () => {

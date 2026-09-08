@@ -129,6 +129,9 @@ gate_cell test-qwen-home derive \
 gate_cell test-runtime-root derive \
     'remote/test-runtime-root.sh remote/runtime-root.sh remote/qwen-home.sh remote/check-deletion-plan.sh remote/open-verified-lock-descriptor.py' \
     remote/test-runtime-root.sh
+gate_cell test-check-launch-readiness files \
+    'remote/test-check-launch-readiness.sh remote/check-launch-readiness.sh remote/qwen-home.sh remote/runtime-root.sh remote/check-install-requirements.sh remote/searxng-launch.sh remote/resolve-active-deployment.sh remote/open-verified-lock-descriptor.py remote/read-image-mcp-server.py' \
+    remote/test-check-launch-readiness.sh
 gate_cell test-deletion-plan derive \
     'remote/test-deletion-plan.sh remote/check-deletion-plan.sh remote/runtime-root.sh remote/qwen-home.sh remote/open-verified-lock-descriptor.py' \
     remote/test-deletion-plan.sh
@@ -465,7 +468,7 @@ gate_cell test-fallback-webui-ui-switch derive remote/test-fallback-webui-ui-swi
 gate_cell test-fallback-webui-roster derive remote/test-fallback-webui-roster.mjs \
     'node remote/test-fallback-webui-roster.mjs'
 gate_cell test-fallback-webui-image-review derive \
-    remote/test-fallback-webui-image-review.mjs \
+    'remote/test-fallback-webui-image-review.mjs remote/image-review.py' \
     'node remote/test-fallback-webui-image-review.mjs'
 gate_cell test-fallback-webui-model-selection derive \
     remote/test-fallback-webui-model-selection.sh \

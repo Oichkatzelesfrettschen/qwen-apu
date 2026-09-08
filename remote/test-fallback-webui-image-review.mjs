@@ -17,6 +17,7 @@
 // transcript a later chat request re-sends.
 
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
@@ -166,6 +167,10 @@ const testInterface = `
 globalThis.imageReviewTest = {
   renderImageArtifactCard,
   runImageReview,
+  buildReviewRequestBody,
+  buildReviewVerdictSchema,
+  buildReviewResult,
+  parseReviewVerdict,
   reviewCorrectionAdmitted,
   applyImageSchemaBounds,
   artifactOrigin,
@@ -335,6 +340,88 @@ console.log('review_button_visibility=accepted');
 }
 console.log('correction_admission=accepted');
 
+// ==== review request grammar matches the Python canonical builder ==========
+{
+  const context = makeContext();
+  drainBoot();
+  const api = context.imageReviewTest;
+  const constraints = [
+    { name: 'prompt_subject', description: 'the requested subject is visible' },
+    { name: 'negative_prompt_absent', description: 'the excluded subject is absent' },
+  ];
+  const javascriptSchema = JSON.parse(JSON.stringify(
+    api.buildReviewVerdictSchema(constraints)));
+  const pythonProgram = [
+    'import importlib.util, json, pathlib',
+    'path = pathlib.Path("remote/image-review.py")',
+    'spec = importlib.util.spec_from_file_location("image_review", path)',
+    'module = importlib.util.module_from_spec(spec)',
+    'spec.loader.exec_module(module)',
+    `constraints = ${JSON.stringify(constraints.map(({ name, description }) => [name, description]))}`,
+    'print(json.dumps(module.build_verdict_schema(constraints)))',
+  ].join('; ');
+  const pythonSchema = JSON.parse(childProcess.execFileSync(
+    'python3', ['-c', pythonProgram], { encoding: 'utf8' }));
+  assert.deepEqual(javascriptSchema, pythonSchema,
+    'the page review schema drifted from remote/image-review.py');
+
+  const request = JSON.parse(JSON.stringify(api.buildReviewRequestBody(
+    'vision-model', 'data:image/png;base64,AA==', 'f'.repeat(64), constraints)));
+  assert.equal(request.max_tokens, 400);
+  assert.equal(request.model, 'vision-model');
+  assert.equal(request.response_format.type, 'json_schema');
+  assert.equal(request.response_format.json_schema.name, 'image_review');
+  assert.equal(request.response_format.json_schema.schema.properties.hard_constraints.minItems, 2);
+  assert.equal(request.response_format.json_schema.schema.properties.hard_constraints.maxItems, 2);
+  assert.deepEqual(
+    request.response_format.json_schema.schema.properties.hard_constraints.items.properties.name.enum,
+    ['prompt_subject', 'negative_prompt_absent']);
+
+  const completeVerdict = {
+    hard_constraints: constraints.map(({ name }) => ({ name, passed: true, observation: 'present' })),
+    composition_change_required: false,
+    prompt_delta: '',
+    regenerate: false,
+  };
+  assert.deepEqual(JSON.parse(JSON.stringify(api.parseReviewVerdict({
+    choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(completeVerdict) } }],
+  }, constraints.map(({ name }) => name)))), completeVerdict);
+  const diagnosticResult = JSON.parse(JSON.stringify(api.buildReviewResult({
+    model: 'loaded-vision-model',
+    usage: { prompt_tokens: 900, completion_tokens: 37, total_tokens: 937 },
+    choices: [{ finish_reason: 'stop', message: {
+      reasoning_content: 'private reasoning diagnostic',
+      content: JSON.stringify(completeVerdict),
+    } }],
+  }, constraints.map(({ name }) => name), 'vision-model')));
+  assert.deepEqual(diagnosticResult.verdict, completeVerdict,
+    'response diagnostics changed the strict verdict fields');
+  assert.equal(diagnosticResult.requested_model, 'vision-model');
+  assert.equal(diagnosticResult.response_model, 'loaded-vision-model');
+  assert.equal(diagnosticResult.finish_reason, 'stop');
+  assert.equal(diagnosticResult.completion_tokens, 37);
+  assert.equal(diagnosticResult.usage.total_tokens, 937);
+  assert.equal(diagnosticResult.reasoning_present, true);
+  assert.equal(diagnosticResult.reasoning_content, 'private reasoning diagnostic');
+  for (const completionTokens of [-1, 1.5, Infinity]) {
+    assert.throws(() => api.buildReviewResult({
+      usage: { completion_tokens: completionTokens },
+      choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(completeVerdict) } }],
+    }, constraints.map(({ name }) => name), 'vision-model'),
+    /completion_tokens is no finite nonnegative integer/);
+  }
+  for (const finishReason of ['length', 'tool_calls', 'content_filter']) {
+    assert.throws(() => api.parseReviewVerdict({
+      choices: [{ finish_reason: finishReason, message: { content: JSON.stringify(completeVerdict) } }],
+    }, constraints.map(({ name }) => name)),
+    new RegExp(`finish_reason ${finishReason}`));
+  }
+  assert.throws(() => api.parseReviewVerdict({
+    choices: [{ message: { content: JSON.stringify(completeVerdict) } }],
+  }, constraints.map(({ name }) => name)), /no terminal finish reason/);
+}
+console.log('review_schema_and_terminal_status=accepted');
+
 // ==== the composed prompt meets the tool schema's own maxima ================
 {
   const context = makeContext();
@@ -428,7 +515,10 @@ console.log('composed_prompt_bounds=accepted');
     const chatBody = JSON.parse(chatRequest.options.body);
     assert.equal(chatBody.tools, undefined, 'the review offers the vision model no tool');
     chatRequest.resolve(jsonResponse({
-      choices: [{ message: {
+      model: 'vision-model',
+      usage: { prompt_tokens: 800, completion_tokens: 29, total_tokens: 829 },
+      choices: [{ finish_reason: 'stop', message: {
+        reasoning_content: 'private review reasoning',
         content: JSON.stringify({
           hard_constraints: [{ name: 'prompt_subject', passed: false, observation: 'missing the lawn' }],
           composition_change_required: false,
@@ -438,6 +528,14 @@ console.log('composed_prompt_bounds=accepted');
       } }],
     }));
     await flushPromises();
+
+    const reviewBlock = card.querySelector('.image-review');
+    assert.ok(reviewBlock, 'the admitted review rendered no checklist');
+    assert.equal(reviewBlock.children[0].textContent, 'reviewed by vision-model');
+    assert.ok(reviewBlock.children[1].textContent.includes('finish stop; completion tokens 29'),
+      'the review diagnostics omitted validated terminal status or completion usage');
+    assert.equal(reviewBlock.reviewResult.completion_tokens, 29);
+    assert.equal(reviewBlock.reviewResult.reasoning_content, 'private review reasoning');
 
     api.clickApproveOnce();
     await flushPromises();
@@ -514,7 +612,7 @@ console.log('composed_prompt_bounds=accepted');
   const thirdChatRequest = takeRequest(request => request.url === './v1/chat/completions',
     'the capped review completion request');
   thirdChatRequest.resolve(jsonResponse({
-    choices: [{ message: {
+    choices: [{ finish_reason: 'stop', message: {
       content: JSON.stringify({
         hard_constraints: [{ name: 'prompt_subject', passed: false, observation: 'still wrong' }],
         composition_change_required: false,

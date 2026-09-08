@@ -1497,18 +1497,24 @@ class ImageService:
         # this service is multithreaded and a forked interpreter can block on a
         # lock another thread held.
         wrapper_path = self.settings.priority_wrapper
-        with open(os.devnull, "rb") as devnull:
-            child_pid = os.posix_spawn(
-                wrapper_path,
-                [wrapper_path, *argv],
-                environment,
-                file_actions=[(os.POSIX_SPAWN_DUP2, devnull.fileno(), 0)],
-                setsid=True,
-            )
-        # The pid is published before the priority is confirmed, so a cancel
-        # that lands while the wrapper is still applying its priority reaches
-        # the wrapper's process group, which is the runtime's process group.
         with self.job.lock:
+            # Shutdown and spawn form one ownership transition. A shutdown that
+            # wins the lock prevents the spawn; a spawn that wins publishes its
+            # pid before shutdown can inspect the job and signal the group.
+            if self.shutdown_event.is_set() or self.job.cancel_requested:
+                raise JobCancelled("the image service is shutting down")
+            with open(os.devnull, "rb") as devnull:
+                child_pid = os.posix_spawn(
+                    wrapper_path,
+                    [wrapper_path, *argv],
+                    environment,
+                    file_actions=[(os.POSIX_SPAWN_DUP2, devnull.fileno(), 0)],
+                    setsid=True,
+                )
+            # The pid is published before the priority is confirmed, so a
+            # cancel that lands while the wrapper is applying its priority
+            # reaches the wrapper's process group, which is the runtime's
+            # process group.
             self.job.child_pid = child_pid
             cancel_requested = self.job.cancel_requested
         if cancel_requested:
