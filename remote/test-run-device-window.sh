@@ -279,7 +279,7 @@ record=$QWEN_TEST_LIFETIME
 [ ! -e /proc/$$/fd/7 ]
 [ -e /proc/$$/fd/8 ]
 [ "${QWEN_DEVICE_WINDOW_LOCK_DESCRIPTOR_INHERITED+x}" != x ]
-sleep 120 </dev/null >/dev/null 2>&1 &
+setsid sleep 120 </dev/null >/dev/null 2>&1 &
 printf '%s\n' "$!" >"$record/$role.pid"
 : >"$record/$role.ready"
 case $role in
@@ -316,7 +316,7 @@ HOOK
         fi
         grep -q 'a device window is already open' "$lifetime/contender.log"
     }
-    for mode in normal failure term; do
+    for mode in normal failure term group-term group-int; do
         reset_state
         for pid_file in "$lifetime"/*.pid; do
             [ -f "$pid_file" ] || continue
@@ -325,19 +325,19 @@ HOOK
         rm -f "$lifetime"/*.pid "$lifetime"/*.ready "$lifetime"/*.completed "$lifetime"/*.release
         workload_status=0
         expected_status=0
-        case $mode in failure) workload_status=7; expected_status=7 ;; term) expected_status=143 ;; esac
+        case $mode in failure) workload_status=7; expected_status=7 ;; term|group-term|group-int) expected_status=143 ;; esac
         QWEN_HOME=$home \
         QWEN_TEST_WORKLOAD_STATUS=$workload_status \
         QWEN_DEVICE_WINDOW_TEARDOWN=$harness/lifetime-teardown.sh \
         QWEN_DEVICE_WINDOW_LAUNCH=$harness/lifetime-launch.sh \
         QWEN_DEVICE_WINDOW_HEALTH_PROBE=$harness/lifetime-health.sh \
-            "$harness/run-device-window.sh" "lifetime-$mode" \
+            setsid "$harness/run-device-window.sh" "lifetime-$mode" \
             "$harness/lifetime-hook.sh" workload 8>"$lifetime/other-lease" \
             >"$lifetime/$mode.log" 2>&1 &
         supervisor=$!
         await_marker "$lifetime/workload.ready"
         require_refusal
-        if [ "$mode" = term ]; then
+        if [ "$mode" = term ] || [ "$mode" = group-term ] || [ "$mode" = group-int ]; then
             kill -TERM "$supervisor"
             require_refusal
             [ ! -f "$lifetime/launch.ready" ]
@@ -345,9 +345,11 @@ HOOK
         : >"$lifetime/workload.release"
         await_marker "$lifetime/health.ready"
         [ -f "$lifetime/workload.completed" ]
-        if [ "$mode" = term ]; then
-            kill -TERM "$supervisor"
-        fi
+        case $mode in
+            term) kill -TERM "$supervisor" ;;
+            group-term) /bin/kill -TERM -- "-$supervisor" ;;
+            group-int) /bin/kill -INT -- "-$supervisor" ;;
+        esac
         require_refusal
         : >"$lifetime/health.release"
         observed_status=0

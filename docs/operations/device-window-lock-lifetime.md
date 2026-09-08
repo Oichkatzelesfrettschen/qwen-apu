@@ -12,13 +12,17 @@ including the Vulkan lease and reporting channels. The supervisor waits for its
 foreground child before handling cancellation; the workload must provide its own
 bounded execution and cleanup contract. Cancellation exits through restoration,
 and further INT/TERM signals during restoration do not release the exclusion.
+Restoration commands run through `setsid --wait` in a separate session/process
+group, preserving ordinary service signal dispositions while excluding signals
+sent to the original foreground process group.
 SIGKILL and host failure remain outside the shell cleanup guarantee.
 
 Run `remote/test-run-device-window.sh` and ShellCheck on the runner and fixture.
 The fixture leaves persistent children from all four boundaries alive. A contender
 must refuse while workload cleanup or final health verification is pending, and
 must succeed after the supervisor exits while those children remain alive. Normal,
-command-failure, TERM, and repeated TERM during restoration are covered. Descriptor
+command-failure, TERM, repeated TERM during restoration, and foreground-process-group INT/TERM are
+covered. Descriptor
 8 and removal of the window marker are checked independently.
 
 ## Existing-holder recovery preparation

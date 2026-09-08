@@ -83,6 +83,11 @@ fi
 # runtime-root.sh applies to its own deletion lock, so a concurrent window is
 # refused before either window reads the running session or touches the
 # device. The whole original argument list rides the exec unmodified.
+command -v setsid >/dev/null 2>&1 || {
+    printf 'setsid is required for protected restoration\n' >&2
+    exit 2
+}
+
 lock_path=$qwen_home_state/device-window.lock
 mkdir -p "$qwen_home_state"
 case ${QWEN_DEVICE_WINDOW_LOCK_DESCRIPTOR_INHERITED:-0} in
@@ -222,6 +227,13 @@ run_window_child() (
     exec "$@"
 )
 
+# Restoration children leave the caller's foreground process group, so a
+# repeated terminal or group signal cannot interrupt their cleanup. Normal
+# signal dispositions still reach the services they launch.
+run_restoration_child() {
+    run_window_child setsid --wait "$@"
+}
+
 relaunched=0
 relaunch_status=0
 
@@ -242,7 +254,7 @@ relaunch_appliance() {
         return 0
     fi
     launch_ok=0
-    if run_window_child "$launch_script" "$relaunch_boundary" "$relaunch_profile" \
+    if run_restoration_child "$launch_script" "$relaunch_boundary" "$relaunch_profile" \
         >>"$window_ledger.launch.log" 2>&1; then
         launch_ok=1
     fi
@@ -272,10 +284,10 @@ relaunch_appliance() {
             probe_port=$relaunch_health_port
         fi
         if [ -n "${QWEN_DEVICE_WINDOW_HEALTH_PROBE:-}" ]; then
-            if run_window_child $QWEN_DEVICE_WINDOW_HEALTH_PROBE "$probe_host" "$probe_port"; then
+            if run_restoration_child $QWEN_DEVICE_WINDOW_HEALTH_PROBE "$probe_host" "$probe_port"; then
                 health_ok=1
             fi
-        elif run_window_child curl --silent --fail \
+        elif run_restoration_child curl --silent --fail \
             "http://$probe_host:$probe_port/health" >/dev/null 2>&1; then
             health_ok=1
         fi
