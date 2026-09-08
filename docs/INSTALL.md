@@ -9,15 +9,20 @@ static candidate reader. A module marked `laptop` installs on the appliance, a
 module marked `workstation` installs beside the Git tree, and a module marked
 `both` installs on either machine that runs it.
 
-## Build up and run the appliance
+## Build a fresh installation and run the appliance
 
 `make bootstrap` creates the declared runtime directories and binds them to
 the checkout. Separate install and build targets produce the dependencies and
-serving deployment.
+serving deployment for a fresh installation. An existing serving deployment
+runs `make launch-readiness` and the launch command below without rebuilding
+these artifacts.
 The serving Python environment has one owner: `make install-searxng` creates
 the pinned, user-owned environment at `$QWEN_HOME/opt/searxng/venv`. The
 repository gate environment at `$QWEN_HOME/opt/gate-venv` is optional
 workstation tooling and does not participate in appliance launch.
+The appliance executes the native `llama-server` and `sd-cli` binaries
+directly. SearXNG runs through the Python interpreter in its managed virtual
+environment.
 
 ```sh
 export QWEN_HOME=${QWEN_HOME:-"$PWD/.runtime"}
@@ -44,8 +49,9 @@ the absence of the server, tmux session, guards, broker, image service,
 SearXNG process, active router snapshot, and listeners. Teardown preserves
 models, installed environments, runtime logs, credentials, and browser chat
 records. The Web UI stores conversations in the browser profile for the page's
-origin; use each conversation's delete control when removal is intended. The
-page's Clear control starts a new conversation and preserves saved records.
+origin. The pending UI labels the reset action `New conversation` and preserves
+saved records. `Delete all saved` removes saved conversations only after its
+confirmation control accepts the operation.
 
 An exported absolute `QWEN_HOME` moves appliance-owned source, environments,
 models, deployments, state, cache, scratch, and results together. The runtime
