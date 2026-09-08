@@ -513,6 +513,7 @@ run_arm() {
     fi
     QWEN_SERVER_HOST=127.0.0.1 \
     QWEN_ROUTER=0 \
+    QWEN_CONTEXT_SIZE=$registry_context \
     QWEN_Q4K_EXPERIMENT_ARM=1 \
     QWEN_Q4K_VARIANT=$registry_q4k_variant \
     QWEN_LLAMA_SERVER=$arm_server \

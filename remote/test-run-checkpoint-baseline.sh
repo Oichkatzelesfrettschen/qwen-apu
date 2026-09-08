@@ -35,7 +35,7 @@ harness=$script_directory/run-checkpoint-baseline.sh
 summarizer=$script_directory/summarize-checkpoint-baseline.py
 port_lease=$script_directory/test-port-lease.sh
 fake_server=$script_directory/test-fixtures/fake-llama-server.sh
-model_id=qwen38-2b-distill
+model_id=qwen35-08b
 series_sha256=1111111111111111111111111111111111111111111111111111111111111111
 
 temporary_directory=$(mktemp -d)
@@ -88,9 +88,8 @@ registry_field() {
     "$script_directory/model-registry.sh" id "$model_id" "$1"
 }
 model_file=$(registry_field model_file)
-# The stub launcher writes the registry row's own tuple into the served argv,
-# since the arm compares the two and a fixture stating unrelated numbers would
-# exercise the projection while leaving the comparison unreached.
+# The 8192-context subject differs from the launcher's 24576 default, so the
+# fixture requires the runner to forward the registered context explicitly.
 tuple_context=$(registry_field context_default)
 tuple_batch=$(registry_field batch)
 tuple_ubatch=$(registry_field ubatch)
@@ -182,7 +181,7 @@ QWEN_FAKE_SERVER_DECODE_TOK_S=1000000 \\
 QWEN_FAKE_SERVER_FIRST_TOKEN_DELAY_S=0.05 \\
     nice -n 19 "\$QWEN_LLAMA_SERVER" \\
     --model "$model_path" --threads 1 --threads-batch 1 --device Vulkan0 \\
-    --n-gpu-layers all --parallel 1 --port $serving_port --ctx-size \${QWEN_FIXTURE_CONTEXT:-$tuple_context} \\
+    --n-gpu-layers all --parallel 1 --port $serving_port --ctx-size \${QWEN_FIXTURE_CONTEXT:-\${QWEN_CONTEXT_SIZE:-24576}} \\
     --batch-size $tuple_batch --ubatch-size $tuple_ubatch \\
     --cache-type-k $tuple_cache_k --cache-type-v $tuple_cache_v \\
     --flash-attn $tuple_flash --ctx-checkpoints $tuple_checkpoints \\
@@ -466,8 +465,8 @@ if ! grep -q 'clock_invariant' "$acquisitions/no-sidecar/arms.tsv"; then
 fi
 
 active_fixture=a_served_tuple_that_left_the_registry_row_fails_the_arm
-if QWEN_FIXTURE_CONTEXT=8192 run_harness "$acquisitions/tuple-moved" \
-    QWEN_FIXTURE_CONTEXT=8192; then
+if QWEN_FIXTURE_CONTEXT=16384 run_harness "$acquisitions/tuple-moved" \
+    QWEN_FIXTURE_CONTEXT=16384; then
     printf 'the runner measured a server whose depth left the registry row\n' >&2
     exit 1
 fi
