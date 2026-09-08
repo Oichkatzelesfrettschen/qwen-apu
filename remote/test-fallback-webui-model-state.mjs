@@ -345,8 +345,12 @@ const nonVisionProps = takeRequest(
   'explicit vision admission');
 nonVisionProps.resolve(jsonResponse({ modalities: { vision: false } }));
 assert.equal(await visionAdmission, false, 'a text-only model admitted image content');
+let laterFileRead = false;
 const staleAttachment = testApi.attachFiles([{
   name: 'stale.png', type: 'image/png'
+}, {
+  name: 'later.txt', type: 'text/plain',
+  async text() { laterFileRead = true; return 'later text'; }
 }]);
 await flushPromises();
 const attachmentProps = takeRequest(
@@ -357,9 +361,36 @@ assert.equal(pendingFileReaders.length, 1, 'the admitted image did not reach Fil
 testApi.startNewConversation();
 pendingFileReaders[0].result = 'data:image/png;base64,c3RhbGU=';
 pendingFileReaders[0].onload();
+await flushPromises();
+assert.equal(laterFileRead, false,
+  'a stale selection began reading its next file in the new conversation');
 await staleAttachment;
 assert.equal(testApi.state().attachments.length, 0,
   'a stale FileReader inserted an image into the new conversation');
+let finishTextRead;
+const staleText = testApi.attachFiles([{
+  name: 'stale.txt', type: 'text/plain',
+  text() { return new Promise(resolve => { finishTextRead = resolve; }); }
+}]);
+testApi.startNewConversation();
+finishTextRead('stale text');
+await flushPromises();
+assert.equal(pendingRequests.length, 0,
+  'a stale text read started tokenization in the new conversation');
+await staleText;
+assert.equal(testApi.state().attachments.length, 0);
+const staleTokenCount = testApi.attachFiles([{
+  name: 'tokenized.txt', type: 'text/plain',
+  async text() { return 'tokenized text'; }
+}]);
+await flushPromises();
+const attachmentTokenize = takeRequest(
+  request => request.url === './tokenize', 'attachment tokenization');
+testApi.startNewConversation();
+attachmentTokenize.resolve(jsonResponse({ tokens: [1, 2] }));
+await staleTokenCount;
+assert.equal(testApi.state().attachments.length, 0,
+  'a stale tokenizer inserted text into the new conversation');
 const requestCountBeforeStaleProposals = pendingRequests.length;
 const staleProposalResult = await testApi.runStaleProposalCheck(modelB);
 assert.equal(staleProposalResult.fetchRemaining, 2);

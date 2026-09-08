@@ -1273,6 +1273,155 @@ function makeFlakyIndexedDatabase(realDatabase, { failWrites }) {
   };
 }
 
+function makeHeldFailingIndexedDatabase(realDatabase, control) {
+  return {
+    open(name) {
+      const request = realDatabase.open(name);
+      const database = request.result;
+      const originalTransaction = database.transaction.bind(database);
+      database.transaction = (...args) => {
+        const transaction = originalTransaction(...args);
+        const originalObjectStore = transaction.objectStore.bind(transaction);
+        transaction.objectStore = (...storeArgs) => {
+          const store = originalObjectStore(...storeArgs);
+          const originalPut = store.put.bind(store);
+          store.put = value => {
+            if (!control.active) return originalPut(value);
+            const failedRequest = { onsuccess: null, onerror: null, error: null };
+            control.putReached = true;
+            control.releaseFailure = () => {
+              failedRequest.error = new Error('the held transaction was denied');
+              if (failedRequest.onerror) failedRequest.onerror({ target: failedRequest });
+            };
+            return failedRequest;
+          };
+          return store;
+        };
+        return transaction;
+      };
+      return request;
+    }
+  };
+}
+
+function makeDelayedReadIndexedDatabase(realDatabase, control) {
+  return {
+    open(name) {
+      const request = realDatabase.open(name);
+      const database = request.result;
+      const originalTransaction = database.transaction.bind(database);
+      database.transaction = (...args) => {
+        const transaction = originalTransaction(...args);
+        const originalObjectStore = transaction.objectStore.bind(transaction);
+        transaction.objectStore = (...storeArgs) => {
+          const store = originalObjectStore(...storeArgs);
+          const originalGet = store.get.bind(store);
+          store.get = key => {
+            const delayedRequest = { onsuccess: null, onerror: null, error: null };
+            control.readReached = true;
+            control.releaseRead = () => {
+              const source = originalGet(key);
+              source.onsuccess = () => {
+                delayedRequest.result = source.result;
+                if (delayedRequest.onsuccess) delayedRequest.onsuccess({ target: delayedRequest });
+              };
+              source.onerror = () => {
+                delayedRequest.error = source.error;
+                if (delayedRequest.onerror) delayedRequest.onerror({ target: delayedRequest });
+              };
+            };
+            return delayedRequest;
+          };
+          return store;
+        };
+        return transaction;
+      };
+      return request;
+    }
+  };
+}
+
+// Delete-all waits for an in-flight save to settle before clearing storage.
+// The advanced epoch prevents that save's failure from demoting the store or
+// retrying into a fallback after the deletion boundary.
+{
+  const deletionRaceDatabase = makeFakeIndexedDatabase();
+  const deletionRaceControl = {
+    active: false, putReached: false, releaseFailure: null
+  };
+  const deletionRacePage = newPage({
+    indexedDatabase: makeHeldFailingIndexedDatabase(
+      deletionRaceDatabase, deletionRaceControl),
+    localStorage: makeFakeStorage(),
+    sessionStorage: makeFakeStorage()
+  });
+  await answerBoot(deletionRacePage);
+  assert.equal(await deletionRacePage.api.storeName(), 'indexeddb');
+  deletionRaceControl.active = true;
+  const staleSave = deletionRacePage.api.runFixtureTurn(fixture);
+  for (let attempt = 0; attempt < 10 && !deletionRaceControl.putReached; attempt += 1) {
+    await flushPromises();
+  }
+  assert.equal(deletionRaceControl.putReached, true,
+    'the stale save did not enter its IndexedDB put');
+  const deletedConversationId = deletionRacePage.api.state().conversationId;
+  const deleteAll = deletionRacePage.api.deleteAllSavedConversations();
+  const postDeleteConversationId = deletionRacePage.api.state().conversationId;
+  assert.notEqual(postDeleteConversationId, deletedConversationId,
+    'delete-all left the deleted conversation id active while its clear waited');
+  const postDeleteSave = deletionRacePage.api.runFixtureTurn(fixture);
+  deletionRaceControl.releaseFailure();
+  deletionRaceControl.active = false;
+  const [, deleteAccepted] = await Promise.all([staleSave, deleteAll, postDeleteSave]);
+  await flushPromises();
+  assert.equal(deleteAccepted, true, 'delete-all refused the stale-save race');
+  assert.equal(await deletionRacePage.api.storeName(), 'indexeddb',
+    'a stale save demoted the store after delete-all advanced its epoch');
+  const postDeleteRecords = await deletionRacePage.api.list();
+  assert.equal(postDeleteRecords.length, 1,
+    'the post-delete turn was lost or a stale save repopulated storage');
+  assert.equal(postDeleteRecords[0].id, postDeleteConversationId,
+    'the post-delete turn saved under the deleted conversation id');
+  assert.ok(await deletionRacePage.api.read(postDeleteConversationId),
+    'the post-delete conversation record is unreadable after the clear');
+}
+
+// A conversation switch can be waiting on a record read while delete-all
+// resets and clears the page. The read belongs to the pre-delete generation
+// and must not restore its route or transcript after the clear.
+{
+  const delayedReadDatabase = makeFakeIndexedDatabase();
+  const delayedReadSource = newPage({
+    indexedDatabase: delayedReadDatabase,
+    localStorage: makeFakeStorage(),
+    sessionStorage: makeFakeStorage()
+  });
+  await answerBoot(delayedReadSource);
+  const delayedConversationId = await delayedReadSource.api.runFixtureTurn(fixture);
+  const delayedReadControl = { readReached: false, releaseRead: null };
+  const delayedReadPage = newPage({
+    indexedDatabase: makeDelayedReadIndexedDatabase(
+      delayedReadDatabase, delayedReadControl),
+    localStorage: makeFakeStorage(),
+    sessionStorage: makeFakeStorage()
+  });
+  await answerBoot(delayedReadPage);
+  const staleSwitch = delayedReadPage.api.switchConversation(delayedConversationId);
+  for (let attempt = 0; attempt < 10 && !delayedReadControl.readReached; attempt += 1) {
+    await flushPromises();
+  }
+  assert.equal(delayedReadControl.readReached, true,
+    'the stale switch did not enter its record read');
+  const deleteAccepted = await delayedReadPage.api.deleteAllSavedConversations();
+  assert.equal(deleteAccepted, true);
+  delayedReadControl.releaseRead();
+  assert.equal(await staleSwitch, false,
+    'a pre-delete record read restored its conversation after delete-all');
+  assert.notEqual(delayedReadPage.api.state().conversationId, delayedConversationId);
+  assert.equal(delayedReadPage.api.transcript().length, 0,
+    'a pre-delete record read restored its transcript after delete-all');
+}
+
 // failWrites starts false so the write-then-delete selection probe below
 // still passes: the point of this arm is a write that starts refusing after
 // selection, not one the probe itself would already have caught.
