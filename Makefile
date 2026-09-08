@@ -15,7 +15,7 @@ REMOTE := remote
 QWEN_HOME ?= $(shell $(REMOTE)/qwen-home.sh print qwen_home)
 export QWEN_HOME
 
-.PHONY: bootstrap install-searxng verify-searxng \
+.PHONY: bootstrap launch-readiness install-searxng verify-searxng \
         searxng-wheelhouse verify-searxng-wheelhouse install-ryzenadj \
         install-image-runtime install-shaderc install-models build-llama \
         status doctor verify verify-layout verify-components verify-live \
@@ -26,6 +26,10 @@ export QWEN_HOME
 # The root and its marker; every install target lays the root out first.
 bootstrap:
 	$(REMOTE)/runtime-root.sh init
+
+# Print the authenticated LAN command only after existing authorities accept.
+launch-readiness:
+	$(REMOTE)/check-launch-readiness.sh
 
 install-searxng: bootstrap
 	$(REMOTE)/install-searxng.sh install

@@ -9,6 +9,52 @@ static candidate reader. A module marked `laptop` installs on the appliance, a
 module marked `workstation` installs beside the Git tree, and a module marked
 `both` installs on either machine that runs it.
 
+## Build up and run the appliance
+
+`make bootstrap` creates the declared runtime directories and binds them to
+the checkout. Separate install and build targets produce the dependencies and
+serving deployment.
+The serving Python environment has one owner: `make install-searxng` creates
+the pinned, user-owned environment at `$QWEN_HOME/opt/searxng/venv`. The
+repository gate environment at `$QWEN_HOME/opt/gate-venv` is optional
+workstation tooling and does not participate in appliance launch.
+
+```sh
+export QWEN_HOME=${QWEN_HOME:-"$PWD/.runtime"}
+make bootstrap
+make install-searxng
+make verify-searxng
+make install-ryzenadj install-image-runtime install-shaderc install-models build-llama
+# Supply the serving binary, its artifact manifest, and its checkpoint ledger.
+remote/build-deployment-bundle.sh BUNDLE_NAME SERVER_PATH MANIFEST_PATH CTX_LEDGER
+remote/activate-deployment-bundle.sh BUNDLE_NAME
+make status
+make launch-readiness
+remote/qwen-lan-launch.sh lan-authenticated low-async
+```
+
+`make launch-readiness` reads the layout, laptop requirement ledger, pinned
+SearXNG install, active deployment, and every model or projector path named by
+the active router preset. The readiness command preserves installed files and
+running services. A refusal prints the existing command that owns each missing
+input.
+
+Stop the appliance with `remote/qwen-teardown.sh`. Teardown stops and proves
+the absence of the server, tmux session, guards, broker, image service,
+SearXNG process, active router snapshot, and listeners. Teardown preserves
+models, installed environments, runtime logs, credentials, and browser chat
+records. The Web UI stores conversations in the browser profile for the page's
+origin; use each conversation's delete control when removal is intended. The
+page's Clear control starts a new conversation and preserves saved records.
+
+An exported absolute `QWEN_HOME` moves appliance-owned source, environments,
+models, deployments, state, cache, scratch, and results together. The runtime
+marker remains bound to the checkout that created it and requires the explicit
+rebind procedure documented in `evidence/runtime-root/README.md` when another
+checkout takes ownership. Workstation-only compiler SDKs may remain outside
+`QWEN_HOME`; their rows in `docs/install-requirements.tsv` identify them as
+workstation or optional inputs rather than appliance state.
+
 `docs/install-requirements.tsv` is the machine-readable form of this document
 and `remote/check-install-requirements.sh` reads it. The script takes the host
 as an argument rather than reading a hostname, because a hostname branch would
@@ -436,7 +482,7 @@ libstdc++.
 
 | Requirement | Kind | Pin | Check | Established by |
 | --- | --- | --- | --- | --- |
-| TheRock `clang++` | path | `10.1.0a20260825` | `test -x "${ROCM_PATH:-$HOME/.venvs/rocm-gfx900/lib/python3.12/site-packages/_rocm_sdk_devel}/lib/llvm/bin/clang++"` | remote/build-llama-dual.sh:37, evidence/therock-sdk-manifest.tsv:2 |
+| TheRock `clang++` | path | `10.1.0a20260825` | `test -x "${ROCM_PATH:-$(remote/qwen-home.sh print qwen_home_rocm)}/lib/llvm/bin/clang++"` | remote/build-llama-dual.sh:37, evidence/therock-sdk-manifest.tsv:2 |
 | `ROCM_PATH` | optional-env | - | `[ -n "${ROCM_PATH:-}" ]` | remote/build-llama-dual.sh:37, remote/run-rocm-vulkan-matrix.sh:37 |
 | gcc 14 libstdc++ | path | - | `test -d /usr/lib/gcc/x86_64-linux-gnu/14` | remote/build-llama-dual.sh:114 |
 | `cmake` | command | - | `command -v cmake >/dev/null` | remote/build-llama-dual.sh:137 |
@@ -474,15 +520,16 @@ integration surfaces, so every fixture it needs lives in this repository.
 | `sha256sum` | command | - | `command -v sha256sum >/dev/null` | remote/repository-quality-gates.sh:18 |
 | `chromium` | command | - | `command -v "${QWEN_CHROMIUM:-chromium}" >/dev/null` | remote/repository-quality-gates.sh:26, remote/repository-quality-gates.sh:99 |
 | `QWEN_CHROMIUM` | optional-env | - | `[ -n "${QWEN_CHROMIUM:-}" ]` | remote/repository-quality-gates.sh:26 |
-| `$HOME/.qwen-gate-venv` | optional-path | - | `test -x "$HOME/.qwen-gate-venv/bin/mypy"` | remote/repository-quality-gates.sh:44, remote/repository-quality-gates.sh:63 |
+| `$QWEN_HOME/opt/gate-venv` | optional-path | - | `test -x "$(remote/qwen-home.sh print qwen_home_gate_venv)/bin/mypy"` | remote/repository-quality-gates.sh:44, remote/repository-quality-gates.sh:63 |
 | `find` | command | - | `command -v find >/dev/null` | remote/repository-quality-gates.sh:33 |
 | `awk` | command | - | `command -v awk >/dev/null` | remote/check-ledger-evidence.sh:41 |
 
 The gate venv is one way to satisfy the `ruff` and `mypy` rows rather than a
-name the gate reads. `remote/repository-quality-gates.sh:18` resolves both
-through `PATH`, so the appliance puts `~/.qwen-gate-venv/bin` on `PATH` while
-the workstation installs them per user; either arrangement passes the same
-check, which is why the row is `optional-path`.
+name the gate reads. `remote/repository-quality-gates.sh` resolves both through
+`PATH`; `$QWEN_HOME/opt/gate-venv/bin` is the declared optional appliance path,
+while workstation installations may come from their own package environment.
+Either arrangement passes the same check, which is why the row is
+`optional-path`.
 
 ## Observed state, 2026-09-03
 
