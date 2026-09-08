@@ -260,6 +260,110 @@ else
     report status_when_closed fail
 fi
 
+# Persistent children survive all four boundaries while only the supervisor
+# retains maintenance exclusion. Descriptor 8 models an independent lease.
+(
+    lifetime=$work/lifetime
+    mkdir -p "$lifetime"
+    export QWEN_TEST_LIFETIME=$lifetime
+    trap 'for pid_file in "$lifetime"/*.pid; do
+        [ -f "$pid_file" ] || continue
+        kill "$(cat "$pid_file")" 2>/dev/null || :
+    done' EXIT
+    cat >"$harness/lifetime-hook.sh" <<'HOOK'
+#!/bin/sh
+set -eu
+role=$1
+shift
+record=$QWEN_TEST_LIFETIME
+[ ! -e /proc/$$/fd/7 ]
+[ -e /proc/$$/fd/8 ]
+[ "${QWEN_DEVICE_WINDOW_LOCK_DESCRIPTOR_INHERITED+x}" != x ]
+setsid sleep 120 </dev/null >/dev/null 2>&1 &
+printf '%s\n' "$!" >"$record/$role.pid"
+: >"$record/$role.ready"
+case $role in
+    workload|health)
+        count=0
+        while [ ! -f "$record/$role.release" ]; do
+            count=$((count + 1))
+            [ "$count" -lt 200 ] || exit 90
+            sleep 0.05
+        done ;;
+esac
+if [ "$role" = launch ]; then
+    printf 'state=running lan_address=127.0.0.1 port=9100\n' >"$QWEN_HOME/state/session.status"
+fi
+: >"$record/$role.completed"
+[ "$role" != workload ] || exit "$QWEN_TEST_WORKLOAD_STATUS"
+HOOK
+    chmod 755 "$harness/lifetime-hook.sh"
+    for role in teardown launch health; do
+        printf '#!/bin/sh\nexec "%s" %s "$@"\n' "$harness/lifetime-hook.sh" "$role" >"$harness/lifetime-$role.sh"
+        chmod 755 "$harness/lifetime-$role.sh"
+    done
+    await_marker() {
+        count=0
+        while [ ! -f "$1" ]; do
+            count=$((count + 1))
+            [ "$count" -lt 150 ] || return 1
+            sleep 0.05
+        done
+    }
+    require_refusal() {
+        if run_window contender true >"$lifetime/contender.log" 2>&1; then
+            return 1
+        fi
+        grep -q 'a device window is already open' "$lifetime/contender.log"
+    }
+    for mode in normal failure term group-term group-int; do
+        reset_state
+        for pid_file in "$lifetime"/*.pid; do
+            [ -f "$pid_file" ] || continue
+            kill "$(cat "$pid_file")" 2>/dev/null || :
+        done
+        rm -f "$lifetime"/*.pid "$lifetime"/*.ready "$lifetime"/*.completed "$lifetime"/*.release
+        workload_status=0
+        expected_status=0
+        case $mode in failure) workload_status=7; expected_status=7 ;; term|group-term|group-int) expected_status=143 ;; esac
+        QWEN_HOME=$home \
+        QWEN_TEST_WORKLOAD_STATUS=$workload_status \
+        QWEN_DEVICE_WINDOW_TEARDOWN=$harness/lifetime-teardown.sh \
+        QWEN_DEVICE_WINDOW_LAUNCH=$harness/lifetime-launch.sh \
+        QWEN_DEVICE_WINDOW_HEALTH_PROBE=$harness/lifetime-health.sh \
+            setsid "$harness/run-device-window.sh" "lifetime-$mode" \
+            "$harness/lifetime-hook.sh" workload 8>"$lifetime/other-lease" \
+            >"$lifetime/$mode.log" 2>&1 &
+        supervisor=$!
+        await_marker "$lifetime/workload.ready"
+        require_refusal
+        if [ "$mode" = term ] || [ "$mode" = group-term ] || [ "$mode" = group-int ]; then
+            kill -TERM "$supervisor"
+            require_refusal
+            [ ! -f "$lifetime/launch.ready" ]
+        fi
+        : >"$lifetime/workload.release"
+        await_marker "$lifetime/health.ready"
+        [ -f "$lifetime/workload.completed" ]
+        case $mode in
+            term) kill -TERM "$supervisor" ;;
+            group-term) /bin/kill -TERM -- "-$supervisor" ;;
+            group-int) /bin/kill -INT -- "-$supervisor" ;;
+        esac
+        require_refusal
+        : >"$lifetime/health.release"
+        observed_status=0
+        wait "$supervisor" || observed_status=$?
+        [ "$observed_status" -eq "$expected_status" ]
+        for role in teardown workload launch health; do
+            [ -f "$lifetime/$role.completed" ]
+            kill -0 "$(cat "$lifetime/$role.pid")"
+        done
+        run_window "after-$mode" true >"$lifetime/after-$mode.log" 2>&1
+        printf 'descriptor_lifetime_%s=ok\n' "$mode"
+    done
+)
+
 if [ "$failures" -eq 0 ]; then
     printf 'test-run-device-window: ok\n'
 else
