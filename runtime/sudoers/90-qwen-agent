@@ -5,4 +5,4 @@
 # session. A global timestamp makes one authentication cover the user session,
 # and the timeout bounds how long it does.
 Defaults timestamp_type=global
-Defaults timestamp_timeout=60
+Defaults timestamp_timeout=180
