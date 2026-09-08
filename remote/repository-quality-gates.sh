@@ -53,6 +53,8 @@ remote/test-open-verified-lock-descriptor.py
 remote/signal-process-group.py
 remote/test-signal-process-group.py
 remote/summarize-fixed64-served-campaign.py
+remote/summarize-pipeline-family.py
+remote/test-summarize-pipeline-family.py
 remote/test-summarize-fixed64-served-campaign.py
 remote/summarize-checkpoint-baseline.py
 remote/test-verify-external-vulkan-lease.py
@@ -202,6 +204,9 @@ gate_cell test-authorize-broker derive remote/web-mcp/test-authorize-broker.py \
 gate_cell test-summarize-kernel-census derive \
     remote/test-summarize-kernel-census.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-kernel-census.py'
+gate_cell test-summarize-pipeline-family derive \
+    'remote/test-summarize-pipeline-family.py remote/summarize-pipeline-family.py' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-pipeline-family.py'
 gate_cell test-sample-clock-sidecar derive remote/test-sample-clock-sidecar.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-sample-clock-sidecar.py'
 gate_cell test-validate-clock-sidecar derive remote/test-validate-clock-sidecar.py \
