@@ -2132,7 +2132,47 @@ function buildReviewRequestBody(visionModel, dataUri, promptHash, constraints) {
     top_k: 1,
     seed: 1,
     stream: false,
-    chat_template_kwargs: { enable_thinking: false }
+    chat_template_kwargs: { enable_thinking: false },
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: 'image_review',
+        schema: buildReviewVerdictSchema(constraints)
+      }
+    }
+  };
+}
+
+function buildReviewVerdictSchema(constraints) {
+  // The review grammar equals remote/image-review.py's
+  // build_verdict_schema(): llama-server converts the supported
+  // response_format.json_schema.schema member into the grammar that bounds
+  // sampled tokens, while parseReviewVerdict() checks the semantics again.
+  const names = constraints.map(constraint => constraint.name);
+  return {
+    type: 'object',
+    properties: {
+      hard_constraints: {
+        type: 'array',
+        minItems: names.length,
+        maxItems: names.length,
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', enum: names },
+            passed: { type: 'boolean' },
+            observation: { type: 'string', maxLength: REVIEW_OBSERVATION_MAX_CHARS }
+          },
+          required: [...REVIEW_CONSTRAINT_KEYS],
+          additionalProperties: false
+        }
+      },
+      composition_change_required: { type: 'boolean' },
+      prompt_delta: { type: 'string', maxLength: REVIEW_PROMPT_DELTA_MAX_CHARS },
+      regenerate: { type: 'boolean' }
+    },
+    required: [...REVIEW_VERDICT_KEYS],
+    additionalProperties: false
   };
 }
 
@@ -2145,6 +2185,13 @@ function parseReviewVerdict(reply, names) {
   const choices = reply && reply.choices;
   if (!Array.isArray(choices) || choices.length !== 1) {
     throw new Error('the reply carries no single choice');
+  }
+  const finishReason = choices[0] && choices[0].finish_reason;
+  if (finishReason !== 'stop') {
+    if (finishReason === undefined || finishReason === null || finishReason === '') {
+      throw new Error('the reply carries no terminal finish reason');
+    }
+    throw new Error(`the reply ended with finish_reason ${finishReason}`);
   }
   const message = choices[0] && choices[0].message;
   if (!message || typeof message !== 'object') {
