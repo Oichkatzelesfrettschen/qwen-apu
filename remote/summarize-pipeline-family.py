@@ -14,8 +14,10 @@ ownership, since same-pipeline overlap between two dispatches of one shader
 stays inside the family the merge forms while overlap against a foreign
 pipeline is time the instrument attributes to neither. An arm is accepted
 here where its ledger carries exactly one well-formed `graphs` row, that row
-reads `ownership=conclusive`, and its `cross_pipeline_overlap_fraction` stays
-inside the row's own `overlap_threshold`. Every other ledger is refused whole
+states a valid whole-overlap ownership verdict, and its
+`cross_pipeline_overlap_fraction` stays inside the row's own `overlap_threshold`.
+The family decision is independent of the whole-overlap verdict, which also
+counts overlapping dispatches belonging to the same pipeline. Every other ledger is refused whole
 rather than aggregated, so a failed arm's rows never reach a share.
 
 The second is the aggregate. A sum of `total_bracket_upper_bound_ms` over a
@@ -66,6 +68,7 @@ from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 # pair rather than a substring decides the family and `q4_0` cannot be read
 # as `q4_k`.
 QUANT_TOKEN = re.compile(r"^q[0-9]+$")
+UNSUPPORTED_FORMAT_TOKEN = re.compile(r"^(?:iq|mxfp|nvfp)[0-9]+$")
 QUANT_SUBFORMAT = ("k", "0", "1", "s", "m", "xs", "xxs", "nl")
 FLOAT_FORMATS = ("bf16", "f16")
 OTHER_FAMILY = "other"
@@ -106,6 +109,7 @@ class Arm(NamedTuple):
     union_ms: float
     cross_fraction: float
     threshold: float
+    pipeline_ownership: str
     pipelines: Tuple[Pipeline, ...]
 
 
@@ -113,6 +117,8 @@ def classify(name: str) -> str:
     """Read one pipeline name's value format from its own type tokens."""
     tokens = name.split("_")
     for index, token in enumerate(tokens[:-1]):
+        if UNSUPPORTED_FORMAT_TOKEN.fullmatch(token):
+            return OTHER_FAMILY
         if QUANT_TOKEN.match(token) and tokens[index + 1] in QUANT_SUBFORMAT:
             return f"{token}_{tokens[index + 1]}".upper()
     for token in tokens:
@@ -230,6 +236,7 @@ def read_ledger(path: str) -> Arm:
                 union > upper + 0.002
                 or exclusive > union + 0.002
                 or ambiguous > union + 0.002
+                or abs(exclusive + ambiguous - union) > 0.002
             ):
                 raise FamilyError(f"{path}: pipeline interval bounds conflict")
             name = row[index["name"]]
@@ -280,10 +287,9 @@ def read_ledger(path: str) -> Arm:
     missing = [key for key in REQUIRED_GRAPH_FIELDS if key not in fields]
     if missing:
         raise FamilyError(f"{path}: the graphs row states no {', '.join(missing)}")
-    if fields["ownership"] != "conclusive":
+    if fields["ownership"] not in {"conclusive", "inconclusive"}:
         raise FamilyError(
-            f"{path}: the ledger reads ownership={fields['ownership']}, so its "
-            f"pipelines carry no accepted attribution to merge"
+            f"{path}: invalid whole-overlap ownership={fields['ownership']}"
         )
     try:
         threshold = float(fields["overlap_threshold"])
@@ -321,12 +327,12 @@ def read_ledger(path: str) -> Arm:
         )
         if not math.isfinite(share):
             raise FamilyError(f"{path}: derived family share overflows")
-    rounding_slack = 0.001 * (graphs + len(pipelines))
+    rounding_slack = 0.0005 * (graphs + len(pipelines)) + 1e-9
     if (
-        sum(pipeline.bracket_upper_bound_ms for pipeline in pipelines)
-        > raw_sum * graphs + rounding_slack
+        abs(sum(pipeline.bracket_upper_bound_ms for pipeline in pipelines)
+            - raw_sum * graphs) > rounding_slack
     ):
-        raise FamilyError(f"{path}: pipeline upper totals exceed the raw denominator")
+        raise FamilyError(f"{path}: pipeline upper totals disagree with the raw denominator")
     if cross > threshold:
         raise FamilyError(
             f"{path}: cross_pipeline_overlap_fraction {cross:.4f} exceeds the "
@@ -343,6 +349,7 @@ def read_ledger(path: str) -> Arm:
         union_ms=union * graphs,
         cross_fraction=cross,
         threshold=threshold,
+        pipeline_ownership=fields["ownership"],
         pipelines=tuple(pipelines),
     )
 
@@ -361,6 +368,8 @@ def emit(arm: Arm, prefix: Optional[str]) -> None:
                 f"bracket_union_ms={arm.union_ms:.3f}",
                 f"cross_pipeline_overlap_fraction={arm.cross_fraction:.4f}",
                 f"overlap_threshold={arm.threshold:.4f}",
+                f"pipeline_ownership={arm.pipeline_ownership}",
+                "family_ownership=conclusive",
                 f"family_prefix={prefix if prefix is not None else '-'}",
                 f"pipelines_selected={len(selected)}",
                 f"pipelines_total={len(arm.pipelines)}",
@@ -435,6 +444,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "bracket_union_ms",
                 "cross_pipeline_overlap_fraction",
                 "overlap_threshold",
+                "pipeline_ownership",
+                "family_ownership",
                 "family_prefix",
                 "pipelines_selected",
                 "pipelines_total",

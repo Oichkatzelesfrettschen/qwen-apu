@@ -4,7 +4,7 @@
 Every case writes one ledger in the shape `summarize-kernel-census.py` emits,
 runs the reader over it as a subprocess, and asserts the exit status and the
 rows. The fixtures state the refusal paths a retained record cannot reach --
-an inconclusive verdict, cross-pipeline overlap past the threshold, a missing
+cross-pipeline overlap past the threshold, incomplete interval partitions, a missing
 or repeated `graphs` row, and an unknown value format -- beside the accepted
 shape whose family arithmetic is checked against sums computed here.
 """
@@ -48,7 +48,7 @@ PIPELINE_HEADER = [
 # name, calls, workgroups, bracket upper bound, pipeline union, exclusive,
 # ambiguous, vgprs
 PIPELINES: Tuple[Tuple[str, float, float, float, float, float, str, str], ...] = (
-    ("mul_mat_vec_q4_k_f32_f32", 162.0, 121232.0, 300.0, 298.0, 290.0, "10.0", "64"),
+    ("mul_mat_vec_q4_k_f32_f32", 162.0, 121232.0, 367.0, 365.0, 357.0, "8.0", "64"),
     ("mul_mat_vec_q6_k_f32_f32", 25.0, 83840.0, 200.0, 200.0, 198.0, "2.0", "64"),
     ("get_rows_q6_k_f32", 1.0, 2.0, 1.0, 1.0, 1.0, "0.0", "20"),
     ("set_rows_f32_q4_0_i64", 6.0, 6.0, 2.0, 2.0, 1.0, "1.0", "24"),
@@ -103,7 +103,7 @@ def build_ledger(
             "graphs",
             "decode",
             "63",
-            "raw_bracket_sum_ms_per_graph=10.000",
+            f"raw_bracket_sum_ms_per_graph={sum(entry[3] for entry in tuple(PIPELINES) + tuple(extra)) / 63:.3f}",
             "bracket_union_ms_per_graph=9.900",
             f"cross_pipeline_overlap_fraction={cross:.4f}",
             f"overlap_threshold={threshold:.4f}",
@@ -181,10 +181,17 @@ def case_prefix(directory: pathlib.Path) -> None:
 
 
 def case_inconclusive(directory: pathlib.Path) -> None:
-    result = run(directory, build_ledger(ownership="inconclusive"))
+    result = run(directory, build_ledger(ownership="inconclusive", cross=0.0))
+    assert result.returncode == 0, result.stderr
+    assert "pipeline_ownership=inconclusive" in result.stdout, result.stdout
+    assert "family_ownership=conclusive" in result.stdout, result.stdout
+    result = run(directory, build_ledger(ownership="inconclusive", cross=0.08))
     assert result.returncode == 1, result.stdout
-    assert "ownership=inconclusive" in result.stderr, result.stderr
-    print("case=inconclusive verdict=accepted")
+    assert "blocks family ownership" in result.stderr, result.stderr
+    result = run(directory, build_ledger(ownership="invalid"))
+    assert result.returncode == 1, result.stdout
+    assert "invalid whole-overlap ownership" in result.stderr, result.stderr
+    print("case=independent-family-overlap verdict=accepted")
 
 
 def case_cross_overlap(directory: pathlib.Path) -> None:
@@ -203,7 +210,9 @@ def case_graph_row_cardinality(directory: pathlib.Path) -> None:
 
 
 def case_unknown_format(directory: pathlib.Path) -> None:
-    extra = (("mul_mat_vec_iq4_nl_f32_f32", 4.0, 8.0, 5.0, 5.0, 5.0, "0.0", "64"),)
+    names = ("mul_mat_vec_iq4_nl_f32_f32", "mul_mat_vec_iq1_m_q8_1_f32",
+             "mul_mat_vec_mxfp4_f16", "mul_mat_vec_nvfp4_q8_1_f32")
+    extra = tuple((name, 4.0, 8.0, 5.0, 5.0, 5.0, "0.0", "64") for name in names)
     result = run(directory, build_ledger(extra=extra))
     assert result.returncode == 0, result.stderr
     rows = families(result.stdout)
@@ -215,8 +224,25 @@ def case_unknown_format(directory: pathlib.Path) -> None:
         for line in result.stdout.splitlines()
         if line.startswith("member\tother\t")
     ]
-    assert "mul_mat_vec_iq4_nl_f32_f32" in [m[2] for m in members], members
+    assert set(names).issubset({member[2] for member in members}), members
+    assert "Q8_1" not in rows, rows
     print("case=unknown-format verdict=accepted")
+
+
+def case_partition_refusals(directory: pathlib.Path) -> None:
+    original = build_ledger()
+    lines = original.splitlines()
+    for index in range(1, len(lines) - 1):
+        result = run(directory, "\n".join(lines[:index] + lines[index + 1:]) + "\n")
+        assert result.returncode == 1, result.stdout
+        assert "totals disagree" in result.stderr, result.stderr
+    for ambiguous in ("0", "365"):
+        rows = [line.split("\t") for line in lines]
+        rows[1][PIPELINE_HEADER.index("ambiguous_overlap_ms")] = ambiguous
+        result = run(directory, "\n".join("\t".join(row) for row in rows) + "\n")
+        assert result.returncode == 1, result.stdout
+        assert "interval bounds conflict" in result.stderr, result.stderr
+    print("case=complete-partitions verdict=accepted")
 
 
 def case_empty_ledger(directory: pathlib.Path) -> None:
@@ -275,8 +301,8 @@ def case_numeric_refusals(directory: pathlib.Path) -> None:
         ("raw_bracket_sum_ms_per_graph=10.000", "raw_bracket_sum_ms_per_graph=0"),
         ("bracket_union_ms_per_graph=9.900", "bracket_union_ms_per_graph=11"),
         ("raw_bracket_sum_ms_per_graph=10.000", "raw_bracket_sum_ms_per_graph=1e308"),
-        ("\t298.000\t290.000\t", "\t301.000\t290.000\t"),
-        ("\t298.000\t290.000\t", "\t298.000\t299.000\t"),
+        ("\t365.000\t357.000\t", "\t368.000\t357.000\t"),
+        ("\t365.000\t357.000\t", "\t365.000\t366.000\t"),
     ):
         assert before in original
         result = run(directory, original.replace(before, after))
@@ -328,6 +354,7 @@ def main() -> int:
         case_cross_overlap(directory)
         case_graph_row_cardinality(directory)
         case_unknown_format(directory)
+        case_partition_refusals(directory)
         case_empty_ledger(directory)
         case_numeric_refusals(directory)
     print("summarize_pipeline_family=accepted")
