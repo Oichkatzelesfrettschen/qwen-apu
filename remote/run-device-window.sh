@@ -211,14 +211,25 @@ printf 'device window %s opened at %s; relaunch %s\n' \
 printf 'relaunch_command=%s\n' "$relaunch_command" >>"$window_status_file"
 printf 'window_ledger=%s\n' "$window_ledger" >>"$window_status_file"
 
+# The supervisor keeps the maintenance exclusion through final verification.
+# Children may start persistent services, so only the window-owned descriptor
+# and its re-exec marker are removed at these boundaries. Workload lease and
+# reporting descriptors retain their independent handoffs.
+run_window_child() (
+    exec 7>&-
+    unset QWEN_DEVICE_WINDOW_LOCK_DESCRIPTOR_INHERITED
+    trap - INT TERM
+    exec "$@"
+)
+
 relaunched=0
 relaunch_status=0
 
 # The relaunch runs exactly once, whatever brought the trap here, and its own
 # outcome is what this script's exit status names past the command's own.
-# `trap ... EXIT INT TERM` covers a signalled window the same way it covers a
-# normal return, since `set -eu` already routes a failing command through the
-# EXIT trap rather than around it.
+# Signal handlers exit through the same EXIT trap as a normal return. The
+# supervisor ignores further cancellation during restoration and retains the
+# lock until the relaunch and health verification finish.
 relaunch_appliance() {
     if [ "$relaunched" -eq 1 ]; then
         return "$relaunch_status"
@@ -231,7 +242,7 @@ relaunch_appliance() {
         return 0
     fi
     launch_ok=0
-    if "$launch_script" "$relaunch_boundary" "$relaunch_profile" \
+    if run_window_child "$launch_script" "$relaunch_boundary" "$relaunch_profile" \
         >>"$window_ledger.launch.log" 2>&1; then
         launch_ok=1
     fi
@@ -261,10 +272,10 @@ relaunch_appliance() {
             probe_port=$relaunch_health_port
         fi
         if [ -n "${QWEN_DEVICE_WINDOW_HEALTH_PROBE:-}" ]; then
-            if $QWEN_DEVICE_WINDOW_HEALTH_PROBE "$probe_host" "$probe_port"; then
+            if run_window_child $QWEN_DEVICE_WINDOW_HEALTH_PROBE "$probe_host" "$probe_port"; then
                 health_ok=1
             fi
-        elif curl --silent --fail \
+        elif run_window_child curl --silent --fail \
             "http://$probe_host:$probe_port/health" >/dev/null 2>&1; then
             health_ok=1
         fi
@@ -282,7 +293,8 @@ relaunch_appliance() {
 
 on_exit() {
     command_status=$?
-    trap - EXIT INT TERM
+    trap - EXIT
+    trap '' INT TERM
     set +e
     relaunch_appliance
     relaunch_result=$?
@@ -294,13 +306,17 @@ on_exit() {
     fi
     exit "$command_status"
 }
-trap on_exit EXIT INT TERM
+trap on_exit EXIT
+# Foreground children finish before the shell handles a pending signal. Keep
+# the exclusion until their cleanup and the relaunch verification complete.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [ "$session_recorded" -eq 1 ]; then
-    if ! "$teardown_script"; then
+    if ! run_window_child "$teardown_script"; then
         printf 'teardown did not exit 0; the window does not open over a session left running\n' >&2
         exit 1
     fi
 fi
 
-"$command_program" "$@"
+run_window_child "$command_program" "$@"
