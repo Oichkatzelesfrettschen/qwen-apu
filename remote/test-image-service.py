@@ -916,6 +916,67 @@ class ImageServiceTest(unittest.TestCase):
         self.assertTrue(session.lease_is_free())
         self.assertEqual(os.listdir(session.artifact_directory()), [])
 
+    def test_shutdown_serializes_with_spawn_and_child_publication(self):
+        """Shutdown cannot pass between runtime spawn and child registration."""
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+
+        class Settings:
+            state_directory = directory
+            image_directory = directory
+            priority_wrapper = WRAPPER_PATH
+            runtime_environment = {
+                "VK_DRIVER_FILES": os.path.join(directory, "radv.json"),
+                "VK_ICD_FILENAMES": os.path.join(directory, "radv.json"),
+            }
+
+        service = service_module.ImageService(Settings())
+        service.job.phase = "running"
+        spawn_entered = threading.Event()
+        release_spawn = threading.Event()
+        execution_errors = []
+        original_posix_spawn = service_module.os.posix_spawn
+
+        def blocked_posix_spawn(*args, **kwargs):
+            del args, kwargs
+            spawn_entered.set()
+            release_spawn.wait(timeout=5)
+            raise OSError("deterministic spawn boundary")
+
+        def execute():
+            try:
+                service.execute_runtime(
+                    generate_request(),
+                    build_profile(FAKE_RUNTIME_PATH),
+                    os.path.join(directory, "blocked.part.png"),
+                    time.monotonic() + 20,
+                )
+            except OSError as error:
+                execution_errors.append(str(error))
+
+        service_module.os.posix_spawn = blocked_posix_spawn
+        execution = threading.Thread(target=execute)
+        shutdown = threading.Thread(target=service.begin_shutdown)
+        try:
+            execution.start()
+            self.assertTrue(spawn_entered.wait(timeout=5), "the spawn boundary opened")
+            shutdown.start()
+            shutdown.join(timeout=0.1)
+            self.assertTrue(
+                shutdown.is_alive(),
+                "shutdown passed a spawn whose child identity was unpublished",
+            )
+            release_spawn.set()
+            execution.join(timeout=5)
+            shutdown.join(timeout=5)
+        finally:
+            release_spawn.set()
+            execution.join(timeout=5)
+            shutdown.join(timeout=5)
+            service_module.os.posix_spawn = original_posix_spawn
+        self.assertEqual(execution_errors, ["deterministic spawn boundary"])
+        self.assertTrue(service.shutdown_event.is_set())
+        self.assertTrue(service.job.cancel_requested)
+
     def test_cancel_without_a_job_is_refused(self):
         session = self.start()
         response = session.control(
