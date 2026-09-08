@@ -1991,6 +1991,34 @@ run_pair kernel_delta_admitted "$reached_preflight_end" \
     QWEN_CENSUS_PRODUCTION_SERVER="$control_server"
 printf 'kernel_delta_refusals=accepted\n'
 
+q8_patch=llama-vulkan-q8-four-row-select.patch
+candidate_census_q8=$temporary_directory/candidate-census-q8
+mkdir -p "$candidate_census_q8/bin"
+cp -- "$candidate_server" "$candidate_census_q8/bin/llama-server"
+write_manifest "$candidate_census_q8/artifact-manifest.tsv" "$candidate_bytes" \
+    "$candidate_sha256" "$census_patch,$q8_patch" verified-candidate \
+    "$serving_cmake" "$serving_compiler"
+printf 'instrumentation\tpipeline-census-v3\n' >>"$candidate_census_q8/artifact-manifest.tsv"
+run_pair q8_specialization_registered "$reached_preflight_end" \
+    "$control_instrumented" "$candidate_census_q8" QWEN_CENSUS_AB_MODE=kernel-delta \
+    QWEN_CENSUS_PRODUCTION_SERVER="$control_server" QWEN_AB_CANDIDATE_PATCH="$q8_patch" \
+    QWEN_AB_PIPELINE_CHANGE=q8-rows-2-to-4 QWEN_AB_BRACKET_SUBJECT=mul_mat_vec_q8_0_f32_f32 \
+    QWEN_AB_BRACKET_NULL=rms_norm_mul_f32
+run_pair q8_specialization_wrong_patch 'requires kernel-delta, the Q8 row-selector patch' \
+    "$control_instrumented" "$candidate_census_e4" QWEN_CENSUS_AB_MODE=kernel-delta \
+    QWEN_AB_PIPELINE_CHANGE=q8-rows-2-to-4 QWEN_AB_BRACKET_SUBJECT=mul_mat_vec_q8_0_f32_f32
+run_pair q8_specialization_affected_null 'requires an unaffected non-Q8 null pipeline' \
+    "$control_instrumented" "$candidate_census_q8" QWEN_CENSUS_AB_MODE=kernel-delta \
+    QWEN_AB_CANDIDATE_PATCH="$q8_patch" QWEN_AB_PIPELINE_CHANGE=q8-rows-2-to-4 \
+    QWEN_AB_BRACKET_SUBJECT=mul_mat_vec_q8_0_f32_f32 QWEN_AB_BRACKET_NULL=mul_mat_vec_q8_0_f32_f32_subgroup
+run_pair q8_specialization_wrong_subject 'requires kernel-delta, the Q8 row-selector patch' \
+    "$control_instrumented" "$candidate_census_q8" QWEN_CENSUS_AB_MODE=kernel-delta \
+    QWEN_AB_CANDIDATE_PATCH="$q8_patch" QWEN_AB_PIPELINE_CHANGE=q8-rows-2-to-4
+run_pair q8_specialization_unknown_mode 'QWEN_AB_PIPELINE_CHANGE is module or q8-rows-2-to-4' \
+    "$control_root" "$candidate_root" QWEN_AB_PIPELINE_CHANGE=arbitrary
+printf 'q8_specialization_preflight=accepted\n'
+
+
 # The closed arm environment, read from both sides. Every executed case ran
 # with GGML_VK_Q4K_SIDEPLANE and QWEN_CACHE_OVERRIDE_CONTEXT_CEILING set in the
 # invoking shell: the first gates its pre-pass on getenv returning a pointer

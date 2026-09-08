@@ -92,6 +92,9 @@ set -eu
 #                                    sweep, whose one server row is the control
 #   QWEN_AB_SHARED_CANDIDATE_SERIES  comma-separated shared release members in
 #                                    patch-ledger order; default -
+#   QWEN_AB_PIPELINE_CHANGE          module (default) or q8-rows-2-to-4; the latter
+#                                    binds one unchanged module to the registered
+#                                    Q8 constants and workgroup denominators
 #   QWEN_AB_REPLICATES               paired deltas, default 4, even, 2 through 8
 #   QWEN_AB_BOUND                    one-sided promotion bound, default 0.05
 #   QWEN_AB_CANDIDATE_PATCH          the one candidate series member the candidate
@@ -256,6 +259,29 @@ bracket_summarizer=$script_directory/summarize-bracket-ab.py
 bracket_subject=${QWEN_AB_BRACKET_SUBJECT:-mul_mat_vec_q4_k_f32_f32}
 bracket_null=${QWEN_AB_BRACKET_NULL:-mul_mat_vec_q6_k_f32_f32}
 bracket_bound=${QWEN_AB_BRACKET_BOUND:-0.02}
+pipeline_change=${QWEN_AB_PIPELINE_CHANGE:-module}
+case $pipeline_change in
+    module) ;;
+    q8-rows-2-to-4)
+        if [ "$ab_mode" != kernel-delta ] ||
+            [ "$candidate_patch" != llama-vulkan-q8-four-row-select.patch ] ||
+            [ "$bracket_subject" != mul_mat_vec_q8_0_f32_f32 ]; then
+            printf 'q8-rows-2-to-4 requires kernel-delta, the Q8 row-selector patch, and the Q8 float-input subject\n' >&2
+            exit 2
+        fi
+        case $bracket_null in
+            mul_mat_vec_q8_0*)
+                printf 'the Q8 row-selector comparison requires an unaffected non-Q8 null pipeline\n' >&2
+                exit 2
+                ;;
+        esac
+        ;;
+    *)
+        printf 'QWEN_AB_PIPELINE_CHANGE is module or q8-rows-2-to-4: %s\n' "$pipeline_change" >&2
+        exit 2
+        ;;
+esac
+
 # The token-id and margin witness is a separate campaign over its own prompts,
 # so its directory is named rather than derived: the summary reports its two
 # rows beside the paired bound and carries the directory on each, which is what
@@ -1027,6 +1053,7 @@ if [ -n "$latency_probe" ]; then
 fi
 
 if [ "${QWEN_AB_PRINT_PLAN:-0}" = 1 ]; then
+    printf 'pipeline_change\t%s\n' "$pipeline_change"
     printf 'served_ab_arms\tW %s\n' "$arms"
     printf 'served_ab_replicates\t%s\nserved_ab_bound\t%s\n' "$ab_replicates" "$ab_bound"
     # The plan names one W as the shape the list opens on; the precondition
@@ -1261,6 +1288,7 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
     printf 'shared_candidate_series\t%s\n' "$shared_candidate_series"
     printf 'candidate_series\t%s\ncandidate_patch\t%s\n' \
         "$candidate_candidate_series" "$candidate_patch"
+    printf 'pipeline_change\t%s\n' "$pipeline_change"
     printf 'ab_mode\t%s\ninstrumentation\t%s\nbracket_subject\t%s\nbracket_null\t%s\nbracket_bound\t%s\n' \
         "$ab_mode" "$control_instrumentation" "$bracket_subject" "$bracket_null" "$bracket_bound"
     printf 'control_experiment_key\t%s\ncandidate_experiment_key\t%s\n' \
@@ -1985,6 +2013,7 @@ if [ "$ab_mode" = served ]; then
     set +e
     python3 "$bracket_summarizer" "$arms_ledger" "$output_directory/arms" \
         --subject "$bracket_subject" --null "$bracket_null" --bound "$bracket_bound" \
+        --pipeline-change "$pipeline_change" \
         --sclk-band "$sclk_band" ${witness_directory:+--witness "$witness_directory"} \
         >"$output_directory/response-summary.tsv" 2>"$output_directory/response-summary.stderr"
     response_status=$?
@@ -2072,6 +2101,7 @@ if [ "$ab_mode" = kernel-delta ]; then
     # between them and their pair leaves the interval.
     python3 "$bracket_summarizer" "$arms_ledger" "$output_directory/arms" \
         --subject "$bracket_subject" --null "$bracket_null" --bound "$bracket_bound" \
+        --pipeline-change "$pipeline_change" \
         --sclk-band "$sclk_band" ${witness_directory:+--witness "$witness_directory"} \
         >"$output_directory/bracket-summary.tsv" 2>"$output_directory/bracket-summary.stderr"
     bracket_status=$?

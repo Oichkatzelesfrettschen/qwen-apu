@@ -3,6 +3,7 @@
 
 usage: summarize-bracket-ab.py ARMS_TSV ARMS_DIRECTORY --subject PIPELINE
            --null PIPELINE [--bound F] [--witness DIRECTORY]
+           [--pipeline-change module|q8-rows-2-to-4]
 
 The arms ledger carries `C K K C` quadruples the way run-served-binary-ab.sh
 writes them, and every completed arm's directory holds the decode ledger the
@@ -34,7 +35,12 @@ served rate. The rows, each read by its `role`:
                      movement and was not preregistered as primary
     module_identity  spirv_executed_sha256: every control arm executes one
                      subject module, every candidate arm one, the two differ,
-                     and the null module is one digest across every arm
+                     and the null module is one digest across every arm.
+                     The explicit q8-rows-2-to-4 contract instead requires
+                     one unchanged Q8 module, constants 64,2,1 -> 64,4,1,
+                     denominators 2,1,1 -> 4,1,1 and subgroup size 64. The
+                     null module, constants, denominators and subgroup stay
+                     identical across all completed arms
     response_identity  reply content and predicted_n, candidate against
                      control per pair. Two token sequences can share a
                      string, so this is the reply's identity and not the
@@ -88,6 +94,7 @@ import csv
 import json
 import math
 import os
+import re
 import sys
 
 T_95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365}
@@ -352,6 +359,67 @@ def module_row(pairs, ledgers, subject, null_pipeline):
             "-", verdict, f"{detail} null_module={' '.join(sorted(null_digests)) or '-'}"]
 
 
+def specialization_module_row(pairs, ledgers, subject, null_pipeline):
+    """Admit the registered Q8 row specialization over one unchanged module."""
+    control_identities = set()
+    candidate_identities = set()
+    null_identities = set()
+    missing = 0
+    invalid = 0
+    complete_pairs = 0
+    for control, candidate in pairs:
+        pair_complete = True
+        for arm, rows, identities in ((control, 2, control_identities),
+                                      (candidate, 4, candidate_identities)):
+            ledger = ledgers.get((arm["slot"], arm["arm"]))
+            if arm["status"] not in COMPLETED_STATUS or ledger is None:
+                missing += 1
+                pair_complete = False
+                continue
+            subjects = ledger[0].get(subject, [])
+            nulls = ledger[0].get(null_pipeline, [])
+            if len(subjects) != 1 or len(nulls) != 1:
+                missing += 1
+                pair_complete = False
+                continue
+            values = []
+            for record in (subjects[0], nulls[0]):
+                identity = tuple(record.get(field, "") for field in
+                                 (DIGEST, "constants", "wg_denoms", "subgroup"))
+                digest, constants, denominators, subgroup = identity
+                if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                    invalid += 1
+                if constants != "-" and not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:,(?:0|[1-9][0-9]*))*", constants):
+                    invalid += 1
+                if not re.fullmatch(r"[1-9][0-9]*,[1-9][0-9]*,[1-9][0-9]*", denominators):
+                    invalid += 1
+                if not re.fullmatch(r"0|[1-9][0-9]*", subgroup):
+                    invalid += 1
+                values.append(identity)
+            subject_identity, null_identity = values
+            identities.add(subject_identity)
+            null_identities.add(null_identity)
+            if subject_identity[1:] != (f"64,{rows},1", f"{rows},1,1", "64"):
+                invalid += 1
+        if pair_complete:
+            complete_pairs += 1
+    subject_digests = {identity[0] for identity in control_identities | candidate_identities}
+    if missing or not control_identities or not candidate_identities:
+        verdict = "unavailable"
+    elif invalid or len(control_identities) != 1 or len(candidate_identities) != 1 \
+            or len(subject_digests) != 1 or len(null_identities) != 1:
+        verdict = "differs"
+    else:
+        verdict = "held"
+    detail = (f"contract=q8-rows-2-to-4 missing={missing} invalid={invalid} "
+              f"subject_modules={len(subject_digests)} null_identities={len(null_identities)}")
+    return ["module_identity", subject, DIGEST + "+specialization", str(len(pairs)), str(complete_pairs),
+            "-", "-", "-", "-", "-",
+            " ".join("/".join(identity) for identity in sorted(control_identities)) or "-",
+            " ".join("/".join(identity) for identity in sorted(candidate_identities)) or "-",
+            "-", verdict, detail]
+
+
 def response_row(pairs, root):
     verdict = "held"
     details = []
@@ -482,6 +550,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("arms")
     parser.add_argument("arms_directory")
+    parser.add_argument("--pipeline-change", choices=("module", "q8-rows-2-to-4"), default="module")
     parser.add_argument("--subject", required=True)
     parser.add_argument("--null", required=True, dest="null_pipeline")
     parser.add_argument("--bound", type=float, default=0.02)
@@ -494,6 +563,10 @@ def main():
         raise SystemExit("--sclk-band is a nonnegative relative distance")
     if args.subject == args.null_pipeline:
         raise SystemExit("the subject and the null pipeline must differ")
+    if args.pipeline_change == "q8-rows-2-to-4" and args.subject != "mul_mat_vec_q8_0_f32_f32":
+        raise SystemExit("q8-rows-2-to-4 requires the Q8 float-input mat-vec subject")
+    if args.pipeline_change == "q8-rows-2-to-4" and args.null_pipeline.startswith("mul_mat_vec_q8_0"):
+        raise SystemExit("q8-rows-2-to-4 requires an unaffected non-Q8 null pipeline")
     arms = read_arms(args.arms)
     pairs = []
     for a, b, c, d in quadruples(arms):
@@ -539,7 +612,9 @@ def main():
                   values(lambda ledger: graph_value(ledger, SPAN)), bound, states),
         delta_row("ratio", f"{subject}/{null_pipeline}", EXCLUSIVE, "secondary", pairs,
                   values(ratio), bound, states),
-        module_row(pairs, ledgers, subject, null_pipeline),
+        (specialization_module_row(pairs, ledgers, subject, null_pipeline)
+         if args.pipeline_change == "q8-rows-2-to-4" else
+         module_row(pairs, ledgers, subject, null_pipeline)),
         response_row(pairs, args.arms_directory),
         clock_row(pairs),
     ] + witness_rows(args.witness)
