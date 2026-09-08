@@ -68,7 +68,7 @@ from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 # pair rather than a substring decides the family and `q4_0` cannot be read
 # as `q4_k`.
 QUANT_TOKEN = re.compile(r"^q[0-9]+$")
-UNSUPPORTED_FORMAT_TOKEN = re.compile(r"^(?:iq|mxfp|nvfp)[0-9]+$")
+UNSUPPORTED_FORMAT_TOKEN = re.compile(r"^(?:iq|tq|mxfp|nvfp)[0-9]+$")
 QUANT_SUBFORMAT = ("k", "0", "1", "s", "m", "xs", "xxs", "nl")
 FLOAT_FORMATS = ("bf16", "f16")
 OTHER_FAMILY = "other"
@@ -78,6 +78,7 @@ OTHER_FAMILY = "other"
 REQUIRED_GRAPH_FIELDS = (
     "raw_bracket_sum_ms_per_graph",
     "bracket_union_ms_per_graph",
+    "exclusive_ms_per_graph",
     "overlap_threshold",
     "cross_pipeline_overlap_fraction",
     "ownership",
@@ -93,6 +94,7 @@ class Pipeline(NamedTuple):
     family: str
     calls_per_graph: float
     bracket_upper_bound_ms: float
+    union_ms: float
     exclusive_ms: float
     ambiguous_ms: float
     workgroups_per_graph: float
@@ -109,6 +111,7 @@ class Arm(NamedTuple):
     union_ms: float
     cross_fraction: float
     threshold: float
+    graph_exclusive_ms: float
     pipeline_ownership: str
     pipelines: Tuple[Pipeline, ...]
 
@@ -162,6 +165,7 @@ def read_ledger(path: str) -> Arm:
 
     header: Optional[List[str]] = None
     pipelines: List[Pipeline] = []
+    pipeline_ids: set[str] = set()
     graph_rows: List[List[str]] = []
     for line in lines:
         row = line.split("\t")
@@ -179,6 +183,7 @@ def read_ledger(path: str) -> Arm:
             if len(index) != len(header):
                 raise FamilyError(f"{path}: duplicate pipeline header columns")
             required = (
+                "id",
                 "name",
                 "calls_per_graph",
                 "workgroups_per_graph",
@@ -192,6 +197,14 @@ def read_ledger(path: str) -> Arm:
             )
             if any(column not in index for column in required):
                 raise FamilyError(f"{path}: missing required pipeline columns")
+            pipeline_id = row[index["id"]]
+            if not re.fullmatch(r"0|[1-9][0-9]{0,8}", pipeline_id):
+                raise FamilyError(
+                    f"{path}: pipeline id requires a canonical bounded count"
+                )
+            if pipeline_id in pipeline_ids:
+                raise FamilyError(f"{path}: duplicate pipeline id {pipeline_id}")
+            pipeline_ids.add(pipeline_id)
             numeric = {}
             for column in (
                 "calls_per_graph",
@@ -227,6 +240,13 @@ def read_ledger(path: str) -> Arm:
                     raise FamilyError(
                         f"{path}: {column} requires a canonical nonnegative count"
                     )
+            quantiles = [
+                numeric[column]
+                for column in ("median_us", "p90_us", "p99_us", "max_us")
+                if column in numeric
+            ]
+            if quantiles != sorted(quantiles):
+                raise FamilyError(f"{path}: pipeline duration quantiles are unordered")
             # Ledger times are rounded independently to three decimal places.
             upper = numeric["total_bracket_upper_bound_ms"]
             union = numeric["pipeline_bracket_union_ms"]
@@ -253,6 +273,7 @@ def read_ledger(path: str) -> Arm:
                         "total_bracket_upper_bound_ms",
                         path,
                     ),
+                    union_ms=union,
                     exclusive_ms=parse_float(
                         row, index["exclusive_bracket_ms"], "exclusive_bracket_ms", path
                     ),
@@ -296,6 +317,7 @@ def read_ledger(path: str) -> Arm:
         cross = float(fields["cross_pipeline_overlap_fraction"])
         raw_sum = float(fields["raw_bracket_sum_ms_per_graph"])
         union = float(fields["bracket_union_ms_per_graph"])
+        graph_exclusive = float(fields["exclusive_ms_per_graph"])
         if not re.fullmatch(r"[1-9][0-9]{0,8}", graphs_row[2]):
             raise ValueError(
                 "graph count requires a bounded canonical positive integer"
@@ -303,16 +325,28 @@ def read_ledger(path: str) -> Arm:
         graphs = int(graphs_row[2])
     except ValueError as error:
         raise FamilyError(f"{path}: the graphs row states {error}") from error
-    if any(not math.isfinite(value) for value in (threshold, cross, raw_sum, union)):
+    if any(
+        not math.isfinite(value)
+        for value in (threshold, cross, raw_sum, union, graph_exclusive)
+    ):
         raise FamilyError(f"{path}: graphs fields require finite numbers")
     if not 0 <= cross <= 1 or not 0 <= threshold <= 1:
         raise FamilyError(f"{path}: overlap fractions require values in [0, 1]")
-    if raw_sum <= 0 or union <= 0 or union > raw_sum + 0.002:
+    if (
+        raw_sum <= 0
+        or union <= 0
+        or union > raw_sum + 0.002
+        or graph_exclusive < 0
+        or graph_exclusive > union + 0.002
+    ):
         raise FamilyError(f"{path}: graph time bounds conflict")
-    if not math.isfinite(raw_sum * graphs) or not math.isfinite(union * graphs):
+    if any(
+        not math.isfinite(value * graphs) for value in (raw_sum, union, graph_exclusive)
+    ):
         raise FamilyError(f"{path}: graph totals overflow")
     for attribute in (
         "bracket_upper_bound_ms",
+        "union_ms",
         "exclusive_ms",
         "ambiguous_ms",
         "calls_per_graph",
@@ -338,6 +372,26 @@ def read_ledger(path: str) -> Arm:
         raise FamilyError(
             f"{path}: pipeline upper totals disagree with the raw denominator"
         )
+    if (
+        abs(
+            sum(pipeline.exclusive_ms for pipeline in pipelines)
+            - graph_exclusive * graphs
+        )
+        > rounding_slack
+    ):
+        raise FamilyError(
+            f"{path}: pipeline exclusive totals disagree with the graph total"
+        )
+    pipeline_union_total = sum(pipeline.union_ms for pipeline in pipelines)
+    if (
+        pipeline_union_total < union * graphs - rounding_slack
+        or pipeline_union_total > raw_sum * graphs + rounding_slack
+        or any(
+            pipeline.union_ms > union * graphs + rounding_slack
+            for pipeline in pipelines
+        )
+    ):
+        raise FamilyError(f"{path}: pipeline unions conflict with graph bounds")
     if cross > threshold:
         raise FamilyError(
             f"{path}: cross_pipeline_overlap_fraction {cross:.4f} exceeds the "
@@ -354,6 +408,7 @@ def read_ledger(path: str) -> Arm:
         union_ms=union * graphs,
         cross_fraction=cross,
         threshold=threshold,
+        graph_exclusive_ms=graph_exclusive * graphs,
         pipeline_ownership=fields["ownership"],
         pipelines=tuple(pipelines),
     )
@@ -373,6 +428,7 @@ def emit(arm: Arm, prefix: Optional[str]) -> None:
                 f"bracket_union_ms={arm.union_ms:.3f}",
                 f"cross_pipeline_overlap_fraction={arm.cross_fraction:.4f}",
                 f"overlap_threshold={arm.threshold:.4f}",
+                f"graph_exclusive_ms={arm.graph_exclusive_ms:.3f}",
                 f"pipeline_ownership={arm.pipeline_ownership}",
                 "family_ownership=conclusive",
                 f"family_prefix={prefix if prefix is not None else '-'}",
@@ -449,6 +505,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "bracket_union_ms",
                 "cross_pipeline_overlap_fraction",
                 "overlap_threshold",
+                "graph_exclusive_ms",
                 "pipeline_ownership",
                 "family_ownership",
                 "family_prefix",

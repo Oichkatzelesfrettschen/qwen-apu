@@ -66,14 +66,14 @@ def build_ledger(
     extra: Sequence[Tuple[str, float, float, float, float, float, str, str]] = (),
 ) -> str:
     lines = ["\t".join(PIPELINE_HEADER)]
-    for entry in tuple(PIPELINES) + tuple(extra):
+    for pipeline_id, entry in enumerate(tuple(PIPELINES) + tuple(extra), start=1):
         name, calls, workgroups, upper, union, exclusive, ambiguous, vgprs = entry
         lines.append(
             "\t".join(
                 str(v)
                 for v in [
                     "pipeline",
-                    1,
+                    pipeline_id,
                     name,
                     "64,4,1",
                     "4,1,1",
@@ -104,7 +104,8 @@ def build_ledger(
             "decode",
             "63",
             f"raw_bracket_sum_ms_per_graph={sum(entry[3] for entry in tuple(PIPELINES) + tuple(extra)) / 63:.3f}",
-            "bracket_union_ms_per_graph=9.900",
+            f"bracket_union_ms_per_graph={(623.7 + sum(entry[4] for entry in extra)) / 63:.3f}",
+            f"exclusive_ms_per_graph={sum(entry[5] for entry in tuple(PIPELINES) + tuple(extra)) / 63:.3f}",
             f"cross_pipeline_overlap_fraction={cross:.4f}",
             f"overlap_threshold={threshold:.4f}",
             f"ownership={ownership}",
@@ -215,6 +216,8 @@ def case_unknown_format(directory: pathlib.Path) -> None:
         "mul_mat_vec_iq1_m_q8_1_f32",
         "mul_mat_vec_mxfp4_f16",
         "mul_mat_vec_nvfp4_q8_1_f32",
+        "mul_mat_vec_tq2_0_f16_f32",
+        "mul_mat_vec_tq1_0_f16_f32",
     )
     extra = tuple((name, 4.0, 8.0, 5.0, 5.0, 5.0, "0.0", "64") for name in names)
     result = run(directory, build_ledger(extra=extra))
@@ -246,6 +249,36 @@ def case_partition_refusals(directory: pathlib.Path) -> None:
         result = run(directory, "\n".join("\t".join(row) for row in rows) + "\n")
         assert result.returncode == 1, result.stdout
         assert "interval bounds conflict" in result.stderr, result.stderr
+    for exclusive_value in ("0", "1"):
+        rows = [line.split("\t") for line in lines]
+        for row in rows[1:-1]:
+            row[PIPELINE_HEADER.index("pipeline_bracket_union_ms")] = exclusive_value
+            row[PIPELINE_HEADER.index("exclusive_bracket_ms")] = exclusive_value
+            row[PIPELINE_HEADER.index("ambiguous_overlap_ms")] = "0"
+        result = run(directory, "\n".join("\t".join(row) for row in rows) + "\n")
+        assert result.returncode == 1, result.stdout
+        assert "exclusive totals disagree" in result.stderr, result.stderr
+    result = run(directory, original.replace("\texclusive_ms_per_graph=9.762", ""))
+    assert result.returncode == 1, result.stdout
+    assert "states no exclusive_ms_per_graph" in result.stderr, result.stderr
+    result = run(
+        directory,
+        original.replace(
+            "bracket_union_ms_per_graph=9.900", "bracket_union_ms_per_graph=9.990"
+        ),
+    )
+    assert result.returncode == 1, result.stdout
+    assert "pipeline unions conflict" in result.stderr, result.stderr
+    rows = [line.split("\t") for line in lines]
+    rows[2][PIPELINE_HEADER.index("id")] = rows[1][PIPELINE_HEADER.index("id")]
+    result = run(directory, "\n".join("\t".join(row) for row in rows) + "\n")
+    assert result.returncode == 1, result.stdout
+    assert "duplicate pipeline id" in result.stderr, result.stderr
+    rows = [line.split("\t") for line in lines]
+    rows[1][PIPELINE_HEADER.index("p90_us")] = "0.5"
+    result = run(directory, "\n".join("\t".join(row) for row in rows) + "\n")
+    assert result.returncode == 1, result.stdout
+    assert "quantiles are unordered" in result.stderr, result.stderr
     print("case=complete-partitions verdict=accepted")
 
 
@@ -262,6 +295,7 @@ def case_numeric_refusals(directory: pathlib.Path) -> None:
     for field, accepted in (
         ("raw_bracket_sum_ms_per_graph", "10.000"),
         ("bracket_union_ms_per_graph", "9.900"),
+        ("exclusive_ms_per_graph", "9.762"),
         ("cross_pipeline_overlap_fraction", "0.0070"),
         ("overlap_threshold", "0.0500"),
     ):
@@ -341,7 +375,7 @@ def case_numeric_refusals(directory: pathlib.Path) -> None:
     )
     tiny_denominator = tiny_denominator.replace(
         "bracket_union_ms_per_graph=9.900", "bracket_union_ms_per_graph=5e-324"
-    )
+    ).replace("exclusive_ms_per_graph=9.762", "exclusive_ms_per_graph=0")
     result = run(directory, tiny_denominator)
     assert result.returncode == 1, result.stdout
     assert "derived family share overflows" in result.stderr, result.stderr
