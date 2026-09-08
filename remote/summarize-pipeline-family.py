@@ -315,6 +315,12 @@ def read_ledger(path: str) -> Arm:
         total = sum(getattr(pipeline, attribute) for pipeline in pipelines)
         if not math.isfinite(total):
             raise FamilyError(f"{path}: pipeline totals overflow")
+    for attribute in ("bracket_upper_bound_ms", "exclusive_ms"):
+        share = sum(getattr(pipeline, attribute) for pipeline in pipelines) / (
+            raw_sum * graphs
+        )
+        if not math.isfinite(share):
+            raise FamilyError(f"{path}: derived family share overflows")
     rounding_slack = 0.001 * (graphs + len(pipelines))
     if (
         sum(pipeline.bracket_upper_bound_ms for pipeline in pipelines)

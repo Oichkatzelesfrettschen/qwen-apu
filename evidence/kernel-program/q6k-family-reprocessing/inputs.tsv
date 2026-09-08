@@ -1,5 +1,5 @@
 role	path	sha256
-reader	remote/summarize-pipeline-family.py	fc9504bd93813f82dff2988170545349320a793ddc5f517cf81ff175356a75ae
+reader	remote/summarize-pipeline-family.py	d95c12e799e02634182c362f38dd6c8b20e27d3f2912bfea30099f443a0480ea
 acquisition	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/18-I1/pipeline-ledger-decode.tsv	c50111565f5b445592668f0578c322c658faf88dd8bf7c5fb48407e406db515e
 acquisition	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/19-I1/pipeline-ledger-decode.tsv	3b28ecd91bc7175bb0cccd44ee71d2fec579f3d632b03883ffb2e73b4805d3f6
 acquisition	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/22-I1/pipeline-ledger-decode.tsv	92d1cc9cfd03b8385108dc95046a18c3d86953077b337c034d83558355c11932

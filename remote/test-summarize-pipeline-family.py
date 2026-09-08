@@ -296,6 +296,26 @@ def case_numeric_refusals(directory: pathlib.Path) -> None:
             result = run(directory, "\n".join("\t".join(row) for row in rows) + "\n")
             assert result.returncode == 1, (column, invalid, result.stdout)
             mutations += 1
+    rows = [line.split("\t") for line in original.splitlines()]
+    for row in rows[1:-1]:
+        for column in (
+            "total_bracket_upper_bound_ms",
+            "pipeline_bracket_union_ms",
+            "exclusive_bracket_ms",
+            "ambiguous_overlap_ms",
+        ):
+            row[PIPELINE_HEADER.index(column)] = "0.000001"
+    tiny_denominator = "\n".join("\t".join(row) for row in rows) + "\n"
+    tiny_denominator = tiny_denominator.replace(
+        "raw_bracket_sum_ms_per_graph=10.000", "raw_bracket_sum_ms_per_graph=5e-324"
+    )
+    tiny_denominator = tiny_denominator.replace(
+        "bracket_union_ms_per_graph=9.900", "bracket_union_ms_per_graph=5e-324"
+    )
+    result = run(directory, tiny_denominator)
+    assert result.returncode == 1, result.stdout
+    assert "derived family share overflows" in result.stderr, result.stderr
+    mutations += 1
     print(f"case=numeric-refusals mutations={mutations} verdict=accepted")
 
 
