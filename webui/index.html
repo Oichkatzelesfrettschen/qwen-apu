@@ -320,6 +320,8 @@ let attachments = [];   // {name, text, tokens, tokenModel}
 let nctx = null;
 let nctxModel = null;
 let busy = false;
+let imageSendBusySequence = 0;
+let imageSendBusyOwner = 0;
 let requestModel = null;
 let modelStateGeneration = 0;
 // Every tool message names the call it answers by id, so an id stays unique
@@ -2656,8 +2658,8 @@ function composeUserContent(text, attached) {
   };
 }
 
-$('#file').onchange = async e => {
-  for (const f of e.target.files) {
+async function attachFiles(files) {
+  for (const f of files) {
     try {
       if (typeof f.type === 'string' && f.type.startsWith('image/')) {
         const attachmentModel = requestModel;
@@ -2666,8 +2668,12 @@ $('#file').onchange = async e => {
           throw new Error(`model ${requestModel || '(none)'} does not report vision capability`);
         }
         const dataUrl = await imageFileDataUrl(f);
+        if (requestModel !== attachmentModel ||
+            conversationGeneration !== attachmentGeneration) {
+          throw new Error('the model or conversation changed while the image was being read');
+        }
         attachments.push({ name: f.name, kind: 'image', mime: f.type, dataUrl,
-                           tokens: null, tokenModel: requestModel });
+                           tokens: null, tokenModel: attachmentModel });
       } else {
         const text = await f.text();
         const tokenState = await tokenCountForCurrentModel(text);
@@ -2677,8 +2683,12 @@ $('#file').onchange = async e => {
       window.alert(`Could not attach ${f.name}: ${error.message || error}`);
     }
   }
-  e.target.value = '';
   renderAttached();
+}
+
+$('#file').onchange = async e => {
+  await attachFiles(e.target.files);
+  e.target.value = '';
 };
 
 function turn(who, cls) {
@@ -3516,11 +3526,22 @@ async function send() {
   const { prompt, images: imageAttachments, content } = composeUserContent(text, attachments);
   const turnModel = requestModel;
   const turnAdmissionGeneration = conversationGeneration;
-  if (imageAttachments.length) busy = true;
+  const imageBusyToken = imageAttachments.length ? ++imageSendBusySequence : 0;
+  const releaseImageBusy = () => {
+    if (imageBusyToken && imageSendBusyOwner === imageBusyToken) {
+      imageSendBusyOwner = 0;
+      busy = false;
+      $('#send').disabled = false;
+    }
+  };
+  if (imageBusyToken) {
+    imageSendBusyOwner = imageBusyToken;
+    busy = true;
+    $('#send').disabled = true;
+  }
   if (imageAttachments.length &&
       !await selectedModelAcceptsImages(turnModel, turnAdmissionGeneration)) {
-    busy = false;
-    $('#send').disabled = false;
+    releaseImageBusy();
     const note = turn('image', '');
     note.body.className = 'body meta bad';
     note.body.textContent = `Model ${requestModel} does not report vision capability. ` +
@@ -3561,12 +3582,18 @@ async function send() {
       // one this launch's own ceiling names.
       tokenizeFailure = error;
     }
+    if (imageBusyToken && (requestModel !== turnModel ||
+        conversationGeneration !== turnAdmissionGeneration)) {
+      releaseImageBusy();
+      return;
+    }
     if (tokenizeFailure != null) {
       const note = turn('limit', '');
       note.body.className = 'body meta bad';
       note.body.textContent = 'This launch admits at most ' +
         `${LAN_MAX_PROMPT_TOKENS} prompt tokens, and this page could not measure ` +
         `this conversation's length (${tokenizeFailure.message}). Retry, or start a new conversation.`;
+      releaseImageBusy();
       return;
     }
     if (promptTokens != null && promptTokens > LAN_MAX_PROMPT_TOKENS) {
@@ -3575,6 +3602,7 @@ async function send() {
       note.body.textContent = `This conversation is at least ${promptTokens} tokens, above the ` +
         `${LAN_MAX_PROMPT_TOKENS}-token bound this launch admits. Shorten this message, ` +
         'remove an attachment, or start a new conversation.';
+      releaseImageBusy();
       return;
     }
   }
@@ -3689,6 +3717,7 @@ async function send() {
       }
     }
   } finally {
+    if (imageBusyToken) imageSendBusyOwner = 0;
     busy = false; $('#send').disabled = false;
     $('#input').focus();
   }

@@ -117,6 +117,8 @@ globalThis.webuiModelStateTest = {
   selectedModelAcceptsImagesNow() {
     return selectedModelAcceptsImages(requestModel, conversationGeneration);
   },
+  attachFiles,
+  startNewConversation,
   setAttachments(nextAttachments) {
     attachments = nextAttachments;
     renderAttached();
@@ -159,10 +161,16 @@ globalThis.webuiModelStateTest = {
 };
 `;
 
+const pendingFileReaders = [];
+class DeferredFileReader {
+  readAsDataURL() { pendingFileReaders.push(this); }
+}
+
 const browserContext = vm.createContext({
   console,
   document,
   fetch: deferredFetch,
+  FileReader: DeferredFileReader,
   window: {
     alert() {},
     localStorage: deniedStorage,
@@ -337,6 +345,21 @@ const nonVisionProps = takeRequest(
   'explicit vision admission');
 nonVisionProps.resolve(jsonResponse({ modalities: { vision: false } }));
 assert.equal(await visionAdmission, false, 'a text-only model admitted image content');
+const staleAttachment = testApi.attachFiles([{
+  name: 'stale.png', type: 'image/png'
+}]);
+await flushPromises();
+const attachmentProps = takeRequest(
+  request => request.url === './props?model=model-A', 'attachment vision admission');
+attachmentProps.resolve(jsonResponse({ modalities: { vision: true } }));
+await flushPromises();
+assert.equal(pendingFileReaders.length, 1, 'the admitted image did not reach FileReader');
+testApi.startNewConversation();
+pendingFileReaders[0].result = 'data:image/png;base64,c3RhbGU=';
+pendingFileReaders[0].onload();
+await staleAttachment;
+assert.deepEqual(testApi.state().attachments, [],
+  'a stale FileReader inserted an image into the new conversation');
 const requestCountBeforeStaleProposals = pendingRequests.length;
 const staleProposalResult = await testApi.runStaleProposalCheck(modelB);
 assert.equal(staleProposalResult.fetchRemaining, 2);

@@ -101,6 +101,14 @@ globalThis.webuiLanBoundsTest = {
   historyLength() {
     return history.length;
   },
+  setImageAttachment() {
+    attachments = [{ name: 'fixture.png', kind: 'image', mime: 'image/png',
+      dataUrl: 'data:image/png;base64,aW1hZ2U=', tokens: null, tokenModel: requestModel }];
+  },
+  clearAttachments() { attachments = []; },
+  isBusy() { return busy; },
+  setRequestModel(value) { requestModel = value; },
+  startNewConversation,
 };
 `;
 
@@ -173,6 +181,60 @@ async function loadPage({ metaContents = {} } = {}) {
   propsRequest.resolve(jsonResponse({ n_ctx: 24576 }));
   await flushPromises();
   return { testApi: browserContext.webuiLanBoundsTest, pendingRequests, takeRequest };
+}
+
+// Image admission owns and releases the busy state across prompt tokenization.
+// Both tokenizer failure and an over-limit result admit a later send.
+for (const outcome of ['failure', 'over-limit']) {
+  const { testApi, takeRequest } = await loadPage({
+    metaContents: { 'qwen-lan-max-prompt-tokens': '10' },
+  });
+  testApi.setImageAttachment();
+  const imageSend = testApi.send(`image ${outcome}`);
+  await flushPromises();
+  const visionRequest = takeRequest(
+    request => request.url === './props?model=model-A', 'image vision admission');
+  visionRequest.resolve(jsonResponse({ modalities: { vision: true } }));
+  await flushPromises();
+  const imageTokenize = takeRequest(
+    request => request.url === './tokenize', `image tokenizer ${outcome}`);
+  if (outcome === 'failure') imageTokenize.reject(new Error('tokenizer unavailable'));
+  else imageTokenize.resolve(jsonResponse({ tokens: new Array(20).fill(1) }));
+  await imageSend;
+  assert.equal(testApi.isBusy(), false, `${outcome} left the image send busy`);
+  testApi.clearAttachments();
+  const retry = testApi.send('retry');
+  await flushPromises();
+  const retryTokenize = takeRequest(
+    request => request.url === './tokenize', `retry tokenizer after ${outcome}`);
+  retryTokenize.resolve(jsonResponse({ tokens: [1] }));
+  await flushPromises();
+  const retryCompletion = takeRequest(
+    request => request.url === './v1/chat/completions', `retry completion after ${outcome}`);
+  retryCompletion.reject(new Error('retry reached completion'));
+  await retry;
+}
+
+{
+  const { testApi, pendingRequests, takeRequest } = await loadPage({
+    metaContents: { 'qwen-lan-max-prompt-tokens': '100' },
+  });
+  testApi.setImageAttachment();
+  const staleSend = testApi.send('stale tokenizer');
+  await flushPromises();
+  const visionRequest = takeRequest(
+    request => request.url === './props?model=model-A', 'stale tokenizer vision admission');
+  visionRequest.resolve(jsonResponse({ modalities: { vision: true } }));
+  await flushPromises();
+  const tokenizeRequest = takeRequest(
+    request => request.url === './tokenize', 'stale image tokenizer');
+  testApi.startNewConversation();
+  tokenizeRequest.resolve(jsonResponse({ tokens: [1] }));
+  await staleSend;
+  assert.equal(testApi.historyLength(), 0, 'a stale tokenizer appended the image turn');
+  assert.ok(!pendingRequests.some(request => request.url === './v1/chat/completions'),
+    'a stale tokenizer reached chat completion');
+  assert.equal(testApi.isBusy(), false, 'a stale tokenizer retained image busy ownership');
 }
 
 // An ordinary launch names neither bound: the meta tags are absent (the page
