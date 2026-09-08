@@ -700,7 +700,10 @@ active_fixture=real_broker_receives_hwmon
 real_broker=$temporary_directory/telemetry-broker
 cc -O2 -Wall -Wextra -Werror -std=c11 "$scratch/telemetry-broker.c" -o "$real_broker"
 sha256sum "$scratch/telemetry-broker.c" | cut -d ' ' -f 1 >"$real_broker.source-sha256"
-run_harness "$acquisitions/real-broker" "QWEN_CENSUS_BROKER=$real_broker"
+mkdir -p "$temporary_directory/global-hwmon"
+ln -s "$temporary_directory/drm/hwmon/amdgpu" "$temporary_directory/global-hwmon/hwmon0"
+run_harness "$acquisitions/real-broker" "QWEN_CENSUS_BROKER=$real_broker" \
+    "QWEN_HWMON_ROOT=$temporary_directory/global-hwmon"
 grep -q 'telemetry_broker=sampled' "$acquisitions/real-broker/arms/01-subject/sidecar.stderr"
 python3 - "$acquisitions/real-broker/arms/01-subject/clock-samples.tsv" <<'PYBROKER'
 import csv
@@ -718,6 +721,41 @@ if run_harness "$acquisitions/missing-hwmon" "QWEN_HWMON_ROOT=$temporary_directo
 fi
 [ ! -e "$acquisitions/missing-hwmon" ]
 grep -q 'baseline requires readable amdgpu hwmon' "$temporary_directory/run.log"
+
+active_fixture=ambiguous_hwmon_refuses_before_launch
+mkdir -p "$temporary_directory/ambiguous-hwmon/first" "$temporary_directory/ambiguous-hwmon/second"
+printf 'amdgpu\n' >"$temporary_directory/ambiguous-hwmon/first/name"
+printf 'amdgpu\n' >"$temporary_directory/ambiguous-hwmon/second/name"
+if run_harness "$acquisitions/ambiguous-hwmon" "QWEN_HWMON_ROOT=$temporary_directory/ambiguous-hwmon"; then
+    printf 'baseline admitted ambiguous amdgpu sensors\n' >&2
+    exit 1
+fi
+[ ! -e "$acquisitions/ambiguous-hwmon" ]
+grep -q 'baseline requires one amdgpu hwmon sensor directory' "$temporary_directory/run.log"
+
+active_fixture=missing_temperature_refuses_before_launch
+mkdir -p "$temporary_directory/missing-temperature/amdgpu"
+printf 'amdgpu\n' >"$temporary_directory/missing-temperature/amdgpu/name"
+printf '1100000000\n' >"$temporary_directory/missing-temperature/amdgpu/freq1_input"
+if run_harness "$acquisitions/missing-temperature" "QWEN_HWMON_ROOT=$temporary_directory/missing-temperature"; then
+    printf 'baseline admitted an absent required temperature sensor\n' >&2
+    exit 1
+fi
+[ ! -e "$acquisitions/missing-temperature" ]
+grep -q 'baseline requires readable amdgpu hwmon' "$temporary_directory/run.log"
+
+active_fixture=foreign_hwmon_refuses_before_launch
+mkdir -p "$temporary_directory/foreign-hwmon/amdgpu"
+cp "$temporary_directory/drm/hwmon/amdgpu/name" \
+    "$temporary_directory/drm/hwmon/amdgpu/freq1_input" \
+    "$temporary_directory/drm/hwmon/amdgpu/temp1_input" \
+    "$temporary_directory/foreign-hwmon/amdgpu/"
+if run_harness "$acquisitions/foreign-hwmon" "QWEN_HWMON_ROOT=$temporary_directory/foreign-hwmon"; then
+    printf 'baseline admitted sensors from another DRM device\n' >&2
+    exit 1
+fi
+[ ! -e "$acquisitions/foreign-hwmon" ]
+grep -q 'baseline hwmon sensors must belong to the selected DRM device' "$temporary_directory/run.log"
 
 diagnostic_file=
 printf 'checkpoint baseline fixtures passed\n'

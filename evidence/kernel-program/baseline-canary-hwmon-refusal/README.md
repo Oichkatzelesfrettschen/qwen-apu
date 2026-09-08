@@ -28,7 +28,9 @@ The follow-up runner resolves one amdgpu hwmon directory under the selected DRM
 device, requires readable delivered-clock and temperature surfaces before
 acquisition, records that directory and passes it to the broker. The baseline
 fixture now executes the compiled broker against synthetic DRM/hwmon files and
-checks actual retained sensor values; an absent hwmon refuses before launch.
+checks actual retained sensor values. Absent, ambiguous, incomplete and foreign
+hwmon selections refuse before launch. A configured hwmon search root still
+requires the resolved sensor directory to belong to the selected DRM device.
 The follow-up repair has no device measurement in this record.
 
 The complete raw window remains under `.runtime/results/` on the appliance and

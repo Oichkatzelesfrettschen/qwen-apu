@@ -135,6 +135,16 @@ if [ -z "$sidecar_hwmon" ] || [ ! -r "$sidecar_hwmon/freq1_input" ] || [ ! -r "$
     exit 2
 fi
 
+sidecar_hwmon=$(readlink -f "$sidecar_hwmon")
+drm_hwmon_root=$(readlink -f "$drm_device/hwmon")
+case $sidecar_hwmon in
+    "$drm_hwmon_root"/*) ;;
+    *)
+        printf 'baseline hwmon sensors must belong to the selected DRM device\n' >&2
+        exit 2
+        ;;
+esac
+
 sidecar_source_sha256=$(sha256sum "$script_directory/telemetry-broker.c" | cut -d ' ' -f 1)
 if [ ! -f "$sidecar.source-sha256" ] || [ "$(cat "$sidecar.source-sha256")" != "$sidecar_source_sha256" ]; then
     printf 'baseline requires a broker built from the recorded source before the window\n' >&2
