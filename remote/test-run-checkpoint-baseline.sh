@@ -318,7 +318,12 @@ run_harness() {
 }
 
 # The graphics clock table the invariant reads its required step from.
-mkdir -p "$temporary_directory/drm"
+mkdir -p "$temporary_directory/drm/hwmon/amdgpu"
+printf 'amdgpu\n' >"$temporary_directory/drm/hwmon/amdgpu/name"
+printf '1100000000\n' >"$temporary_directory/drm/hwmon/amdgpu/freq1_input"
+printf '70000\n' >"$temporary_directory/drm/hwmon/amdgpu/temp1_input"
+printf '2: 933Mhz *\n' >"$temporary_directory/drm/pp_dpm_mclk"
+printf '50\n' >"$temporary_directory/drm/gpu_busy_percent"
 printf '0: 200Mhz\n1: 400Mhz\n2: 1100Mhz *\n' >"$temporary_directory/drm/pp_dpm_sclk"
 
 active_fixture=completed_single_arm
@@ -690,6 +695,29 @@ for refusal in sampler quiescence; do
     fi
     awk -F'\t' '$1 == "status" && ($2 == "incomplete" || $2 == "failed") { found=1 } END { exit !found }' "$acquisitions/$refusal-failure/arms/01-subject/terminal.tsv"
 done
+
+active_fixture=real_broker_receives_hwmon
+real_broker=$temporary_directory/telemetry-broker
+cc -O2 -Wall -Wextra -Werror -std=c11 "$scratch/telemetry-broker.c" -o "$real_broker"
+sha256sum "$scratch/telemetry-broker.c" | cut -d ' ' -f 1 >"$real_broker.source-sha256"
+run_harness "$acquisitions/real-broker" "QWEN_CENSUS_BROKER=$real_broker"
+grep -q 'telemetry_broker=sampled' "$acquisitions/real-broker/arms/01-subject/sidecar.stderr"
+python3 - "$acquisitions/real-broker/arms/01-subject/clock-samples.tsv" <<'PYBROKER'
+import csv
+import sys
+with open(sys.argv[1]) as source:
+    rows = list(csv.DictReader((line for line in source if not line.startswith("#")), delimiter="\t"))
+assert rows
+assert all(row["sclk_actual_mhz"] == "1100" and row["temp1_millidegrees"] == "70000" for row in rows), rows
+PYBROKER
+active_fixture=missing_hwmon_refuses_before_launch
+mkdir -p "$temporary_directory/empty-hwmon"
+if run_harness "$acquisitions/missing-hwmon" "QWEN_HWMON_ROOT=$temporary_directory/empty-hwmon"; then
+    printf 'baseline admitted an absent delivered-clock sensor\n' >&2
+    exit 1
+fi
+[ ! -e "$acquisitions/missing-hwmon" ]
+grep -q 'baseline requires readable amdgpu hwmon' "$temporary_directory/run.log"
 
 diagnostic_file=
 printf 'checkpoint baseline fixtures passed\n'

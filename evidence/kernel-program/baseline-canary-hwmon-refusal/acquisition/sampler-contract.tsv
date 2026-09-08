@@ -1,0 +1,10 @@
+key	value
+period_ms	20
+period_tolerance	0.25
+cost_bound_ns	1000000
+max_gap_ns	250000000
+max_lost_fraction	0.03
+allowed_unavailable	pp_dpm_fclk_surface_mhz
+nice	19
+cpu_affinity	0,1
+sclk_source	sclk_actual_mhz

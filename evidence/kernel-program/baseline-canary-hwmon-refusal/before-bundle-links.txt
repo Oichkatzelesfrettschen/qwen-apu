@@ -1,0 +1,2 @@
+$HOME/Github/qwen-apu/.runtime/deployments/lease-q4k-6b262d93-r1
+$HOME/Github/qwen-apu/.runtime/deployments/main-2c1fa9de-r1

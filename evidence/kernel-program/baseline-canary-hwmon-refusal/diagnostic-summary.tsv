@@ -1,0 +1,6 @@
+claim	result	basis
+within_binary_repeatability	unmeasured	zero repeated decode requests
+cross_binary_token_comparison	not_applicable	single subject executable
+acquisition_completeness	incomplete	completed 64-token warmup; zero of four registered repeats
+instrument_admission	refused	269 samples with unavailable required hwmon sensors; validator exit 1
+performance_result	withheld	incomplete acquisition and refused instrument
