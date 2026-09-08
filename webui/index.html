@@ -4324,6 +4324,8 @@ function restoreTranscript() {
 
 function resetConversationState() {
   conversationGeneration++;
+  attachments = [];
+  renderAttached();
   history = [];
   toolCallSequence = 0;
   conversationMessages = [];

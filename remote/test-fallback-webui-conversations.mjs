@@ -351,6 +351,7 @@ globalThis.webuiConversationTest = {
     $('#input').value = '';
   },
   setAttachments(value) { attachments = value; renderAttached(); },
+  attachmentCount() { return attachments.length; },
   setInput(text) { $('#input').value = text; },
   send,
   conversationsReadyPromise: conversationsReady,
@@ -695,9 +696,11 @@ assert.equal(first.api.restoredBlobUrls(), 0,
 const deleteAllId = await first.api.runFixtureTurn(fixture);
 assert.ok(await first.api.read(deleteAllId));
 const generationBeforeDeleteAll = first.api.state().conversationGeneration;
+first.api.setAttachments([{name: 'private.png', kind: 'image', dataUrl: 'data:image/png;base64,private'}]);
 firstLocalStorage.setItem('qwen-apu-conversation:orphan-record', '{"orphan":true}');
 firstLocalStorage.setItem('qwen-apu-reasoning', 'on');
 assert.equal(await first.api.deleteAllSavedConversations(), true);
+assert.equal(first.api.attachmentCount(), 0, 'delete-all retained pending image bytes');
 assert.equal(firstLocalStorage.getItem('qwen-apu-conversation:orphan-record'), null,
   'delete-all retained an orphaned owned record key');
 assert.equal(firstLocalStorage.getItem('qwen-apu-reasoning'), 'on',
