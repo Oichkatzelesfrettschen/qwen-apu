@@ -329,10 +329,15 @@ def read_ledger(path: str) -> Arm:
             raise FamilyError(f"{path}: derived family share overflows")
     rounding_slack = 0.0005 * (graphs + len(pipelines)) + 1e-9
     if (
-        abs(sum(pipeline.bracket_upper_bound_ms for pipeline in pipelines)
-            - raw_sum * graphs) > rounding_slack
+        abs(
+            sum(pipeline.bracket_upper_bound_ms for pipeline in pipelines)
+            - raw_sum * graphs
+        )
+        > rounding_slack
     ):
-        raise FamilyError(f"{path}: pipeline upper totals disagree with the raw denominator")
+        raise FamilyError(
+            f"{path}: pipeline upper totals disagree with the raw denominator"
+        )
     if cross > threshold:
         raise FamilyError(
             f"{path}: cross_pipeline_overlap_fraction {cross:.4f} exceeds the "

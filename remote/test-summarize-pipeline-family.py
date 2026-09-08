@@ -210,8 +210,12 @@ def case_graph_row_cardinality(directory: pathlib.Path) -> None:
 
 
 def case_unknown_format(directory: pathlib.Path) -> None:
-    names = ("mul_mat_vec_iq4_nl_f32_f32", "mul_mat_vec_iq1_m_q8_1_f32",
-             "mul_mat_vec_mxfp4_f16", "mul_mat_vec_nvfp4_q8_1_f32")
+    names = (
+        "mul_mat_vec_iq4_nl_f32_f32",
+        "mul_mat_vec_iq1_m_q8_1_f32",
+        "mul_mat_vec_mxfp4_f16",
+        "mul_mat_vec_nvfp4_q8_1_f32",
+    )
     extra = tuple((name, 4.0, 8.0, 5.0, 5.0, 5.0, "0.0", "64") for name in names)
     result = run(directory, build_ledger(extra=extra))
     assert result.returncode == 0, result.stderr
@@ -233,7 +237,7 @@ def case_partition_refusals(directory: pathlib.Path) -> None:
     original = build_ledger()
     lines = original.splitlines()
     for index in range(1, len(lines) - 1):
-        result = run(directory, "\n".join(lines[:index] + lines[index + 1:]) + "\n")
+        result = run(directory, "\n".join(lines[:index] + lines[index + 1 :]) + "\n")
         assert result.returncode == 1, result.stdout
         assert "totals disagree" in result.stderr, result.stderr
     for ambiguous in ("0", "365"):
