@@ -158,6 +158,10 @@ gate_cell test-summarize-speculation-breakeven derive \
 gate_cell test-build-cache-keys derive \
     'remote/test-build-cache-keys.sh remote/build-cache-keys.sh remote/build-llama-preset.sh' \
     remote/test-build-cache-keys.sh
+gate_cell test-q8-four-row-select derive \
+    'remote/test-q8-four-row-select.py patches/llama-vulkan-q8-four-row-select.patch' \
+    python3 remote/test-q8-four-row-select.py
+
 gate_cell test-build-llama-preset-flags derive \
     'remote/test-build-llama-preset-flags.sh remote/build-candidate-flags.sh remote/build-llama-preset.sh remote/llama-patch-series.tsv' \
     remote/test-build-llama-preset-flags.sh

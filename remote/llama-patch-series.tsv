@@ -29,3 +29,4 @@ candidate	llama-vulkan-q4k-superblock-loop-licm.patch
 candidate	llama-vulkan-q4k-variant-select.patch
 candidate	llama-vulkan-q4k-row-select.patch
 candidate	llama-vulkan-q4k-int24-mmvq.patch
+candidate	llama-vulkan-q8-four-row-select.patch
