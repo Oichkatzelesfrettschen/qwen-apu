@@ -1,0 +1,12 @@
+slot	role	load_wall_ms	first_content_latency_ms	decode_tok_per_second_mean	decode_spread	repeats	within_arm_repeatability	clock_samples
+01	subject	11717.448	1345.228	3.426340	0.013947	4	held	3958
+
+schema	checkpoint-baseline-summary-v2
+arms	1
+within_binary_repeatability	held
+cross_binary_token_comparison	not_applicable
+acquisition_completeness	completed
+instrument_admission	accepted
+performance_result	descriptive
+reader_sha256	6caf285e2ea18f35bf0ff41c186cec68ef9c93f12b9e7abdd9ad5d7b49863411
+candidate_over_control	-
