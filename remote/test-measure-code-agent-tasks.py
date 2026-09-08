@@ -10,6 +10,7 @@ kill on timeout -- rather than a mock standing in for it.
 
 import importlib.util
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -257,6 +258,28 @@ class GradeFilesystemIsolationTests(unittest.TestCase):
             )
             result = module.grade(task_directory, meta, source, sys.executable)
             self.assertTrue(result["tests_passed"], result.get("test_output_tail"))
+
+
+class TemporaryVenvSandboxTests(unittest.TestCase):
+    def test_venv_under_tmp_remains_visible_after_private_tmp_mount(self):
+        with tempfile.TemporaryDirectory(prefix="qwen-grade-venv-") as directory:
+            venv = Path(directory) / "venv"
+            subprocess.run(
+                [sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True
+            )
+            workspace = Path(directory) / "workspace"
+            workspace.mkdir()
+            python = str(venv / "bin/python")
+            argv = module._sandbox_bwrap_argv(
+                workspace, {"PATH": "/usr/bin:/bin"}, python
+            )
+            result = subprocess.run(
+                argv + [python, "-c", "import sys; print(sys.prefix)"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), str(venv))
 
 
 class RequireSandboxToolTests(unittest.TestCase):

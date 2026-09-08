@@ -74,12 +74,24 @@ SANDBOX_TIMEOUT_SECONDS = 120
 # repository's own workstation and laptop both use, so the bind list stays
 # short rather than guessing at a split-/usr host's exact paths.
 SANDBOX_SYSTEM_READONLY_BINDS = ("/usr", "/etc")
-SANDBOX_SYSTEM_SYMLINKS = (
-    ("usr/bin", "/bin"),
-    ("usr/bin", "/sbin"),
-    ("usr/lib", "/lib"),
-    ("usr/lib", "/lib64"),
-)
+SANDBOX_SYSTEM_LINK_PATHS = ("/bin", "/sbin", "/lib", "/lib64")
+
+
+def _sandbox_system_mounts():
+    argv = []
+    for host_path in SANDBOX_SYSTEM_READONLY_BINDS:
+        argv += ["--ro-bind", host_path, host_path]
+    for host_path in SANDBOX_SYSTEM_LINK_PATHS:
+        path = pathlib.Path(host_path)
+        if not path.exists():
+            continue
+        target = path.resolve()
+        if not target.is_relative_to("/usr"):
+            raise RuntimeError(
+                "sandbox requires a merged-/usr system path: " + host_path
+            )
+        argv += ["--symlink", str(target), host_path]
+    return argv
 
 
 def _apply_sandbox_resource_limits():
@@ -119,12 +131,10 @@ def _sandbox_python_extra_binds(python_executable):
 
 def _sandbox_bwrap_argv(workspace, sandbox_environment, python_executable):
     argv = ["bwrap", "--unshare-all", "--die-with-parent"]
-    for host_path in SANDBOX_SYSTEM_READONLY_BINDS:
-        argv += ["--ro-bind", host_path, host_path]
-    for target, symlink_path in SANDBOX_SYSTEM_SYMLINKS:
-        argv += ["--symlink", target, symlink_path]
-    argv += _sandbox_python_extra_binds(python_executable)
+    argv += _sandbox_system_mounts()
     argv += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
+    # A venv under /tmp must sit above the sandbox's fresh temporary mount.
+    argv += _sandbox_python_extra_binds(python_executable)
     argv += ["--bind", str(workspace), str(workspace)]
     argv += ["--chdir", str(workspace)]
     argv += ["--clearenv"]
@@ -142,21 +152,12 @@ def require_sandbox_tool():
     holds this boundary; this script is that runtime for the graded reply)."""
     if shutil.which("bwrap") is None:
         sys.stderr.write(
-            "bwrap (bubblewrap) is required to sandbox graded code and is "
-            "not on PATH\n"
+            "bwrap (bubblewrap) is required to sandbox graded code and is not on PATH\n"
         )
         return False
-    # Built from the same SANDBOX_SYSTEM_READONLY_BINDS and
-    # SANDBOX_SYSTEM_SYMLINKS constants grade() uses, so a probe that passes
-    # cannot diverge from the argv the graded run actually execs: an earlier
-    # version of this probe skipped the /bin, /lib, /lib64, /sbin symlinks
-    # and passed on a host where the real grade() argv failed to resolve its
-    # own dynamic linker.
+    # The probe and grader use the host's exact merged-/usr linker paths.
     probe_argv = ["bwrap", "--unshare-all", "--die-with-parent"]
-    for host_path in SANDBOX_SYSTEM_READONLY_BINDS:
-        probe_argv += ["--ro-bind", host_path, host_path]
-    for target, symlink_path in SANDBOX_SYSTEM_SYMLINKS:
-        probe_argv += ["--symlink", target, symlink_path]
+    probe_argv += _sandbox_system_mounts()
     probe_argv += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
     probe_argv += ["--", "true"]
     probe = subprocess.run(
