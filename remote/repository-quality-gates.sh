@@ -57,6 +57,7 @@ remote/summarize-pipeline-family.py
 remote/test-summarize-pipeline-family.py
 remote/test-summarize-fixed64-served-campaign.py
 remote/summarize-checkpoint-baseline.py
+remote/verify-baseline-denominator.py
 remote/test-verify-external-vulkan-lease.py
 remote/verify-external-vulkan-lease.py
 remote/summarize-stage-timing.py

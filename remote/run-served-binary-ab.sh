@@ -85,6 +85,9 @@ set -eu
 # instead.
 #
 # usage: run-served-binary-ab.sh CONTROL_SERVER CANDIDATE_SERVER MODEL_ID OUTPUT_DIRECTORY
+#   QWEN_CENSUS_BASELINE_RECEIPT     completed single-mode raw baseline directory;
+#                                  alternative to the scoreboard receipt. Binds
+#                                  the denominator, never instrument calibration.
 #   QWEN_CENSUS_PRODUCTION_RECEIPT   identity-check.tsv of the fixed-64 scoreboard
 #                                    sweep, whose one server row is the control
 #   QWEN_AB_SHARED_CANDIDATE_SERIES  comma-separated shared release members in
@@ -507,6 +510,7 @@ fi
 hwmon_root=${QWEN_HWMON_ROOT:-/sys/class/hwmon}
 ab_generate=64
 production_receipt=${QWEN_CENSUS_PRODUCTION_RECEIPT:-}
+baseline_receipt=${QWEN_CENSUS_BASELINE_RECEIPT:-}
 
 # telemetry-broker takes the hwmon directory as an argument where
 # sample-clock-sidecar.py resolves it inside itself, so this applies
@@ -772,10 +776,10 @@ if [ "$ab_mode" = kernel-delta ] && [ "$control_instrumentation" != "$candidate_
     exit 2
 fi
 
-# The control is the scoreboard's own server and the denominator is the tuple
-# beside it, so a registry edit between the scoreboard and this run refuses
-# rather than changing the experiment behind a byte-identical control.
-if [ ! -r "$production_receipt" ]; then
+# The denominator receipt binds the serving executable and its model tuple.
+# A registry edit that changes the tuple refuses even for a byte-identical
+# control; baseline and scoreboard acquisitions retain distinct identities.
+if [ -z "$baseline_receipt" ] && [ ! -r "$production_receipt" ]; then
     printf 'QWEN_CENSUS_PRODUCTION_RECEIPT must name the readable identity-check.tsv of the scoreboard sweep: %s\n' \
         "${production_receipt:--}" >&2
     exit 2
@@ -807,20 +811,15 @@ if [ "$ab_mode" = kernel-delta ]; then
     denominator_sha256=$(sha256sum "$denominator_server" | cut -d ' ' -f 1)
     denominator_bytes=$(wc -c <"$denominator_server" | tr -d ' ')
 fi
-set +e
-scoreboard_digests=$(census_verify_scoreboard_receipt "$production_receipt" \
-    "$denominator_sha256" "$denominator_bytes" 1 "$model_id" "$scoreboard_tuple")
-scoreboard_status=$?
-set -e
-[ "$scoreboard_status" -eq 0 ] || exit "$scoreboard_status"
-IFS="$(printf '\t')" read -r scoreboard_models_sha256 scoreboard_inputs_sha256 <<EOF
-$scoreboard_digests
-EOF
-if [ -z "$scoreboard_models_sha256" ] || [ -z "$scoreboard_inputs_sha256" ]; then
-    printf 'the scoreboard receipt binding printed other than two nonempty digests\n' >&2
-    exit 2
-fi
-production_receipt_sha256=$(sha256sum "$production_receipt" | cut -d ' ' -f 1)
+denominator_receipt_kind=-
+production_receipt_sha256=-
+scoreboard_models_sha256=-
+scoreboard_inputs_sha256=-
+baseline_identity_sha256=-
+baseline_request_sha256=-
+census_bind_denominator "$production_receipt" "$baseline_receipt" \
+    "$denominator_sha256" "$denominator_bytes" 1 "$model_id" \
+    "$scoreboard_tuple" "$script_directory" || exit 2
 
 # The two servers differ by one candidate patch and that is proven rather than
 # named. Each manifest yields a base build identity from the rows both carry,
@@ -1269,6 +1268,10 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
     printf 'denominator_server\t%s\ndenominator_server_sha256\t%s\n' \
         "$denominator_server" "$denominator_sha256"
     printf 'base_build_identity_sha256\t%s\n' "$base_build_identity_sha256"
+    printf 'denominator_receipt_kind\t%s\nbaseline_receipt\t%s\n' \
+        "$denominator_receipt_kind" "${baseline_receipt:--}"
+    printf 'baseline_identity_sha256\t%s\nbaseline_request_sha256\t%s\n' \
+        "$baseline_identity_sha256" "$baseline_request_sha256"
     printf 'production_receipt\t%s\nproduction_receipt_sha256\t%s\n' \
         "$production_receipt" "$production_receipt_sha256"
     printf 'scoreboard_models_resolved_sha256\t%s\nscoreboard_campaign_inputs_sha256\t%s\n' \
