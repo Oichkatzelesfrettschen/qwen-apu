@@ -2252,6 +2252,30 @@ function parseReviewVerdict(reply, names) {
   return parsed;
 }
 
+function buildReviewResult(reply, names, requestedModel) {
+  const verdict = parseReviewVerdict(reply, names);
+  const choice = reply.choices[0];
+  const message = choice.message;
+  const reportedCompletionTokens = reply.usage?.completion_tokens;
+  if (reportedCompletionTokens !== undefined
+      && (!Number.isSafeInteger(reportedCompletionTokens) || reportedCompletionTokens < 0)) {
+    throw new Error('review usage completion_tokens is no finite nonnegative integer');
+  }
+  const responseModel = typeof reply.model === 'string' && reply.model ? reply.model : null;
+  const reasoningContent = typeof message.reasoning_content === 'string'
+    ? message.reasoning_content : null;
+  return {
+    verdict,
+    requested_model: requestedModel,
+    response_model: responseModel,
+    finish_reason: choice.finish_reason,
+    usage: reply.usage && typeof reply.usage === 'object' ? { ...reply.usage } : null,
+    completion_tokens: reportedCompletionTokens ?? null,
+    reasoning_present: Boolean(reasoningContent),
+    reasoning_content: reasoningContent
+  };
+}
+
 function reviewCorrectionAdmitted(verdict) {
   /* Three facts admit a correction: a constraint the model marked failed, the
      regenerate flag, and a delta stating what to change. Any other combination
@@ -2272,15 +2296,26 @@ function reviewCorrectionAdmitted(verdict) {
            reason: 'the verdict names a failed hard constraint and states its correction' };
 }
 
-function renderReviewChecklist(card, verdict, visionModel) {
+function renderReviewChecklist(card, reviewResult) {
+  const verdict = reviewResult.verdict;
   const existing = card.querySelector('.image-review');
   if (existing) existing.remove();
   const block = document.createElement('div');
   block.className = 'image-review';
   const heading = document.createElement('div');
   heading.className = 'meta';
-  heading.textContent = `reviewed by ${visionModel}`;
+  const responseModel = reviewResult.response_model
+    ? `; response model ${reviewResult.response_model}` : '';
+  const completionTokens = reviewResult.completion_tokens === null
+    ? '; completion tokens unreported'
+    : `; completion tokens ${reviewResult.completion_tokens}`;
+  heading.textContent = `reviewed by ${reviewResult.requested_model}${responseModel}; ` +
+    `finish ${reviewResult.finish_reason}${completionTokens}`;
   block.append(heading);
+  // The structured result remains attached to the live card for diagnosis.
+  // Conversation persistence never reads the card, so reasoning text and
+  // response usage reach neither saved history nor later model requests.
+  block.reviewResult = reviewResult;
   const list = document.createElement('ul');
   for (const entry of verdict.hard_constraints) {
     const item = document.createElement('li');
@@ -2411,8 +2446,10 @@ async function runImageReview(card, fields, lineage) {
     }
     const reply = await response.json();
     if (!reviewIsCurrent()) return;
-    const verdict = parseReviewVerdict(reply, constraints.map(constraint => constraint.name));
-    renderReviewChecklist(card, verdict, visionModel);
+    const reviewResult = buildReviewResult(
+      reply, constraints.map(constraint => constraint.name), visionModel);
+    const verdict = reviewResult.verdict;
+    renderReviewChecklist(card, reviewResult);
     const decision = reviewCorrectionAdmitted(verdict);
     if (!decision.admitted) {
       appendReviewNote(card, `No correction is proposed: ${decision.reason}.`);
