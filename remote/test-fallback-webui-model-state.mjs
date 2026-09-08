@@ -112,6 +112,8 @@ assert.ok(inlineScript, 'fallback Web UI has no inline script');
 const testInterface = `
 globalThis.webuiModelStateTest = {
   selectRequestModel,
+  composeUserContent,
+  selectedModelAcceptsImages,
   setAttachments(nextAttachments) {
     attachments = nextAttachments;
     renderAttached();
@@ -171,6 +173,18 @@ vm.runInContext(`${inlineScript[1]}\n${testInterface}`, browserContext, {
 const testApi = browserContext.webuiModelStateTest;
 const modelA = 'model-A';
 const modelB = 'model B/8k';
+
+const multimodal = testApi.composeUserContent('identify this', [
+  { name: 'notes.txt', kind: 'text', text: 'context' },
+  { name: 'pixel.png', kind: 'image', mime: 'image/png',
+    dataUrl: 'data:image/png;base64,iVBORw0KGgo=' },
+]);
+assert.equal(multimodal.content[0].type, 'text');
+assert.match(multimodal.content[0].text, /notes.txt/);
+assert.deepEqual(JSON.parse(JSON.stringify(multimodal.content[1])), {
+  type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' }
+});
+assert.equal(testApi.composeUserContent('plain', []).content, 'plain');
 
 // The page reads webui/roster.json from the directory it is served from and
 // tolerates its absence, so this harness answers 404 and every assertion below
@@ -313,6 +327,13 @@ removalProps.resolve(jsonResponse({ n_ctx: 24576 }));
 removalTokenize.resolve(jsonResponse({ tokens: [1, 2] }));
 await flushPromises();
 assert.deepEqual(testApi.state().attachments, []);
+const visionAdmission = testApi.selectedModelAcceptsImages();
+await flushPromises();
+const nonVisionProps = takeRequest(
+  request => request.url === './props?model=model-A',
+  'explicit vision admission');
+nonVisionProps.resolve(jsonResponse({ modalities: { vision: false } }));
+assert.equal(await visionAdmission, false, 'a text-only model admitted image content');
 const requestCountBeforeStaleProposals = pendingRequests.length;
 const staleProposalResult = await testApi.runStaleProposalCheck(modelB);
 assert.equal(staleProposalResult.fetchRemaining, 2);

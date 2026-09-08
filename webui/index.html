@@ -170,7 +170,7 @@
   <label class="chip"><input type="checkbox" id="image-tools"> image</label>
   <input class="key" type="text" id="broker-origin" placeholder="approval broker origin" autocomplete="off">
   <input class="key" type="text" id="artifact-origin" placeholder="image artifact origin" autocomplete="off">
-  <button class="act" id="clear">clear</button>
+  <button class="act" id="clear">New conversation</button>
 </header>
 
 <!--
@@ -203,6 +203,7 @@
   <aside id="conversation-panel">
     <div id="conversation-actions">
       <button class="act" id="conversation-new">new conversation</button>
+      <button class="act" id="conversation-delete-all">delete all saved</button>
     </div>
     <div id="conversation-list"></div>
   </aside>
@@ -271,7 +272,7 @@
   <div id="attached"></div>
   <div class="row">
     <label class="file chip">attach
-      <input type="file" id="file" multiple accept="text/*,.md,.txt,.log,.csv,.json,.py,.c,.h,.rs,.sh">
+      <input type="file" id="file" multiple accept="image/*,text/*,.md,.txt,.log,.csv,.json,.py,.c,.h,.rs,.sh">
     </label>
     <textarea id="input" rows="1" placeholder="Ask. Shift+Enter for a newline."></textarea>
     <button class="act" id="send">send</button>
@@ -501,6 +502,10 @@ async function refreshModelContext(selectedModel, generation) {
 async function refreshAttachmentTokens(selectedModel, generation) {
   const retainedAttachments = [...attachments];
   await Promise.all(retainedAttachments.map(async attachment => {
+    if (attachment.kind === 'image') {
+      attachment.tokenModel = selectedModel;
+      return;
+    }
     let tokens = null;
     try { tokens = await serverTokenCount(attachment.text, selectedModel); }
     catch { /* an explicit unavailable count replaces the prior model's count */ }
@@ -2573,12 +2578,18 @@ function renderAttached() {
   let total = 0;
   let countsComplete = true;
   attachments.forEach(attachment => {
+    if (attachment.kind === 'image') return;
     if (attachment.tokenModel === requestModel &&
         Number.isInteger(attachment.tokens)) total += attachment.tokens;
     else countsComplete = false;
   });
   const contextReady = nctxModel === requestModel && Number.isFinite(nctx);
   attachments.forEach((a, i) => {
+    if (a.kind === 'image') {
+      box.append(chip(`${a.name} -- image for ${requestModel}`, false,
+        () => { attachments.splice(i, 1); renderAttached(); }));
+      return;
+    }
     const countReady = a.tokenModel === requestModel && Number.isInteger(a.tokens);
     const countText = countReady
       ? `${a.tokens.toLocaleString()} tokens`
@@ -2588,12 +2599,13 @@ function renderAttached() {
       `${a.name} -- ${countText}`,
       over, () => { attachments.splice(i, 1); renderAttached(); }));
   });
-  if (attachments.length && !countsComplete) {
+  const textAttachmentCount = attachments.filter(attachment => attachment.kind !== 'image').length;
+  if (textAttachmentCount && !countsComplete) {
     const w = document.createElement('span');
     w.className = 'chip over';
     w.textContent = 'token counts remain unavailable for the selected model; context fit is unknown';
     box.append(w);
-  } else if (attachments.length && contextReady && total > nctx * 0.9) {
+  } else if (textAttachmentCount && contextReady && total > nctx * 0.9) {
     const w = document.createElement('span');
     w.className = 'chip over';
     w.textContent = `about ${total.toLocaleString()} tokens against a ${nctx.toLocaleString()} context; the server will refuse this with a 400`;
@@ -2601,12 +2613,62 @@ function renderAttached() {
   }
 }
 
+async function selectedModelAcceptsImages() {
+  if (!requestModel) return false;
+  try {
+    const response = await fetch(`./props?model=${encodeURIComponent(requestModel)}`,
+      { headers: authHeaders() });
+    if (!response.ok) return false;
+    const props = await response.json();
+    return props && props.modalities && props.modalities.vision === true;
+  } catch {
+    return false;
+  }
+}
+
+function imageFileDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === 'string'
+      ? resolve(reader.result) : reject(new Error('the image reader returned no data URL'));
+    reader.onerror = () => reject(reader.error || new Error('the image could not be read'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function composeUserContent(text, attached) {
+  let prompt = text;
+  for (const file of attached.filter(attachment => attachment.kind !== 'image')) {
+    prompt = `--- ${file.name} ---\n${file.text}\n--- end ${file.name} ---\n\n` + prompt;
+  }
+  const images = attached.filter(attachment => attachment.kind === 'image');
+  return {
+    prompt,
+    images,
+    content: images.length ? [
+      { type: 'text', text: prompt || 'Describe the attached image.' },
+      ...images.map(attachment => ({
+        type: 'image_url', image_url: { url: attachment.dataUrl }
+      }))
+    ] : prompt
+  };
+}
+
 $('#file').onchange = async e => {
   for (const f of e.target.files) {
-    const text = await f.text();
     try {
-      const tokenState = await tokenCountForCurrentModel(text);
-      attachments.push({ name: f.name, text, ...tokenState });
+      if (typeof f.type === 'string' && f.type.startsWith('image/')) {
+        if (!await selectedModelAcceptsImages()) {
+          throw new Error(`model ${requestModel || '(none)'} does not report vision capability`);
+        }
+        const dataUrl = await imageFileDataUrl(f);
+        attachments.push({ name: f.name, kind: 'image', mime: f.type, dataUrl,
+                           tokens: null, tokenModel: requestModel });
+      } else {
+        const text = await f.text();
+        const tokenState = await tokenCountForCurrentModel(text);
+        attachments.push({ name: f.name, kind: 'text', text, ...tokenState });
+      }
     } catch (error) {
       window.alert(`Could not attach ${f.name}: ${error.message || error}`);
     }
@@ -3447,11 +3509,14 @@ async function send() {
   const text = $('#input').value.trim();
   if (!text && !attachments.length) return;
 
-  let prompt = text;
-  for (const f of attachments) {
-    prompt = `--- ${f.name} ---\n${f.text}\n--- end ${f.name} ---\n\n` + prompt;
+  const { prompt, images: imageAttachments, content } = composeUserContent(text, attachments);
+  if (imageAttachments.length && !await selectedModelAcceptsImages()) {
+    const note = turn('image', '');
+    note.body.className = 'body meta bad';
+    note.body.textContent = `Model ${requestModel} does not report vision capability. ` +
+      'Select a vision model before sending an image.';
+    return;
   }
-  const content = prompt;
   // A LAN prompt bound is enforced here rather than left to the server: the
   // server refuses an over-large prompt only once its token count meets the
   // slot's own context (server-context.cpp), which would spend a full
@@ -3466,7 +3531,13 @@ async function send() {
   // server's own slot-context refusal remains the final backstop.
   if (LAN_MAX_PROMPT_TOKENS != null) {
     const composedText = [...history, { role: 'user', content }]
-      .map(message => (typeof message.content === 'string' ? message.content : ''))
+      .map(message => {
+        if (typeof message.content === 'string') return message.content;
+        if (!Array.isArray(message.content)) return '';
+        return message.content
+          .filter(part => part && part.type === 'text' && typeof part.text === 'string')
+          .map(part => part.text).join('\n');
+      })
       .join('\n');
     let promptTokens = null;
     let tokenizeFailure = null;
@@ -3511,7 +3582,11 @@ async function send() {
     ? '\n' + attachments.map(a => `[${a.name}]`).join(' ') : '');
   turn('you', 'me').body.textContent = shown;
   history.push({ role: 'user', content });
-  rememberUserMessage(content, shown);
+  const durableContent = imageAttachments.length
+    ? `${prompt}\n\n${imageAttachments.map(attachment =>
+        `[image attachment omitted from saved conversation: ${attachment.name}, ${attachment.mime}]`).join('\n')}`
+    : content;
+  rememberUserMessage(durableContent, shown);
   // Saved here rather than after the completion, so an HTTP error, a dropped
   // connection, or the page closing during a long generation leaves the
   // prompt in the store it belongs to instead of only in memory.
@@ -3747,7 +3822,8 @@ function indexedDatabaseConversationStore(database) {
       return (await run('readonly', store => store.get(id))) || null;
     },
     async write(record) { await run('readwrite', store => store.put(record)); },
-    async remove(id) { await run('readwrite', store => store.delete(id)); }
+    async remove(id) { await run('readwrite', store => store.delete(id)); },
+    async clear() { await run('readwrite', store => store.clear()); }
   };
 }
 
@@ -3791,6 +3867,10 @@ function browserStorageConversationStore() {
     async remove(id) {
       storage.removeItem(CONVERSATION_RECORD_PREFIX + id);
       writeIndexOrThrow(readIndex().filter(entry => entry.id !== id));
+    },
+    async clear() {
+      for (const entry of readIndex()) storage.removeItem(CONVERSATION_RECORD_PREFIX + entry.id);
+      storage.removeItem(CONVERSATION_INDEX_KEY);
     }
   };
 }
@@ -3802,7 +3882,8 @@ function memoryConversationStore() {
     async list() { return [...records.values()].map(conversationSummary); },
     async read(id) { return records.get(id) || null; },
     async write(record) { records.set(record.id, record); },
-    async remove(id) { records.delete(id); }
+    async remove(id) { records.delete(id); },
+    async clear() { records.clear(); }
   };
 }
 
@@ -4296,6 +4377,33 @@ async function deleteConversation(id) {
   await renderConversationList();
 }
 
+async function deleteAllSavedConversations() {
+  let confirmed = false;
+  try {
+    confirmed = window.confirm(
+      'Delete every saved conversation from this browser? This cannot be undone.');
+  } catch { /* a context without confirmation refuses deletion */ }
+  if (!confirmed) return false;
+  // Reset first: an in-flight turn keeps running at the transport layer, but
+  // its generation can no longer append to or save the conversation removed
+  // below. The page opens a fresh unsaved conversation after every tier clears.
+  resetConversationState();
+  const activeStore = await conversationStore();
+  try { await activeStore.clear(); } catch { /* explicit tier clears continue */ }
+  try {
+    const database = await openConversationDatabase();
+    await indexedDatabaseConversationStore(database).clear();
+  } catch { /* an unavailable IndexedDB tier holds no reachable record */ }
+  try { await browserStorageConversationStore().clear(); } catch { /* denied storage stays denied */ }
+  writeBrowserStorage('localStorage', CONVERSATION_SELECTED_KEY, null);
+  conversationId = newConversationId();
+  conversationTitle = '';
+  rememberSelectedConversation(conversationId);
+  setConversationHash(conversationId);
+  await renderConversationList();
+  return true;
+}
+
 async function renderConversationList() {
   const list = $('#conversation-list');
   let entries = [];
@@ -4362,6 +4470,7 @@ async function initConversations() {
 }
 
 $('#conversation-new').onclick = () => { startNewConversation(); };
+$('#conversation-delete-all').onclick = () => { void deleteAllSavedConversations(); };
 
 if (typeof window.addEventListener === 'function') {
   window.addEventListener('hashchange', () => {

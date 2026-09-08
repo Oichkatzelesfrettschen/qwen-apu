@@ -170,6 +170,10 @@ function makeFakeIndexedDatabase() {
               delete: key => settle(newRequest(), transaction, () => {
                 records.delete(key);
                 return undefined;
+              }),
+              clear: () => settle(newRequest(), transaction, () => {
+                records.clear();
+                return undefined;
               })
             };
           };
@@ -330,6 +334,7 @@ globalThis.webuiConversationTest = {
     requestModel = id;
     $('#input').value = '';
   },
+  setAttachments(value) { attachments = value; renderAttached(); },
   setInput(text) { $('#input').value = text; },
   send,
   conversationsReadyPromise: conversationsReady,
@@ -338,6 +343,7 @@ globalThis.webuiConversationTest = {
   switchConversation,
   renameConversation,
   deleteConversation,
+  deleteAllSavedConversations,
   renderConversationList,
   initConversations,
   transcript() {
@@ -418,6 +424,7 @@ function newPage({ indexedDatabase, localStorage, sessionStorage, hash = '' }) {
       localStorage,
       location,
       prompt: () => 'renamed conversation',
+      confirm: () => true,
       sessionStorage
     }
   };
@@ -665,6 +672,54 @@ assert.equal(rows.length, 1);
 assert.equal(rows[0].text, 'this store holds no saved conversation yet');
 assert.equal(first.api.restoredBlobUrls(), 0,
   'the conversation that left the log kept its restored blob URLs');
+
+// Delete-all clears durable storage, opens a fresh conversation, and a reload
+// cannot resurrect a record from a second tier.
+const deleteAllId = await first.api.runFixtureTurn(fixture);
+assert.ok(await first.api.read(deleteAllId));
+const generationBeforeDeleteAll = first.api.state().conversationGeneration;
+assert.equal(await first.api.deleteAllSavedConversations(), true);
+assert.equal((await first.api.list()).length, 0);
+assert.ok(first.api.state().conversationGeneration > generationBeforeDeleteAll,
+  'delete-all did not invalidate an in-flight turn generation');
+first.api.setAttachments([{
+  name: 'fixture.png', kind: 'image', mime: 'image/png',
+  dataUrl: 'data:image/png;base64,iVBORw0KGgo=', tokens: null, tokenModel: 'image-capable'
+}]);
+first.api.setInput('identify the object');
+const multimodalSend = first.api.send();
+await flushPromises();
+const visionProps = takeRequest(first.pendingRequests,
+  request => String(request.url).startsWith('./props?model=image-capable'),
+  'vision admission for image send');
+visionProps.resolve(jsonResponse({ modalities: { vision: true } }));
+await flushPromises();
+const multimodalCompletion = takeRequest(first.pendingRequests,
+  request => request.url === './v1/chat/completions', 'multimodal completion');
+const multimodalBody = JSON.parse(multimodalCompletion.options.body);
+const multimodalContent = multimodalBody.messages.at(-1).content;
+assert.equal(multimodalContent[0].type, 'text');
+assert.deepEqual(multimodalContent[1], {
+  type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' }
+});
+multimodalCompletion.resolve(sseResponse([{ choices: [{
+  delta: { content: 'a fixture' }, finish_reason: 'stop'
+}] }]));
+await multimodalSend;
+const multimodalRecord = await first.api.read(first.api.state().conversationId);
+const serializedMultimodalRecord = JSON.stringify(multimodalRecord);
+assert.ok(serializedMultimodalRecord.includes('image attachment omitted from saved conversation'));
+assert.ok(!serializedMultimodalRecord.includes('iVBORw0KGgo='),
+  'saved history retained image bytes');
+assert.equal(await first.api.deleteAllSavedConversations(), true);
+const afterDeleteAllReload = newPage({
+  indexedDatabase: sharedIndexedDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(afterDeleteAllReload);
+assert.equal((await afterDeleteAllReload.api.list()).length, 0,
+  'a reload resurrected a conversation after confirmed delete-all');
 
 // ---- the hash route selects a conversation on a second load ----------------
 
