@@ -76,6 +76,33 @@ printf '%s\n' "$image_ready" | grep -q '^checked_image_services=1$'
 printf '%s\n' "$image_ready" | grep -q '^readiness=image-runtime state=present '
 
 valid_image_configuration=$(cat "$image_configuration")
+for invalid_timeout in true 30000.5; do
+    printf '%s\n' "$valid_image_configuration" |
+        sed "s/\"timeout_ms\":30000/\"timeout_ms\":$invalid_timeout/" \
+        >"$image_configuration"
+    if invalid_timeout_result=$($fixture_remote/check-launch-readiness.sh 2>&1); then
+        printf 'readiness accepted non-integer timeout_ms=%s\n' \
+            "$invalid_timeout" >&2
+        exit 1
+    fi
+    printf '%s\n' "$invalid_timeout_result" | grep -q \
+        '^readiness=mcp-configuration state=missing '
+done
+printf '%s\n' "$valid_image_configuration" >"$image_configuration"
+for invalid_child_timeout in 30 true; do
+    printf '%s\n' "$valid_image_configuration" |
+        sed "s/\"QWEN_IMAGE_MCP_TIMEOUT_S\":\"30\"/\"QWEN_IMAGE_MCP_TIMEOUT_S\":$invalid_child_timeout/" \
+        >"$image_configuration"
+    if invalid_timeout_result=$($fixture_remote/check-launch-readiness.sh 2>&1); then
+        printf 'readiness accepted non-string QWEN_IMAGE_MCP_TIMEOUT_S=%s\n' \
+            "$invalid_child_timeout" >&2
+        exit 1
+    fi
+    printf '%s\n' "$invalid_timeout_result" | grep -q \
+        '^readiness=mcp-configuration state=missing '
+done
+printf '%s\n' "$valid_image_configuration" >"$image_configuration"
+
 for invalid_configuration in \
     '{"mcpServers":[]}' \
     '{"mcpServers":"image"}' \

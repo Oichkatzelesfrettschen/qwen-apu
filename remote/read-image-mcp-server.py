@@ -79,10 +79,25 @@ def main(argv):
                 file=sys.stderr,
             )
             return 1
+    router_limit = image.get("timeout_ms")
+    child_limit_raw = environment.get("QWEN_IMAGE_MCP_TIMEOUT_S")
+    if not isinstance(router_limit, int) or isinstance(router_limit, bool):
+        print(
+            "the image server timeout_ms is not a JSON integer: %s"
+            % configuration_path,
+            file=sys.stderr,
+        )
+        return 1
+    if not isinstance(child_limit_raw, str):
+        print(
+            "the image server QWEN_IMAGE_MCP_TIMEOUT_S is not an environment string: %s"
+            % configuration_path,
+            file=sys.stderr,
+        )
+        return 1
     try:
-        router_limit = int(image["timeout_ms"])
-        child_limit = float(environment["QWEN_IMAGE_MCP_TIMEOUT_S"])
-    except (KeyError, TypeError, ValueError):
+        child_limit = float(child_limit_raw)
+    except ValueError:
         print(
             "the image server bounds its call with no readable timeout_ms: %s"
             % configuration_path,
