@@ -445,6 +445,30 @@ for case in ('malformed-response', 'incomplete-acquisition'):
         raise SystemExit(f'{case}: unexpected denominator verdict: {result.stderr}')
     print(f'baseline_denominator_regression={case} expected=refused')
 DENOMINATOR
+python3 - "$scratch/verify-baseline-denominator.py" "$acquisitions/single" \
+    "$baseline_control_sha" "$baseline_control_bytes" "$model_id" "$baseline_expected_tuple" <<'POLICY_BINDING'
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+verifier, source_name, *identity = sys.argv[1:]
+source = Path(source_name)
+for profile in ('paced-60', 'low-serialized'):
+    acquisition = source.parent / ('denominator-profile-' + profile)
+    shutil.copytree(source, acquisition)
+    path = acquisition / 'identity.tsv'
+    path.write_text(path.read_text().replace('profile\tlow-async\n', 'profile\t' + profile + '\n'))
+    result = subprocess.run([sys.executable, verifier, str(acquisition), *identity, '8'],
+                            capture_output=True, text=True, timeout=65)
+    if result.returncode == 0 or 'baseline identity differs at profile' not in result.stderr:
+        raise SystemExit(f'{profile}: unexpected verdict: {result.stderr}')
+result = subprocess.run([sys.executable, verifier, str(source), *identity, '8',
+                         '--q4k-variant', 'e4/4'], capture_output=True, text=True, timeout=65)
+if result.returncode == 0 or 'baseline identity differs at q4k_variant' not in result.stderr:
+    raise SystemExit(f'selector mismatch: unexpected verdict: {result.stderr}')
+print('baseline_submission_profile_and_control_selector=refused_mismatches')
+POLICY_BINDING
 printf 'baseline_denominator_binding=accepted\n'
 active_fixture=fixed64_baseline_denominator_interface
 fixed64_tokens=$(seq 10 73 | tr '\n' ' ')

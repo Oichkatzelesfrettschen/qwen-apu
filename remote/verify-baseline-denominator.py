@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import subprocess
@@ -30,9 +31,24 @@ def table(path: Path) -> dict[str, str]:
 
 
 def main() -> None:
-    acquisition_name, server_sha, server_bytes, model_id, expected_tuple, generate = (
-        sys.argv[1:]
-    )
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in (
+        "acquisition",
+        "server_sha",
+        "server_bytes",
+        "model_id",
+        "expected_tuple",
+        "generate",
+    ):
+        parser.add_argument(name)
+    parser.add_argument("--q4k-variant", default="production/4")
+    arguments = parser.parse_args()
+    acquisition_name = arguments.acquisition
+    server_sha = arguments.server_sha
+    server_bytes = arguments.server_bytes
+    model_id = arguments.model_id
+    expected_tuple = arguments.expected_tuple
+    generate = arguments.generate
     acquisition = Path(acquisition_name)
     tools = Path(__file__).resolve().parent
     # The baseline reader invokes its retained validator. Admit that invocation
@@ -108,6 +124,8 @@ def main() -> None:
         {
             "schema": "checkpoint-baseline-identity-v2",
             "mode": "single",
+            "profile": "low-async",
+            "q4k_variant": arguments.q4k_variant,
             "model_id": model_id,
             "control_server_sha256": server_sha,
             "control_server_bytes": server_bytes,

@@ -1077,7 +1077,7 @@ EOF
         "$ctx_checkpoints" "$checkpoint_min_step" "$ledger_bytes" "$ledger_sha256")
     census_bind_denominator "$production_receipt" "$baseline_receipt" \
         "$production_sha256" "$production_bytes" "$require_scoreboard_generate" \
-        "$model_id" "$scoreboard_tuple" "$script_directory" || exit 2
+        "$model_id" "$scoreboard_tuple" "$script_directory" production/4 || exit 2
     if [ "$denominator_receipt_kind" = fixed64-scoreboard ]; then
         scoreboard_registry_sha256=$(awk -F'\t' '$1 == "model_registry" { print $6 }' "$production_receipt")
         scoreboard_ledger_sha256=$(awk -F'\t' '$1 == "artifact_ledger" { print $6 }' "$production_receipt")

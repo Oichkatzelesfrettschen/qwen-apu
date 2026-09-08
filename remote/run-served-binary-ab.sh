@@ -845,7 +845,7 @@ baseline_identity_sha256=-
 baseline_request_sha256=-
 census_bind_denominator "$production_receipt" "$baseline_receipt" \
     "$denominator_sha256" "$denominator_bytes" 1 "$model_id" \
-    "$scoreboard_tuple" "$script_directory" || exit 2
+    "$scoreboard_tuple" "$script_directory" "${control_experiment_key:-production/4}" || exit 2
 
 # The two servers differ by one candidate patch and that is proven rather than
 # named. Each manifest yields a base build identity from the rows both carry,

@@ -897,6 +897,7 @@ census_bind_denominator() {
     census_denominator_model=$6
     census_denominator_tuple=$7
     census_denominator_remote=$8
+    census_denominator_q4k_variant=${9:-production/4}
     production_receipt_sha256=-
     scoreboard_models_sha256=-
     scoreboard_inputs_sha256=-
@@ -911,7 +912,7 @@ census_bind_denominator() {
         census_denominator_digests=$(python3 "$census_denominator_remote/verify-baseline-denominator.py" \
             "$census_denominator_baseline" "$census_denominator_server_sha" \
             "$census_denominator_server_bytes" "$census_denominator_model" \
-            "$census_denominator_tuple" 64) || return 2
+            "$census_denominator_tuple" 64 --q4k-variant "$census_denominator_q4k_variant") || return 2
     else
         denominator_receipt_kind=fixed64-scoreboard
         census_denominator_digests=$(census_verify_scoreboard_receipt \
