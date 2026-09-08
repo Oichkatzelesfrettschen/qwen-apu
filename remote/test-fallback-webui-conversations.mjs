@@ -194,6 +194,8 @@ function makeFakeStorage() {
   const values = new Map();
   return {
     values,
+    get length() { return values.size; },
+    key(index) { return [...values.keys()][index] ?? null; },
     getItem(key) { return values.has(key) ? values.get(key) : null; },
     setItem(key, value) { values.set(key, String(value)); },
     removeItem(key) { values.delete(key); }
@@ -202,10 +204,22 @@ function makeFakeStorage() {
 
 function makeDeniedStorage() {
   return {
+    get length() { throw new Error('storage denied'); },
+    key() { throw new Error('storage denied'); },
     getItem() { throw new Error('storage denied'); },
     setItem() { throw new Error('storage denied'); },
     removeItem() { throw new Error('storage denied'); }
   };
+}
+
+function makeClearFailStorage() {
+  const storage = makeFakeStorage();
+  const removeItem = storage.removeItem.bind(storage);
+  storage.removeItem = key => {
+    if (key === 'qwen-apu-conversation-index') throw new Error('clear transaction failed');
+    removeItem(key);
+  };
+  return storage;
 }
 
 // resolveConversationStore()'s own probe writes and removes one throwaway
@@ -219,6 +233,8 @@ function makeFlakyStorage(failWrites) {
   const values = new Map();
   return {
     values,
+    get length() { return values.size; },
+    key(index) { return [...values.keys()][index] ?? null; },
     getItem(key) { return values.has(key) ? values.get(key) : null; },
     setItem(key, value) {
       if (failWrites.active && key !== CONVERSATION_PROBE_KEY) {
@@ -510,9 +526,10 @@ async function answerBoot(page) {
 
 // ---- the IndexedDB store, the projection, and a restore --------------------
 
+const firstLocalStorage = makeFakeStorage();
 const first = newPage({
   indexedDatabase: sharedIndexedDatabase,
-  localStorage: makeFakeStorage(),
+  localStorage: firstLocalStorage,
   sessionStorage: makeFakeStorage()
 });
 // boot() and a message badge share one memoized roster read, so this page
@@ -678,7 +695,13 @@ assert.equal(first.api.restoredBlobUrls(), 0,
 const deleteAllId = await first.api.runFixtureTurn(fixture);
 assert.ok(await first.api.read(deleteAllId));
 const generationBeforeDeleteAll = first.api.state().conversationGeneration;
+firstLocalStorage.setItem('qwen-apu-conversation:orphan-record', '{"orphan":true}');
+firstLocalStorage.setItem('qwen-apu-reasoning', 'on');
 assert.equal(await first.api.deleteAllSavedConversations(), true);
+assert.equal(firstLocalStorage.getItem('qwen-apu-conversation:orphan-record'), null,
+  'delete-all retained an orphaned owned record key');
+assert.equal(firstLocalStorage.getItem('qwen-apu-reasoning'), 'on',
+  'delete-all removed an unrelated preference');
 assert.equal((await first.api.list()).length, 0);
 assert.ok(first.api.state().conversationGeneration > generationBeforeDeleteAll,
   'delete-all did not invalidate an in-flight turn generation');
@@ -711,6 +734,26 @@ const serializedMultimodalRecord = JSON.stringify(multimodalRecord);
 assert.ok(serializedMultimodalRecord.includes('image attachment omitted from saved conversation'));
 assert.ok(!serializedMultimodalRecord.includes('iVBORw0KGgo='),
   'saved history retained image bytes');
+const messagesBeforeStaleAdmission = first.api.state().messages.length;
+first.api.setRequestModel('image-capable');
+first.api.setAttachments([{
+  name: 'stale.png', kind: 'image', mime: 'image/png',
+  dataUrl: 'data:image/png;base64,c3RhbGU=', tokens: null, tokenModel: 'image-capable'
+}]);
+first.api.setInput('stale admission');
+const staleImageSend = first.api.send();
+const duplicateImageSend = first.api.send();
+await flushPromises();
+const staleVisionProps = takeRequest(first.pendingRequests,
+  request => String(request.url).startsWith('./props?model=image-capable'),
+  'stale vision admission');
+first.api.setRequestModel('text-only');
+staleVisionProps.resolve(jsonResponse({ modalities: { vision: true } }));
+await Promise.all([staleImageSend, duplicateImageSend]);
+assert.equal(first.api.state().messages.length, messagesBeforeStaleAdmission,
+  'a stale vision response appended a user turn');
+assert.ok(!first.pendingRequests.some(request => request.url === './v1/chat/completions'),
+  'a duplicate or stale image send reached chat completion');
 assert.equal(await first.api.deleteAllSavedConversations(), true);
 const afterDeleteAllReload = newPage({
   indexedDatabase: sharedIndexedDatabase,
@@ -720,6 +763,14 @@ const afterDeleteAllReload = newPage({
 await answerBoot(afterDeleteAllReload);
 assert.equal((await afterDeleteAllReload.api.list()).length, 0,
   'a reload resurrected a conversation after confirmed delete-all');
+const failedClearPage = newPage({
+  indexedDatabase: null,
+  localStorage: makeClearFailStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(failedClearPage);
+assert.equal(await failedClearPage.api.deleteAllSavedConversations(), false,
+  'delete-all claimed completion after a reachable tier failed');
 
 // ---- the hash route selects a conversation on a second load ----------------
 

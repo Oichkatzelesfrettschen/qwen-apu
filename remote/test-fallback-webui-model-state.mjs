@@ -114,6 +114,9 @@ globalThis.webuiModelStateTest = {
   selectRequestModel,
   composeUserContent,
   selectedModelAcceptsImages,
+  selectedModelAcceptsImagesNow() {
+    return selectedModelAcceptsImages(requestModel, conversationGeneration);
+  },
   setAttachments(nextAttachments) {
     attachments = nextAttachments;
     renderAttached();
@@ -327,7 +330,7 @@ removalProps.resolve(jsonResponse({ n_ctx: 24576 }));
 removalTokenize.resolve(jsonResponse({ tokens: [1, 2] }));
 await flushPromises();
 assert.deepEqual(testApi.state().attachments, []);
-const visionAdmission = testApi.selectedModelAcceptsImages();
+const visionAdmission = testApi.selectedModelAcceptsImagesNow();
 await flushPromises();
 const nonVisionProps = takeRequest(
   request => request.url === './props?model=model-A',

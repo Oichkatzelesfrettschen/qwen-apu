@@ -2613,14 +2613,16 @@ function renderAttached() {
   }
 }
 
-async function selectedModelAcceptsImages() {
-  if (!requestModel) return false;
+async function selectedModelAcceptsImages(expectedModel, expectedGeneration) {
+  if (!expectedModel || requestModel !== expectedModel ||
+      conversationGeneration !== expectedGeneration) return false;
   try {
-    const response = await fetch(`./props?model=${encodeURIComponent(requestModel)}`,
+    const response = await fetch(`./props?model=${encodeURIComponent(expectedModel)}`,
       { headers: authHeaders() });
     if (!response.ok) return false;
     const props = await response.json();
-    return props && props.modalities && props.modalities.vision === true;
+    return requestModel === expectedModel && conversationGeneration === expectedGeneration &&
+      props && props.modalities && props.modalities.vision === true;
   } catch {
     return false;
   }
@@ -2658,7 +2660,9 @@ $('#file').onchange = async e => {
   for (const f of e.target.files) {
     try {
       if (typeof f.type === 'string' && f.type.startsWith('image/')) {
-        if (!await selectedModelAcceptsImages()) {
+        const attachmentModel = requestModel;
+        const attachmentGeneration = conversationGeneration;
+        if (!await selectedModelAcceptsImages(attachmentModel, attachmentGeneration)) {
           throw new Error(`model ${requestModel || '(none)'} does not report vision capability`);
         }
         const dataUrl = await imageFileDataUrl(f);
@@ -3510,11 +3514,17 @@ async function send() {
   if (!text && !attachments.length) return;
 
   const { prompt, images: imageAttachments, content } = composeUserContent(text, attachments);
-  if (imageAttachments.length && !await selectedModelAcceptsImages()) {
+  const turnModel = requestModel;
+  const turnAdmissionGeneration = conversationGeneration;
+  if (imageAttachments.length) busy = true;
+  if (imageAttachments.length &&
+      !await selectedModelAcceptsImages(turnModel, turnAdmissionGeneration)) {
+    busy = false;
+    $('#send').disabled = false;
     const note = turn('image', '');
     note.body.className = 'body meta bad';
     note.body.textContent = `Model ${requestModel} does not report vision capability. ` +
-      'Select a vision model before sending an image.';
+      'Select a vision model and retry the image turn.';
     return;
   }
   // A LAN prompt bound is enforced here rather than left to the server: the
@@ -3869,7 +3879,14 @@ function browserStorageConversationStore() {
       writeIndexOrThrow(readIndex().filter(entry => entry.id !== id));
     },
     async clear() {
-      for (const entry of readIndex()) storage.removeItem(CONVERSATION_RECORD_PREFIX + entry.id);
+      const ownedRecordKeys = [];
+      for (let index = 0; index < storage.length; index++) {
+        const key = storage.key(index);
+        if (typeof key === 'string' && key.startsWith(CONVERSATION_RECORD_PREFIX)) {
+          ownedRecordKeys.push(key);
+        }
+      }
+      for (const key of ownedRecordKeys) storage.removeItem(key);
       storage.removeItem(CONVERSATION_INDEX_KEY);
     }
   };
@@ -4388,19 +4405,45 @@ async function deleteAllSavedConversations() {
   // its generation can no longer append to or save the conversation removed
   // below. The page opens a fresh unsaved conversation after every tier clears.
   resetConversationState();
+  const outcomes = [];
   const activeStore = await conversationStore();
-  try { await activeStore.clear(); } catch { /* explicit tier clears continue */ }
+  if (activeStore.name === 'memory') {
+    try { await activeStore.clear(); outcomes.push('memory=cleared'); }
+    catch (error) { outcomes.push(`memory=failed:${error.message || error}`); }
+  }
+  if (typeof indexedDB === 'undefined' || !indexedDB) {
+    outcomes.push('indexeddb=unavailable');
+  } else {
+    try {
+      const database = await openConversationDatabase();
+      await indexedDatabaseConversationStore(database).clear();
+      outcomes.push('indexeddb=cleared');
+    } catch (error) {
+      outcomes.push(`indexeddb=failed:${error.message || error}`);
+    }
+  }
   try {
-    const database = await openConversationDatabase();
-    await indexedDatabaseConversationStore(database).clear();
-  } catch { /* an unavailable IndexedDB tier holds no reachable record */ }
-  try { await browserStorageConversationStore().clear(); } catch { /* denied storage stays denied */ }
+    const storage = window['localStorage'];
+    if (!storage) outcomes.push('localstorage=unavailable');
+    else {
+      await browserStorageConversationStore().clear();
+      outcomes.push('localstorage=cleared');
+    }
+  } catch (error) {
+    outcomes.push(`localstorage=failed:${error.message || error}`);
+  }
   writeBrowserStorage('localStorage', CONVERSATION_SELECTED_KEY, null);
   conversationId = newConversationId();
   conversationTitle = '';
   rememberSelectedConversation(conversationId);
   setConversationHash(conversationId);
   await renderConversationList();
+  const failures = outcomes.filter(outcome => outcome.includes('=failed:'));
+  if (failures.length) {
+    try { window.alert(`Saved conversation deletion is incomplete. ${outcomes.join('; ')}`); }
+    catch { /* the returned false remains the programmatic result */ }
+    return false;
+  }
   return true;
 }
 
