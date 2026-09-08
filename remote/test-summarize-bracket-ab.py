@@ -79,7 +79,9 @@ def write_witness(root, identity="held", overall="held", prompts=("accumulator",
     return directory
 
 
-def run_case(arms, bound=0.02, band=None, witness=None, arm_options=None):
+def run_case(arms, bound=0.02, band=None, witness=None, arm_options=None,
+             pipeline_change=None, mutate=None, subject_name="mul_mat_vec_q4_k_f32_f32",
+             null_name="mul_mat_vec_q6_k_f32_f32"):
     root = tempfile.mkdtemp(prefix="bracket-ab-")
     rows = [ARMS_HEADER, write_arm(root, "0a", "W", "completed", 3200.0, 1600.0)]
     for slot, spec in enumerate(arms, 1):
@@ -89,10 +91,14 @@ def run_case(arms, bound=0.02, band=None, witness=None, arm_options=None):
         rows.append(write_arm(root, str(slot), arm, status, subject, null, content, **extra))
     with open(os.path.join(root, "arms.tsv"), "w") as handle:
         handle.write("\n".join(rows) + "\n")
+    if mutate is not None:
+        mutate(root)
     command = [sys.executable, SUMMARIZER, os.path.join(root, "arms.tsv"),
                os.path.join(root, "arms"),
-               "--subject", "mul_mat_vec_q4_k_f32_f32", "--null", "mul_mat_vec_q6_k_f32_f32",
+               "--subject", subject_name, "--null", null_name,
                "--bound", str(bound)]
+    if pipeline_change is not None:
+        command += ["--pipeline-change", pipeline_change]
     if band is not None:
         command += ["--sclk-band", str(band)]
     if witness is not None:
@@ -328,3 +334,89 @@ assert table["subject"]["verdict"] == "shortened", table["subject"]
 print("bracket_witness_rows=accepted")
 
 print("summarize_bracket_ab=accepted")
+
+# A host selector keeps the Q8 module and changes the registered specialization.
+# The module-change default still refuses an unchanged subject module.
+def q8_specialization_fixture(flaw=None):
+    def mutate(root):
+        for directory in os.listdir(os.path.join(root, 'arms')):
+            role = directory.rsplit('-', 1)[-1]
+            path = os.path.join(root, 'arms', directory, 'pipeline-ledger-decode.tsv')
+            with open(path) as handle:
+                lines = handle.read().splitlines()
+            output = []
+            for line in lines:
+                fields = line.split('\t')
+                if fields[:1] != ['pipeline'] or fields[1] == 'id':
+                    output.append(line)
+                    continue
+                if fields[2] == 'mul_mat_vec_q4_k_f32_f32':
+                    fields[2] = 'mul_mat_vec_q8_0_f32_f32'
+                    rows = 4 if role == 'K' else 2
+                    fields[3:6] = [f'64,{rows},1', f'{rows},1,1', '64']
+                    fields[-1] = 'a' * 64
+                    if role == 'K':
+                        if flaw == 'stale-selector':
+                            fields[3:5] = ['64,2,1', '2,1,1']
+                        if flaw == 'denominator-mismatch':
+                            fields[4] = '2,1,1'
+                        if flaw == 'module-changed':
+                            fields[-1] = 'c' * 64
+                        if flaw == 'columns-changed':
+                            fields[3] = '64,4,2'
+                        if flaw == 'subgroup-changed':
+                            fields[5] = '32'
+                        if flaw == 'malformed-digest':
+                            fields[-1] = 'unknown'
+                        if flaw == 'duplicate-subject':
+                            output.append('\t'.join(fields))
+                elif fields[2] == 'mul_mat_vec_q6_k_f32_f32':
+                    fields[2] = 'rms_norm_mul_f32'
+                    fields[3:6] = ['0,1', '1,1,1', '0']
+                    fields[-1] = 'b' * 64
+                    if role == 'K':
+                        if flaw == 'null-module-changed':
+                            fields[-1] = 'c' * 64
+                        if flaw == 'null-constants-changed':
+                            fields[3] = '0,2'
+                        if flaw == 'null-denominator-changed':
+                            fields[4] = '2,1,1'
+                output.append('\t'.join(fields))
+            with open(path, 'w') as handle:
+                handle.write('\n'.join(output) + '\n')
+            if role == 'K' and flaw == 'missing-ledger':
+                os.unlink(path)
+    return mutate
+
+q8_arms = [('C', 'completed', 3200.0, 1600.0, 'a'),
+           ('K', 'completed', 2944.0, 1600.0, 'a'),
+           ('K', 'completed', 2944.0, 1600.0, 'a'),
+           ('C', 'completed', 3200.0, 1600.0, 'a')]
+q8_options = dict(subject_name='mul_mat_vec_q8_0_f32_f32', null_name='rms_norm_mul_f32')
+status, error, table = run_case(q8_arms, mutate=q8_specialization_fixture(), **q8_options)
+assert status == 0, error
+assert table['module_identity']['verdict'] == 'differs', table
+status, error, table = run_case(q8_arms, pipeline_change='q8-rows-2-to-4',
+                              mutate=q8_specialization_fixture(), **q8_options)
+assert status == 0, error
+assert table['module_identity']['verdict'] == 'held', table
+assert 'specialization' in table['module_identity']['column'], table
+for flaw in ('stale-selector', 'denominator-mismatch', 'module-changed',
+             'columns-changed', 'subgroup-changed', 'malformed-digest',
+             'null-module-changed', 'null-constants-changed', 'null-denominator-changed',
+             'duplicate-subject', 'missing-ledger'):
+    status, error, table = run_case(q8_arms, pipeline_change='q8-rows-2-to-4',
+                                  mutate=q8_specialization_fixture(flaw), **q8_options)
+    assert status == 0, error
+    assert table['module_identity']['verdict'] != 'held', (flaw, table)
+    if flaw == 'missing-ledger':
+        assert table['module_identity']['comparable_pairs'] == '0', table
+    print(f'q8_specialization_refusal={flaw}')
+status, error, table = run_case(q8_arms, pipeline_change='q8-rows-2-to-4')
+assert status != 0 and 'requires the Q8' in error, (status, error)
+print('q8_specialization_identity=accepted')
+
+status, error, table = run_case(q8_arms, pipeline_change='q8-rows-2-to-4',
+                              subject_name='mul_mat_vec_q8_0_f32_f32',
+                              null_name='mul_mat_vec_q8_0_f32_f32_subgroup')
+assert status != 0 and 'unaffected non-Q8 null' in error, (status, error)

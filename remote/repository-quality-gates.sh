@@ -57,6 +57,7 @@ remote/summarize-pipeline-family.py
 remote/test-summarize-pipeline-family.py
 remote/test-summarize-fixed64-served-campaign.py
 remote/summarize-checkpoint-baseline.py
+remote/verify-baseline-denominator.py
 remote/test-verify-external-vulkan-lease.py
 remote/verify-external-vulkan-lease.py
 remote/summarize-stage-timing.py
@@ -158,6 +159,10 @@ gate_cell test-summarize-speculation-breakeven derive \
 gate_cell test-build-cache-keys derive \
     'remote/test-build-cache-keys.sh remote/build-cache-keys.sh remote/build-llama-preset.sh' \
     remote/test-build-cache-keys.sh
+gate_cell test-q8-four-row-select derive \
+    'remote/test-q8-four-row-select.py patches/llama-vulkan-q8-four-row-select.patch' \
+    python3 remote/test-q8-four-row-select.py
+
 gate_cell test-build-llama-preset-flags derive \
     'remote/test-build-llama-preset-flags.sh remote/build-candidate-flags.sh remote/build-llama-preset.sh remote/llama-patch-series.tsv' \
     remote/test-build-llama-preset-flags.sh
@@ -340,6 +345,10 @@ gate_cell test-sanitize-capture derive \
 gate_cell sweep-coverage-current derive \
     'remote/classify-sweep-coverage.py evidence/home-directory-sweep-coverage.tsv evidence/home-directory-sweep-producers.tsv evidence/home-directory-sweep-retention.tsv evidence/home-sweep-recovery/producer-receipts.tsv evidence/SHA256SUMS' \
     'python3 remote/classify-sweep-coverage.py --check'
+gate_cell test-ab-shared-series derive \
+    'remote/test-ab-shared-series.py remote/census-arm-lib.sh remote/llama-patch-series.tsv' \
+    python3 remote/test-ab-shared-series.py
+
 gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
     remote/test-run-served-binary-ab.sh
 gate_cell test-run-checkpoint-baseline derive \

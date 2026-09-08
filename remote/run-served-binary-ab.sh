@@ -85,8 +85,16 @@ set -eu
 # instead.
 #
 # usage: run-served-binary-ab.sh CONTROL_SERVER CANDIDATE_SERVER MODEL_ID OUTPUT_DIRECTORY
+#   QWEN_CENSUS_BASELINE_RECEIPT     completed single-mode raw baseline directory;
+#                                  alternative to the scoreboard receipt. Binds
+#                                  the denominator, never instrument calibration.
 #   QWEN_CENSUS_PRODUCTION_RECEIPT   identity-check.tsv of the fixed-64 scoreboard
 #                                    sweep, whose one server row is the control
+#   QWEN_AB_SHARED_CANDIDATE_SERIES  comma-separated shared release members in
+#                                    patch-ledger order; default -
+#   QWEN_AB_PIPELINE_CHANGE          module (default) or q8-rows-2-to-4; the latter
+#                                    binds one unchanged module to the registered
+#                                    Q8 constants and workgroup denominators
 #   QWEN_AB_REPLICATES               paired deltas, default 4, even, 2 through 8
 #   QWEN_AB_BOUND                    one-sided promotion bound, default 0.05
 #   QWEN_AB_CANDIDATE_PATCH          the one candidate series member the candidate
@@ -251,6 +259,29 @@ bracket_summarizer=$script_directory/summarize-bracket-ab.py
 bracket_subject=${QWEN_AB_BRACKET_SUBJECT:-mul_mat_vec_q4_k_f32_f32}
 bracket_null=${QWEN_AB_BRACKET_NULL:-mul_mat_vec_q6_k_f32_f32}
 bracket_bound=${QWEN_AB_BRACKET_BOUND:-0.02}
+pipeline_change=${QWEN_AB_PIPELINE_CHANGE:-module}
+case $pipeline_change in
+    module) ;;
+    q8-rows-2-to-4)
+        if [ "$ab_mode" != kernel-delta ] ||
+            [ "$candidate_patch" != llama-vulkan-q8-four-row-select.patch ] ||
+            [ "$bracket_subject" != mul_mat_vec_q8_0_f32_f32 ]; then
+            printf 'q8-rows-2-to-4 requires kernel-delta, the Q8 row-selector patch, and the Q8 float-input subject\n' >&2
+            exit 2
+        fi
+        case $bracket_null in
+            mul_mat_vec_q8_0*)
+                printf 'the Q8 row-selector comparison requires an unaffected non-Q8 null pipeline\n' >&2
+                exit 2
+                ;;
+        esac
+        ;;
+    *)
+        printf 'QWEN_AB_PIPELINE_CHANGE is module or q8-rows-2-to-4: %s\n' "$pipeline_change" >&2
+        exit 2
+        ;;
+esac
+
 # The token-id and margin witness is a separate campaign over its own prompts,
 # so its directory is named rather than derived: the summary reports its two
 # rows beside the paired bound and carries the directory on each, which is what
@@ -505,6 +536,7 @@ fi
 hwmon_root=${QWEN_HWMON_ROOT:-/sys/class/hwmon}
 ab_generate=64
 production_receipt=${QWEN_CENSUS_PRODUCTION_RECEIPT:-}
+baseline_receipt=${QWEN_CENSUS_BASELINE_RECEIPT:-}
 
 # telemetry-broker takes the hwmon directory as an argument where
 # sample-clock-sidecar.py resolves it inside itself, so this applies
@@ -770,10 +802,10 @@ if [ "$ab_mode" = kernel-delta ] && [ "$control_instrumentation" != "$candidate_
     exit 2
 fi
 
-# The control is the scoreboard's own server and the denominator is the tuple
-# beside it, so a registry edit between the scoreboard and this run refuses
-# rather than changing the experiment behind a byte-identical control.
-if [ ! -r "$production_receipt" ]; then
+# The denominator receipt binds the serving executable and its model tuple.
+# A registry edit that changes the tuple refuses even for a byte-identical
+# control; baseline and scoreboard acquisitions retain distinct identities.
+if [ -z "$baseline_receipt" ] && [ ! -r "$production_receipt" ]; then
     printf 'QWEN_CENSUS_PRODUCTION_RECEIPT must name the readable identity-check.tsv of the scoreboard sweep: %s\n' \
         "${production_receipt:--}" >&2
     exit 2
@@ -805,20 +837,15 @@ if [ "$ab_mode" = kernel-delta ]; then
     denominator_sha256=$(sha256sum "$denominator_server" | cut -d ' ' -f 1)
     denominator_bytes=$(wc -c <"$denominator_server" | tr -d ' ')
 fi
-set +e
-scoreboard_digests=$(census_verify_scoreboard_receipt "$production_receipt" \
-    "$denominator_sha256" "$denominator_bytes" 1 "$model_id" "$scoreboard_tuple")
-scoreboard_status=$?
-set -e
-[ "$scoreboard_status" -eq 0 ] || exit "$scoreboard_status"
-IFS="$(printf '\t')" read -r scoreboard_models_sha256 scoreboard_inputs_sha256 <<EOF
-$scoreboard_digests
-EOF
-if [ -z "$scoreboard_models_sha256" ] || [ -z "$scoreboard_inputs_sha256" ]; then
-    printf 'the scoreboard receipt binding printed other than two nonempty digests\n' >&2
-    exit 2
-fi
-production_receipt_sha256=$(sha256sum "$production_receipt" | cut -d ' ' -f 1)
+denominator_receipt_kind=-
+production_receipt_sha256=-
+scoreboard_models_sha256=-
+scoreboard_inputs_sha256=-
+baseline_identity_sha256=-
+baseline_request_sha256=-
+census_bind_denominator "$production_receipt" "$baseline_receipt" \
+    "$denominator_sha256" "$denominator_bytes" 1 "$model_id" \
+    "$scoreboard_tuple" "$script_directory" "${control_experiment_key:-production/4}" || exit 2
 
 # The two servers differ by one candidate patch and that is proven rather than
 # named. Each manifest yields a base build identity from the rows both carry,
@@ -865,24 +892,20 @@ case $control_candidate_rows in
 esac
 candidate_candidate_series=$(census_manifest_value "$candidate_manifest" candidate_series candidate) \
     || exit 2
-# build-llama-preset.sh writes the selected candidates as a comma-joined list
-# and `-` where none was selected, so the control's row is the empty selection
-# and the candidate's is exactly one name; a second member leaves a comma in
-# the field and is refused here, which is what makes the comparison isolate
-# one patch. Under kernel-delta both trees carry the census instrument as
-# their first member and the candidate's series is that member followed by
-# the candidate patch, so the comparison still isolates one patch and the
-# instrument is the same source on both sides.
-case $ab_mode in
-    kernel-delta)
-        expected_control_series=$census_patch
-        expected_candidate_series=$census_patch,$candidate_patch
-        ;;
-    *)
-        expected_control_series=-
-        expected_candidate_series=$candidate_patch
-        ;;
-esac
+# A release can retain shared candidate members. The explicit registration
+# binds those members in both roles; ledger order and one added delta remain
+# mandatory, and the executable binding above still names the denominator.
+shared_candidate_series=${QWEN_AB_SHARED_CANDIDATE_SERIES:--}
+if [ "$experiment_key_mode" -eq 1 ] && [ "$shared_candidate_series" != - ]; then
+    printf 'shared candidate series is registered only for a binary delta, not a keyed comparison\n' >&2
+    exit 2
+fi
+expected_series=$(census_expected_ab_series "$ab_mode" "$census_patch" \
+    "$candidate_patch" "$shared_candidate_series" \
+    "$script_directory/llama-patch-series.tsv") || exit 2
+IFS="$(printf '\t')" read -r expected_control_series expected_candidate_series <<EOF
+$expected_series
+EOF
 # A witness reports the ids two binaries generated, so the ids it reports are
 # evidence about this comparison only where it ran this comparison. Its own
 # inputs.tsv names the model and both server digests, and each must equal this
@@ -995,6 +1018,20 @@ if [ "$candidate_series_sha256" != "$candidate_series_recomputed" ]; then
         "$candidate_series_recomputed" >&2
     exit 2
 fi
+if [ "$shared_candidate_series" != - ]; then
+    control_series_sha256=$(census_manifest_value "$control_manifest" \
+        candidate_series_sha256 control) || exit 2
+    control_series_identity=''
+    for control_series_member in $(printf '%s\n' "$control_candidate_series" | tr ',' ' '); do
+        control_series_identity=$control_series_identity$(
+            sha256sum "$patch_directory/$control_series_member" | cut -d ' ' -f 1)
+    done
+    control_series_recomputed=$(printf '%s' "$control_series_identity" | sha256sum | cut -d ' ' -f 1)
+    if [ "$control_series_sha256" != "$control_series_recomputed" ]; then
+        printf 'the control shared candidate series digest differs from the registered patch bytes\n' >&2
+        exit 2
+    fi
+fi
 if [ "$ab_mode" = kernel-delta ]; then
     control_series_tree=$(census_manifest_value "$control_manifest" checkpoint_series_tree control) \
         || exit 2
@@ -1016,6 +1053,7 @@ if [ -n "$latency_probe" ]; then
 fi
 
 if [ "${QWEN_AB_PRINT_PLAN:-0}" = 1 ]; then
+    printf 'pipeline_change\t%s\n' "$pipeline_change"
     printf 'served_ab_arms\tW %s\n' "$arms"
     printf 'served_ab_replicates\t%s\nserved_ab_bound\t%s\n' "$ab_replicates" "$ab_bound"
     # The plan names one W as the shape the list opens on; the precondition
@@ -1247,8 +1285,10 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$candidate_manifest" "$candidate_manifest_sha256"
     printf 'candidate_checkpoint_semantics\t%s\ncandidate_patch_series_sha256\t%s\n' \
         "$candidate_semantics" "$candidate_series"
+    printf 'shared_candidate_series\t%s\n' "$shared_candidate_series"
     printf 'candidate_series\t%s\ncandidate_patch\t%s\n' \
         "$candidate_candidate_series" "$candidate_patch"
+    printf 'pipeline_change\t%s\n' "$pipeline_change"
     printf 'ab_mode\t%s\ninstrumentation\t%s\nbracket_subject\t%s\nbracket_null\t%s\nbracket_bound\t%s\n' \
         "$ab_mode" "$control_instrumentation" "$bracket_subject" "$bracket_null" "$bracket_bound"
     printf 'control_experiment_key\t%s\ncandidate_experiment_key\t%s\n' \
@@ -1256,6 +1296,10 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
     printf 'denominator_server\t%s\ndenominator_server_sha256\t%s\n' \
         "$denominator_server" "$denominator_sha256"
     printf 'base_build_identity_sha256\t%s\n' "$base_build_identity_sha256"
+    printf 'denominator_receipt_kind\t%s\nbaseline_receipt\t%s\n' \
+        "$denominator_receipt_kind" "${baseline_receipt:--}"
+    printf 'baseline_identity_sha256\t%s\nbaseline_request_sha256\t%s\n' \
+        "$baseline_identity_sha256" "$baseline_request_sha256"
     printf 'production_receipt\t%s\nproduction_receipt_sha256\t%s\n' \
         "$production_receipt" "$production_receipt_sha256"
     printf 'scoreboard_models_resolved_sha256\t%s\nscoreboard_campaign_inputs_sha256\t%s\n' \
@@ -1969,6 +2013,7 @@ if [ "$ab_mode" = served ]; then
     set +e
     python3 "$bracket_summarizer" "$arms_ledger" "$output_directory/arms" \
         --subject "$bracket_subject" --null "$bracket_null" --bound "$bracket_bound" \
+        --pipeline-change "$pipeline_change" \
         --sclk-band "$sclk_band" ${witness_directory:+--witness "$witness_directory"} \
         >"$output_directory/response-summary.tsv" 2>"$output_directory/response-summary.stderr"
     response_status=$?
@@ -2056,6 +2101,7 @@ if [ "$ab_mode" = kernel-delta ]; then
     # between them and their pair leaves the interval.
     python3 "$bracket_summarizer" "$arms_ledger" "$output_directory/arms" \
         --subject "$bracket_subject" --null "$bracket_null" --bound "$bracket_bound" \
+        --pipeline-change "$pipeline_change" \
         --sclk-band "$sclk_band" ${witness_directory:+--witness "$witness_directory"} \
         >"$output_directory/bracket-summary.tsv" 2>"$output_directory/bracket-summary.stderr"
     bracket_status=$?

@@ -687,7 +687,7 @@ cp -- "$harness" "$run_harness_path"
 chmod +x "$run_harness_path"
 cp -- "$artifact_ledger" "$run_directory/model-artifacts.tsv"
 for linked_member in model-registry.sh qwen-home.sh models.tsv ctx-checkpoints.tsv \
-    validated-tuples.tsv quarantine.tsv draft-pairs.tsv census-arm-lib.sh \
+    validated-tuples.tsv quarantine.tsv draft-pairs.tsv census-arm-lib.sh llama-patch-series.tsv \
     summarize-census-controls.py summarize-bracket-ab.py sample-clock-sidecar.py \
     verify-external-vulkan-lease.py \
     telemetry-broker.c build-telemetry-broker.sh; do
@@ -1921,6 +1921,27 @@ run_pair() {
         return 1
     fi
 }
+shared_patch=llama-vulkan-q4k-row-select.patch
+shared_control=$temporary_directory/shared-control
+shared_candidate=$temporary_directory/shared-candidate
+mkdir -p "$shared_control/bin" "$shared_candidate/bin"
+cp -- "$control_server" "$shared_control/bin/llama-server"
+cp -- "$candidate_server" "$shared_candidate/bin/llama-server"
+write_manifest "$shared_control/artifact-manifest.tsv" "$control_bytes" \
+    "$control_sha256" "$shared_patch" verified-candidate "$serving_cmake" "$serving_compiler"
+write_manifest "$shared_candidate/artifact-manifest.tsv" "$candidate_bytes" \
+    "$candidate_sha256" "$candidate_patch,$shared_patch" verified-candidate "$serving_cmake" "$serving_compiler"
+run_pair shared_series_registered "$reached_preflight_end" \
+    "$shared_control" "$shared_candidate" QWEN_AB_SHARED_CANDIDATE_SERIES="$shared_patch"
+run_pair shared_series_unregistered 'must name candidate_series - alone' \
+    "$shared_control" "$shared_candidate"
+write_manifest "$shared_control/artifact-manifest.tsv" "$control_bytes" \
+    "$control_sha256" "$shared_patch" verified-candidate "$serving_cmake" "$serving_compiler" \
+    1111111111111111111111111111111111111111111111111111111111111111
+run_pair shared_control_digest_stale 'control shared candidate series digest differs' \
+    "$shared_control" "$shared_candidate" QWEN_AB_SHARED_CANDIDATE_SERIES="$shared_patch"
+printf 'shared_series_preflight=accepted\n'
+
 census_patch=llama-vulkan-pipeline-census.patch
 control_instrumented=$temporary_directory/control-instrumented
 mkdir -p "$control_instrumented/bin"
@@ -1969,6 +1990,34 @@ run_pair kernel_delta_admitted "$reached_preflight_end" \
     "$control_instrumented" "$candidate_census_e4" QWEN_CENSUS_AB_MODE=kernel-delta \
     QWEN_CENSUS_PRODUCTION_SERVER="$control_server"
 printf 'kernel_delta_refusals=accepted\n'
+
+q8_patch=llama-vulkan-q8-four-row-select.patch
+candidate_census_q8=$temporary_directory/candidate-census-q8
+mkdir -p "$candidate_census_q8/bin"
+cp -- "$candidate_server" "$candidate_census_q8/bin/llama-server"
+write_manifest "$candidate_census_q8/artifact-manifest.tsv" "$candidate_bytes" \
+    "$candidate_sha256" "$census_patch,$q8_patch" verified-candidate \
+    "$serving_cmake" "$serving_compiler"
+printf 'instrumentation\tpipeline-census-v3\n' >>"$candidate_census_q8/artifact-manifest.tsv"
+run_pair q8_specialization_registered "$reached_preflight_end" \
+    "$control_instrumented" "$candidate_census_q8" QWEN_CENSUS_AB_MODE=kernel-delta \
+    QWEN_CENSUS_PRODUCTION_SERVER="$control_server" QWEN_AB_CANDIDATE_PATCH="$q8_patch" \
+    QWEN_AB_PIPELINE_CHANGE=q8-rows-2-to-4 QWEN_AB_BRACKET_SUBJECT=mul_mat_vec_q8_0_f32_f32 \
+    QWEN_AB_BRACKET_NULL=rms_norm_mul_f32
+run_pair q8_specialization_wrong_patch 'requires kernel-delta, the Q8 row-selector patch' \
+    "$control_instrumented" "$candidate_census_e4" QWEN_CENSUS_AB_MODE=kernel-delta \
+    QWEN_AB_PIPELINE_CHANGE=q8-rows-2-to-4 QWEN_AB_BRACKET_SUBJECT=mul_mat_vec_q8_0_f32_f32
+run_pair q8_specialization_affected_null 'requires an unaffected non-Q8 null pipeline' \
+    "$control_instrumented" "$candidate_census_q8" QWEN_CENSUS_AB_MODE=kernel-delta \
+    QWEN_AB_CANDIDATE_PATCH="$q8_patch" QWEN_AB_PIPELINE_CHANGE=q8-rows-2-to-4 \
+    QWEN_AB_BRACKET_SUBJECT=mul_mat_vec_q8_0_f32_f32 QWEN_AB_BRACKET_NULL=mul_mat_vec_q8_0_f32_f32_subgroup
+run_pair q8_specialization_wrong_subject 'requires kernel-delta, the Q8 row-selector patch' \
+    "$control_instrumented" "$candidate_census_q8" QWEN_CENSUS_AB_MODE=kernel-delta \
+    QWEN_AB_CANDIDATE_PATCH="$q8_patch" QWEN_AB_PIPELINE_CHANGE=q8-rows-2-to-4
+run_pair q8_specialization_unknown_mode 'QWEN_AB_PIPELINE_CHANGE is module or q8-rows-2-to-4' \
+    "$control_root" "$candidate_root" QWEN_AB_PIPELINE_CHANGE=arbitrary
+printf 'q8_specialization_preflight=accepted\n'
+
 
 # The closed arm environment, read from both sides. Every executed case ran
 # with GGML_VK_Q4K_SIDEPLANE and QWEN_CACHE_OVERRIDE_CONTEXT_CEILING set in the

@@ -73,7 +73,7 @@ mkdir -p "$acquisitions"
 state_directory=$runtime_root/state
 models_directory=$runtime_root/models
 mkdir -p "$scratch" "$state_directory" "$models_directory"
-for carried in qwen-home.sh census-arm-lib.sh checkpoint-baseline-lib.sh \
+for carried in qwen-home.sh census-arm-lib.sh checkpoint-baseline-lib.sh verify-baseline-denominator.py \
     model-registry.sh models.tsv ctx-checkpoints.tsv quarantine.tsv \
     validated-tuples.tsv draft-pairs.tsv model-artifacts.tsv; do
     [ -e "$script_directory/$carried" ] || continue
@@ -305,7 +305,7 @@ run_harness() {
         QWEN_DRM_DEVICE="$temporary_directory/drm" \
         QWEN_BASELINE_COOLDOWN_S=1 \
         QWEN_BASELINE_READY_DEADLINE_S=30 \
-        QWEN_BENCH_GENERATE=8 \
+        QWEN_BENCH_GENERATE=${QWEN_FIXTURE_GENERATE:-8} \
         QWEN_BASELINE_REPEATS=4 \
         QWEN_LLAMA_SERVER="$control_server" \
         sh -c 'exec "$0" "$@" 8<>"'"$lease_lock"'"' \
@@ -379,6 +379,125 @@ if ! "$summarizer" "$acquisitions/single" >/dev/null; then
     printf 'the retained summary differs from its own recomputation\n' >&2
     exit 1
 fi
+
+active_fixture=baseline_denominator_binding
+baseline_expected_tuple=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t8192\t%s\t%s' \
+    "$tuple_context" "$tuple_batch" "$tuple_ubatch" "$tuple_cache_k" "$tuple_cache_v" \
+    "$tuple_flash" "$tuple_checkpoints" "$model_bytes" "$model_sha256")
+baseline_control_sha=$(sha256sum "$control_server" | cut -d ' ' -f 1)
+baseline_control_bytes=$(wc -c <"$control_server" | tr -d ' ')
+python3 "$scratch/verify-baseline-denominator.py" "$acquisitions/single" \
+    "$baseline_control_sha" "$baseline_control_bytes" "$model_id" "$baseline_expected_tuple" 8 \
+    >"$temporary_directory/baseline-binding.tsv"
+if python3 "$scratch/verify-baseline-denominator.py" "$acquisitions/single" \
+    "$series_sha256" "$baseline_control_bytes" "$model_id" "$baseline_expected_tuple" 8 \
+    >"$temporary_directory/baseline-wrong-server.log" 2>&1; then
+    printf 'baseline denominator accepted a different executable\n' >&2
+    exit 1
+fi
+if python3 "$scratch/verify-baseline-denominator.py" "$acquisitions/single" \
+    "$baseline_control_sha" "$baseline_control_bytes" wrong-model "$baseline_expected_tuple" 8 \
+    >"$temporary_directory/baseline-wrong-model.log" 2>&1; then
+    printf 'baseline denominator accepted a different model\n' >&2
+    exit 1
+fi
+if python3 "$scratch/verify-baseline-denominator.py" "$acquisitions/single" \
+    "$baseline_control_sha" "$baseline_control_bytes" "$model_id" "$baseline_expected_tuple" 64 \
+    >"$temporary_directory/baseline-wrong-generate.log" 2>&1; then
+    printf 'baseline denominator accepted a different generated length\n' >&2
+    exit 1
+fi
+baseline_wrong_tuple=$(printf '%s\n' "$baseline_expected_tuple" | sed 's/^[^[:space:]]*/1/')
+if python3 "$scratch/verify-baseline-denominator.py" "$acquisitions/single" \
+    "$baseline_control_sha" "$baseline_control_bytes" "$model_id" "$baseline_wrong_tuple" 8 \
+    >"$temporary_directory/baseline-wrong-tuple.log" 2>&1; then
+    printf 'baseline denominator accepted a different context tuple\n' >&2
+    exit 1
+fi
+cp -R "$acquisitions/single" "$acquisitions/foreign-validator"
+printf '\n# altered validator identity\n' >>"$acquisitions/foreign-validator/acquisition-clock-validator.py"
+if python3 "$scratch/verify-baseline-denominator.py" "$acquisitions/foreign-validator" \
+    "$baseline_control_sha" "$baseline_control_bytes" "$model_id" "$baseline_expected_tuple" 8 \
+    >"$temporary_directory/baseline-foreign-validator.log" 2>&1; then
+    printf 'baseline denominator accepted an unrecognized validator\n' >&2
+    exit 1
+fi
+grep -q 'validator differs from the trusted runtime validator' "$temporary_directory/baseline-foreign-validator.log"
+python3 - "$scratch/verify-baseline-denominator.py" "$acquisitions/single" \
+    "$baseline_control_sha" "$baseline_control_bytes" "$model_id" "$baseline_expected_tuple" <<'DENOMINATOR'
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+verifier, source_name, *identity = sys.argv[1:]
+source = Path(source_name)
+for case in ('malformed-response', 'incomplete-acquisition'):
+    acquisition = source.parent / ('denominator-' + case)
+    shutil.copytree(source, acquisition)
+    if case == 'malformed-response':
+        (acquisition / 'arms/01-subject/repeats/01/response.json').write_text('{invalid')
+    else:
+        shutil.rmtree(acquisition / 'arms/01-subject/repeats/04')
+    result = subprocess.run([sys.executable, verifier, str(acquisition), *identity, '8'],
+                            capture_output=True, text=True, timeout=65)
+    if result.returncode == 0 or 'baseline reader refused' not in result.stderr:
+        raise SystemExit(f'{case}: unexpected denominator verdict: {result.stderr}')
+    print(f'baseline_denominator_regression={case} expected=refused')
+DENOMINATOR
+python3 - "$scratch/verify-baseline-denominator.py" "$acquisitions/single" \
+    "$baseline_control_sha" "$baseline_control_bytes" "$model_id" "$baseline_expected_tuple" <<'POLICY_BINDING'
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+verifier, source_name, *identity = sys.argv[1:]
+source = Path(source_name)
+for profile in ('paced-60', 'low-serialized'):
+    acquisition = source.parent / ('denominator-profile-' + profile)
+    shutil.copytree(source, acquisition)
+    path = acquisition / 'identity.tsv'
+    path.write_text(path.read_text().replace('profile\tlow-async\n', 'profile\t' + profile + '\n'))
+    result = subprocess.run([sys.executable, verifier, str(acquisition), *identity, '8'],
+                            capture_output=True, text=True, timeout=65)
+    if result.returncode == 0 or 'baseline identity differs at profile' not in result.stderr:
+        raise SystemExit(f'{profile}: unexpected verdict: {result.stderr}')
+result = subprocess.run([sys.executable, verifier, str(source), *identity, '8',
+                         '--q4k-variant', 'e4/4'], capture_output=True, text=True, timeout=65)
+if result.returncode == 0 or 'baseline identity differs at q4k_variant' not in result.stderr:
+    raise SystemExit(f'selector mismatch: unexpected verdict: {result.stderr}')
+print('baseline_submission_profile_and_control_selector=refused_mismatches')
+POLICY_BINDING
+printf 'baseline_denominator_binding=accepted\n'
+active_fixture=fixed64_baseline_denominator_interface
+fixed64_tokens=$(seq 10 73 | tr '\n' ' ')
+QWEN_FIXTURE_GENERATE=64 run_harness "$acquisitions/fixed64" QWEN_FIXTURE_TOKENS="$fixed64_tokens"
+(
+    . "$scratch/census-arm-lib.sh"
+    denominator_receipt_kind=-
+    production_receipt_sha256=-
+    scoreboard_models_sha256=-
+    scoreboard_inputs_sha256=-
+    baseline_identity_sha256=-
+    baseline_request_sha256=-
+    census_bind_denominator '' "$acquisitions/fixed64" "$baseline_control_sha" \
+        "$baseline_control_bytes" 1 "$model_id" "$baseline_expected_tuple" "$scratch"
+    [ "$denominator_receipt_kind" = checkpoint-baseline ]
+    [ "$production_receipt_sha256" = - ]
+    [ "$scoreboard_models_sha256" = - ] && [ "$scoreboard_inputs_sha256" = - ]
+    [ "$baseline_identity_sha256" = "$(sha256sum "$acquisitions/fixed64/identity.tsv" | cut -d ' ' -f 1)" ]
+    [ "$baseline_request_sha256" = "$(sha256sum "$acquisitions/fixed64/request-decode.json" | cut -d ' ' -f 1)" ]
+)
+if (
+    . "$scratch/census-arm-lib.sh"
+    census_bind_denominator conflicting-scoreboard "$acquisitions/fixed64" "$baseline_control_sha" \
+        "$baseline_control_bytes" 1 "$model_id" "$baseline_expected_tuple" "$scratch"
+) >"$temporary_directory/baseline-ambiguous.log" 2>&1; then
+    printf 'the denominator interface accepted two receipt authorities\n' >&2
+    exit 1
+fi
+printf 'fixed64_baseline_denominator_interface=accepted\n'
 
 active_fixture=summary_refuses_absent_response
 mutated=$temporary_directory/mutated

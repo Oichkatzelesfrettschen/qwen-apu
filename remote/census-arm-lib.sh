@@ -845,3 +845,95 @@ CENSUS_TUPLE
         "$(sha256sum "$census_scoreboard_models" | cut -d ' ' -f 1)" \
         "$(sha256sum "$census_scoreboard_inputs" | cut -d ' ' -f 1)"
 }
+
+# Bind a shared candidate series explicitly while isolating one added patch.
+# Ledger order matches the builder's manifest, including the census member.
+census_expected_ab_series() {
+    python3 - "$@" <<'PY'
+import sys
+from pathlib import Path
+
+mode, census_patch, delta, shared, ledger = sys.argv[1:]
+candidates = []
+for line in Path(ledger).read_text().splitlines():
+    if not line or line.startswith('#'):
+        continue
+    fields = line.split('\t')
+    if len(fields) != 2:
+        raise SystemExit('malformed candidate ledger')
+    if fields[0] == 'candidate':
+        candidates.append(fields[1])
+if len(candidates) != len(set(candidates)):
+    raise SystemExit('duplicate candidate ledger member')
+base = [] if shared == '-' else shared.split(',')
+if len(base) != len(set(base)) or any(name not in candidates for name in base):
+    raise SystemExit('shared candidate series has duplicate or unknown members')
+if base != [name for name in candidates if name in base]:
+    raise SystemExit('shared candidate series differs from ledger order')
+if delta not in candidates or delta in base or census_patch in base or delta == census_patch:
+    raise SystemExit('shared candidate series does not isolate the requested delta')
+if mode not in ('served', 'kernel-delta'):
+    raise SystemExit('unknown comparison mode')
+control = base + ([census_patch] if mode == 'kernel-delta' else [])
+if any(name not in candidates for name in control):
+    raise SystemExit('census member absent from candidate ledger')
+candidate = control + [delta]
+control_series = ','.join(name for name in candidates if name in control) or '-'
+candidate_series = ','.join(name for name in candidates if name in candidate)
+print(control_series + '\t' + candidate_series)
+PY
+}
+
+# Keep baseline and scoreboard identities distinct while binding either raw
+# acquisition to the requested serving executable and model tuple.
+# The output variables form the callers' receipt-writing interface.
+# shellcheck disable=SC2034
+census_bind_denominator() {
+    census_denominator_scoreboard=$1
+    census_denominator_baseline=$2
+    census_denominator_server_sha=$3
+    census_denominator_server_bytes=$4
+    census_denominator_require_generate=$5
+    census_denominator_model=$6
+    census_denominator_tuple=$7
+    census_denominator_remote=$8
+    census_denominator_q4k_variant=${9:-production/4}
+    production_receipt_sha256=-
+    scoreboard_models_sha256=-
+    scoreboard_inputs_sha256=-
+    baseline_identity_sha256=-
+    baseline_request_sha256=-
+    if [ -n "$census_denominator_baseline" ]; then
+        if [ -n "$census_denominator_scoreboard" ]; then
+            printf 'name exactly one baseline or scoreboard denominator receipt\n' >&2
+            return 2
+        fi
+        denominator_receipt_kind=checkpoint-baseline
+        census_denominator_digests=$(python3 "$census_denominator_remote/verify-baseline-denominator.py" \
+            "$census_denominator_baseline" "$census_denominator_server_sha" \
+            "$census_denominator_server_bytes" "$census_denominator_model" \
+            "$census_denominator_tuple" 64 --q4k-variant "$census_denominator_q4k_variant") || return 2
+    else
+        denominator_receipt_kind=fixed64-scoreboard
+        census_denominator_digests=$(census_verify_scoreboard_receipt \
+            "$census_denominator_scoreboard" "$census_denominator_server_sha" \
+            "$census_denominator_server_bytes" "$census_denominator_require_generate" \
+            "$census_denominator_model" "$census_denominator_tuple") || return $?
+        production_receipt_sha256=$(sha256sum "$census_denominator_scoreboard" | cut -d ' ' -f 1)
+    fi
+    if ! printf '%s\n' "$census_denominator_digests" | awk -F '\t' '
+        NF != 2 || length($1) != 64 || length($2) != 64 || $1 ~ /[^0-9a-f]/ || $2 ~ /[^0-9a-f]/ { bad=1 }
+        END { exit bad || NR != 1 }'; then
+        printf 'denominator binding must emit exactly two SHA256 digests\n' >&2
+        return 2
+    fi
+    if [ "$denominator_receipt_kind" = checkpoint-baseline ]; then
+        IFS="$(printf '\t')" read -r baseline_identity_sha256 baseline_request_sha256 <<EOF
+$census_denominator_digests
+EOF
+    else
+        IFS="$(printf '\t')" read -r scoreboard_models_sha256 scoreboard_inputs_sha256 <<EOF
+$census_denominator_digests
+EOF
+    fi
+}
