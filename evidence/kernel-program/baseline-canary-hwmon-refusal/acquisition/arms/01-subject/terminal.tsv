@@ -1,0 +1,7 @@
+key	value
+status	failed
+reason	clock_invariant
+sidecar_status	0
+validator_status	1
+teardown_status	0
+quiescence_status	0

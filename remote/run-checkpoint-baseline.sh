@@ -119,6 +119,32 @@ quiescence_poller=$script_directory/await-quiescence.sh
 endpoint=http://127.0.0.1:${QWEN_SERVER_PORT:-8080}
 drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
 
+# Bind delivered frequency and temperature to the selected DRM device.
+sidecar_hwmon=''
+for hwmon_entry in "${QWEN_HWMON_ROOT:-$drm_device/hwmon}"/*; do
+    [ -r "$hwmon_entry/name" ] || continue
+    [ "$(cat "$hwmon_entry/name")" = amdgpu ] || continue
+    if [ -n "$sidecar_hwmon" ]; then
+        printf 'baseline requires one amdgpu hwmon sensor directory\n' >&2
+        exit 2
+    fi
+    sidecar_hwmon=$hwmon_entry
+done
+if [ -z "$sidecar_hwmon" ] || [ ! -r "$sidecar_hwmon/freq1_input" ] || [ ! -r "$sidecar_hwmon/temp1_input" ]; then
+    printf 'baseline requires readable amdgpu hwmon freq1_input and temp1_input before acquisition\n' >&2
+    exit 2
+fi
+
+sidecar_hwmon=$(readlink -f "$sidecar_hwmon")
+drm_hwmon_root=$(readlink -f "$drm_device/hwmon")
+case $sidecar_hwmon in
+    "$drm_hwmon_root"/*) ;;
+    *)
+        printf 'baseline hwmon sensors must belong to the selected DRM device\n' >&2
+        exit 2
+        ;;
+esac
+
 sidecar_source_sha256=$(sha256sum "$script_directory/telemetry-broker.c" | cut -d ' ' -f 1)
 if [ ! -f "$sidecar.source-sha256" ] || [ "$(cat "$sidecar.source-sha256")" != "$sidecar_source_sha256" ]; then
     printf 'baseline requires a broker built from the recorded source before the window\n' >&2
@@ -339,6 +365,7 @@ cp -- "$QWEN_COMPUTE_STATE_RECORD" "$output_directory/compute-state.tsv"
         "$sidecar_period_ms" "$sidecar_tolerance" "$sidecar_cost_ns" "$sidecar_max_gap_ns" "$sidecar_max_lost"
     printf 'allowed_unavailable\tpp_dpm_fclk_surface_mhz\n'
     printf 'nice\t19\ncpu_affinity\t%s\nsclk_source\tsclk_actual_mhz\n' "$sidecar_cpu"
+    printf 'hwmon_path\t%s\n' "$sidecar_hwmon"
 } >"$output_directory/sampler-contract.tsv"
 ttft_body=$output_directory/request-ttft.json
 decode_body=$output_directory/request-decode.json
@@ -535,7 +562,8 @@ run_arm() {
         # a clock the steady rate never ran at.
         "$sidecar" "$arm_directory/clock-samples.tsv" \
             --period-ms "$sidecar_period_ms" --cpu "$sidecar_cpu" \
-            --drm-device "$drm_device" 2>"$arm_directory/sidecar.stderr" &
+            --drm-device "$drm_device" --hwmon "$sidecar_hwmon" \
+            2>"$arm_directory/sidecar.stderr" &
         sidecar_pid=$!
         if ! baseline_await_sampler "$arm_directory/sidecar.stderr" "$sidecar_pid"; then
             arm_status=failed

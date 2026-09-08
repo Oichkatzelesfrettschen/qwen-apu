@@ -1,0 +1,2 @@
+slot	arm	role	server_sha256	status	reason
+01	B	subject	510c0420346ffa4f5104d3f2b28117262a0d30b2907dc21c833d38442c3e49af	failed	clock_invariant

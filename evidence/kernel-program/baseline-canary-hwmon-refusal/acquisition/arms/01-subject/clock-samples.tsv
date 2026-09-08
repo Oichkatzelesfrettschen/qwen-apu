@@ -1,0 +1,308 @@
+# clock=CLOCK_MONOTONIC period_ns=20000000 drm_device=/sys/class/drm/card1/device hwmon=-
+# sample_rates: gpu_busy_percent_period_ns=20000000 pp_dpm_period_ns=200000000 temp1_input_period_ns=200000000 meminfo_period_ns=2000000000 vmstat_period_ns=2000000000 host_period_ns=2000000000
+# interpretation: pp_dpm_sclk_selected_mhz is the selected graphics clock step; pp_dpm_mclk_surface_mhz is the pp_dpm_mclk sysfs surface, which on SMU10 is a fabric-clock state rather than the trained DRAM speed; pp_dpm_fclk_surface_mhz is the pp_dpm_fclk sysfs surface; sclk_actual_mhz is the delivered graphics frequency from hwmon freq1_input, which a forced performance level pins where the selected step states only what was requested
+# sampler_pid=1670715 nice=19 cpu_affinity=0,1
+monotonic_ns	pp_dpm_sclk_selected_mhz	pp_dpm_mclk_surface_mhz	pp_dpm_fclk_surface_mhz	gpu_busy_percent	temp1_millidegrees	sample_cost_ns	sclk_actual_mhz
+# meminfo monotonic_ns=849768997543859 mem_available_kb=12569424 pswpin=493335
+# host monotonic_ns=849768997543859 load1=2.42 ksm_pages_sharing=631422
+# dpm_read=849768997543859
+849768997543859	1100	933	unavailable	47	unavailable	130962	unavailable
+849769017648217	1100	933	unavailable	38	unavailable	627880	unavailable
+849769037607117	1100	933	unavailable	32	unavailable	198536	unavailable
+849769057729368	1100	933	unavailable	27	unavailable	45684	unavailable
+849769078047520	1100	933	unavailable	23	unavailable	433210	unavailable
+849769097617832	1100	933	unavailable	20	unavailable	405228	unavailable
+849769118030449	1100	933	unavailable	16	unavailable	44092	unavailable
+849769137617902	1100	933	unavailable	14	unavailable	43651	unavailable
+849769158030860	1100	933	unavailable	11	unavailable	78835	unavailable
+849769178933102	1100	933	unavailable	9	unavailable	1341086	unavailable
+# dpm_read=849769197744221
+849769197744221	1100	933	unavailable	9	unavailable	91870	unavailable
+849769217599950	1100	933	unavailable	8	unavailable	634071	unavailable
+849769237600897	1100	933	unavailable	7	unavailable	138085	unavailable
+849769257710965	1100	933	unavailable	6	unavailable	29966	unavailable
+849769278059985	1100	933	unavailable	6	unavailable	259500	unavailable
+849769297703562	1100	933	unavailable	6	unavailable	82442	unavailable
+849769317596931	1100	933	unavailable	5	unavailable	46385	unavailable
+849769338035586	1100	933	unavailable	5	unavailable	332334	unavailable
+849769357594305	1100	933	unavailable	4	unavailable	311496	unavailable
+849769377582880	1100	933	unavailable	4	unavailable	40094	unavailable
+# dpm_read=849769398035962
+849769398035962	1100	933	unavailable	4	unavailable	491898	unavailable
+849769417606915	1100	933	unavailable	3	unavailable	445783	unavailable
+849769438029020	1100	933	unavailable	3	unavailable	45093	unavailable
+849769457584073	1100	933	unavailable	3	unavailable	44302	unavailable
+849769477590840	1100	933	unavailable	2	unavailable	589910	unavailable
+849769497604882	1100	933	unavailable	2	unavailable	169934	unavailable
+849769518113927	1100	933	unavailable	2	unavailable	666170	unavailable
+849769537605343	1100	933	unavailable	2	unavailable	714500	unavailable
+849769557593386	1100	933	unavailable	2	unavailable	256654	unavailable
+849769577618418	1100	933	unavailable	2	unavailable	44242	unavailable
+# dpm_read=849769598056834
+849769598056834	1100	933	unavailable	2	unavailable	349114	unavailable
+849769617582474	1100	933	unavailable	2	unavailable	311244	unavailable
+849769637586988	1100	933	unavailable	2	unavailable	45965	unavailable
+849769657609896	1100	933	unavailable	2	unavailable	42979	unavailable
+849769677662669	1100	933	unavailable	2	unavailable	551779	unavailable
+849769697611150	1100	933	unavailable	2	unavailable	71021	unavailable
+849769718637331	1100	933	unavailable	2	unavailable	39212	unavailable
+849769737618204	1100	933	unavailable	2	unavailable	524789	unavailable
+849769757607180	1100	933	unavailable	2	unavailable	57546	unavailable
+849769777631190	1100	933	unavailable	3	unavailable	83915	unavailable
+# dpm_read=849769797920139
+849769797920139	1100	933	unavailable	3	unavailable	408004	unavailable
+849769817605544	1100	933	unavailable	3	unavailable	158072	unavailable
+849769837613525	1100	933	unavailable	3	unavailable	44251	unavailable
+849769857790267	1100	933	unavailable	3	unavailable	547912	unavailable
+849769877578962	1100	933	unavailable	3	unavailable	464338	unavailable
+849769897587474	1100	933	unavailable	3	unavailable	49301	unavailable
+849769917584154	1100	933	unavailable	3	unavailable	44482	unavailable
+849769938017600	1100	933	unavailable	2	unavailable	44161	unavailable
+849769958063490	1100	933	unavailable	2	unavailable	56675	unavailable
+849769978033972	1100	933	unavailable	2	unavailable	682490	unavailable
+# dpm_read=849769998139422
+849769998139422	1100	933	unavailable	2	unavailable	143215	unavailable
+849770017620289	1100	933	unavailable	2	unavailable	57366	unavailable
+849770037617770	1100	933	unavailable	2	unavailable	43441	unavailable
+849770057616854	1100	933	unavailable	3	unavailable	605959	unavailable
+849770077605709	1100	933	unavailable	3	unavailable	624954	unavailable
+849770097610113	1100	933	unavailable	3	unavailable	42288	unavailable
+849770117628804	1100	933	unavailable	2	unavailable	701776	unavailable
+849770137583626	1100	933	unavailable	3	unavailable	286880	unavailable
+849770157580727	1100	933	unavailable	2	unavailable	53839	unavailable
+849770177621337	1100	933	unavailable	2	unavailable	48830	unavailable
+# dpm_read=849770197609641
+849770197609641	1100	933	unavailable	2	unavailable	551549	unavailable
+849770217616770	1100	933	unavailable	2	unavailable	46626	unavailable
+849770237654306	1100	933	unavailable	2	unavailable	50262	unavailable
+849770257612675	1100	933	unavailable	2	unavailable	480657	unavailable
+849770277628720	1100	933	unavailable	2	unavailable	54851	unavailable
+849770297636871	1100	933	unavailable	2	unavailable	42779	unavailable
+849770319028357	1100	933	unavailable	2	unavailable	723275	unavailable
+849770337622436	1100	933	unavailable	2	unavailable	125552	unavailable
+849770357619326	1100	933	unavailable	2	unavailable	43851	unavailable
+849770377614162	1100	933	unavailable	3	unavailable	773539	unavailable
+# dpm_read=849770397623045
+849770397623045	1100	933	unavailable	3	unavailable	352480	unavailable
+849770417606039	1100	933	unavailable	3	unavailable	41486	unavailable
+849770438050596	1100	933	unavailable	3	unavailable	381715	unavailable
+849770457614416	1100	933	unavailable	2	unavailable	363281	unavailable
+849770477618569	1100	933	unavailable	3	unavailable	48660	unavailable
+849770497618755	1100	933	unavailable	3	unavailable	49602	unavailable
+849770517612159	1100	933	unavailable	3	unavailable	465690	unavailable
+849770537608829	1100	933	unavailable	3	unavailable	72895	unavailable
+849770557620837	1100	933	unavailable	3	unavailable	49792	unavailable
+849770577617668	1100	933	unavailable	2	unavailable	639962	unavailable
+# dpm_read=849770598030156
+849770598030156	1100	933	unavailable	2	unavailable	105805	unavailable
+849770617614905	1100	933	unavailable	2	unavailable	48710	unavailable
+849770637614170	1100	933	unavailable	2	unavailable	774330	unavailable
+849770657614738	1100	933	unavailable	2	unavailable	221579	unavailable
+849770677637958	1100	933	unavailable	2	unavailable	60091	unavailable
+849770697618858	1100	933	unavailable	2	unavailable	47929	unavailable
+849770717681931	1100	933	unavailable	2	unavailable	274838	unavailable
+849770738154621	1100	933	unavailable	2	unavailable	49912	unavailable
+849770758015240	1100	933	unavailable	2	unavailable	2024017	unavailable
+849770777611711	1100	933	unavailable	2	unavailable	570093	unavailable
+# dpm_read=849770797611196
+849770797611196	1100	933	unavailable	2	unavailable	112869	unavailable
+849770817621051	1100	933	unavailable	2	unavailable	44762	unavailable
+849770837648929	1100	933	unavailable	2	unavailable	536721	unavailable
+849770858059163	1100	933	unavailable	2	unavailable	41366	unavailable
+849770877610941	1100	933	unavailable	2	unavailable	35977	unavailable
+849770897627849	1100	933	unavailable	2	unavailable	672392	unavailable
+849770917636161	1100	933	unavailable	2	unavailable	257565	unavailable
+849770937736052	1100	933	unavailable	2	unavailable	42879	unavailable
+849770958906700	1100	933	unavailable	2	unavailable	44643	unavailable
+849770977680933	1100	933	unavailable	2	unavailable	253758	unavailable
+# meminfo monotonic_ns=849770997651034 mem_available_kb=12568548 pswpin=493335
+# host monotonic_ns=849770997651034 load1=2.23 ksm_pages_sharing=631468
+# dpm_read=849770997651034
+849770997651034	1100	933	unavailable	3	unavailable	148524	unavailable
+849771017610826	1100	933	unavailable	3	unavailable	44693	unavailable
+849771039561655	1100	933	unavailable	3	unavailable	44442	unavailable
+849771057612722	1100	933	unavailable	3	unavailable	44262	unavailable
+849771077886454	1100	933	unavailable	3	unavailable	34584	unavailable
+849771097607215	1100	933	unavailable	4	unavailable	693882	unavailable
+849771118273732	1100	933	unavailable	3	unavailable	42269	unavailable
+849771137610835	1100	933	unavailable	3	unavailable	47227	unavailable
+849771157635216	1100	933	unavailable	3	unavailable	637898	unavailable
+849771177610828	1100	933	unavailable	3	unavailable	200590	unavailable
+# dpm_read=849771197609431
+849771197609431	1100	933	unavailable	3	unavailable	85238	unavailable
+849771217605851	1100	933	unavailable	4	unavailable	42779	unavailable
+849771238560150	1100	933	unavailable	4	unavailable	47959	unavailable
+849771257610843	1100	933	unavailable	3	unavailable	45254	unavailable
+849771277622792	1100	933	unavailable	3	unavailable	44532	unavailable
+849771297737560	1100	933	unavailable	3	unavailable	301637	unavailable
+849771317640628	1100	933	unavailable	2	unavailable	60221	unavailable
+849771337607583	1100	933	unavailable	3	unavailable	41847	unavailable
+849771357620543	1100	933	unavailable	2	unavailable	1125178	unavailable
+849771377614649	1100	933	unavailable	2	unavailable	117157	unavailable
+# dpm_read=849771397644410
+849771397644410	1100	933	unavailable	2	unavailable	95216	unavailable
+849771417716330	1100	933	unavailable	2	unavailable	662403	unavailable
+849771438034564	1100	933	unavailable	2	unavailable	44562	unavailable
+849771457609695	1100	933	unavailable	2	unavailable	44362	unavailable
+849771477615332	1100	933	unavailable	2	unavailable	44252	unavailable
+849771497622041	1100	933	unavailable	2	unavailable	353553	unavailable
+849771517639981	1100	933	unavailable	2	unavailable	47888	unavailable
+849771538030118	1100	933	unavailable	3	unavailable	590801	unavailable
+849771558118978	1100	933	unavailable	3	unavailable	47358	unavailable
+849771577613451	1100	933	unavailable	2	unavailable	44002	unavailable
+# dpm_read=849771598650634
+849771598650634	1100	933	unavailable	2	unavailable	91960	unavailable
+849771617609859	1100	933	unavailable	2	unavailable	649109	unavailable
+849771637632738	1100	933	unavailable	2	unavailable	104614	unavailable
+849771658842991	1100	933	unavailable	2	unavailable	42007	unavailable
+849771677749969	1100	933	unavailable	2	unavailable	554534	unavailable
+849771697612171	1100	933	unavailable	2	unavailable	244833	unavailable
+849771717624321	1100	933	unavailable	2	unavailable	42679	unavailable
+849771737609761	1100	933	unavailable	2	unavailable	43430	unavailable
+849771757640595	1100	933	unavailable	2	unavailable	260812	unavailable
+849771777608553	1100	933	unavailable	2	unavailable	43991	unavailable
+# dpm_read=849771798036360
+849771798036360	1100	933	unavailable	2	unavailable	481910	unavailable
+849771818016741	1100	933	unavailable	3	unavailable	39623	unavailable
+849771837619765	1100	933	unavailable	3	unavailable	113059	unavailable
+849771857606277	1100	933	unavailable	3	unavailable	42518	unavailable
+849771877618006	1100	933	unavailable	3	unavailable	501225	unavailable
+849771897607523	1100	933	unavailable	2	unavailable	129379	unavailable
+849771917860307	1100	933	unavailable	2	unavailable	44663	unavailable
+849771937607918	1100	933	unavailable	3	unavailable	630485	unavailable
+849771958152030	1100	933	unavailable	3	unavailable	49902	unavailable
+849771977620616	1100	933	unavailable	3	unavailable	46275	unavailable
+# dpm_read=849771998049364
+849771998049364	1100	933	unavailable	3	unavailable	340810	unavailable
+849772017609068	1100	933	unavailable	2	unavailable	353163	unavailable
+849772037614115	1100	933	unavailable	3	unavailable	45033	unavailable
+849772057610044	1100	933	unavailable	3	unavailable	44693	unavailable
+849772077620430	1100	933	unavailable	3	unavailable	394329	unavailable
+849772097623052	1100	933	unavailable	3	unavailable	50724	unavailable
+849772117613392	1100	933	unavailable	3	unavailable	43570	unavailable
+849772137619450	1100	933	unavailable	3	unavailable	559213	unavailable
+849772157629105	1100	933	unavailable	3	unavailable	77172	unavailable
+849772177616729	1100	933	unavailable	2	unavailable	42168	unavailable
+# dpm_read=849772197628257
+849772197628257	1100	933	unavailable	3	unavailable	643449	unavailable
+849772217605011	1100	933	unavailable	3	unavailable	156038	unavailable
+849772237608575	1100	933	unavailable	2	unavailable	53549	unavailable
+849772257608732	1100	933	unavailable	2	unavailable	44472	unavailable
+849772278031460	1100	933	unavailable	3	unavailable	46526	unavailable
+849772297613896	1100	933	unavailable	3	unavailable	45774	unavailable
+849772318035351	1100	933	unavailable	3	unavailable	419886	unavailable
+849772337606587	1100	933	unavailable	3	unavailable	2437962	unavailable
+849772357613356	1100	933	unavailable	3	unavailable	46556	unavailable
+849772378257873	1100	933	unavailable	3	unavailable	361448	unavailable
+# dpm_read=849772398044356
+849772398044356	1100	933	unavailable	3	unavailable	167660	unavailable
+849772417613227	1100	933	unavailable	3	unavailable	65100	unavailable
+849772438026798	1100	933	unavailable	2	unavailable	644450	unavailable
+849772458082287	1100	933	unavailable	2	unavailable	151190	unavailable
+849772477736546	1100	933	unavailable	2	unavailable	76732	unavailable
+849772497607004	1100	933	unavailable	2	unavailable	41837	unavailable
+849772518032697	1100	933	unavailable	2	unavailable	293151	unavailable
+849772537623118	1100	933	unavailable	2	unavailable	242978	unavailable
+849772557641439	1100	933	unavailable	2	unavailable	51545	unavailable
+849772577607313	1100	933	unavailable	2	unavailable	42409	unavailable
+# dpm_read=849772597615195
+849772597615195	1100	933	unavailable	2	unavailable	481479	unavailable
+849772617611286	1100	933	unavailable	3	unavailable	63788	unavailable
+849772638035186	1100	933	unavailable	3	unavailable	514270	unavailable
+849772657610910	1100	933	unavailable	3	unavailable	474537	unavailable
+849772677639060	1100	933	unavailable	3	unavailable	44632	unavailable
+849772697610415	1100	933	unavailable	3	unavailable	43470	unavailable
+849772718040587	1100	933	unavailable	3	unavailable	222440	unavailable
+849772737614036	1100	933	unavailable	3	unavailable	121615	unavailable
+849772757616609	1100	933	unavailable	2	unavailable	46786	unavailable
+849772777622638	1100	933	unavailable	2	unavailable	691326	unavailable
+# dpm_read=849772798059803
+849772798059803	1100	933	unavailable	2	unavailable	89144	unavailable
+849772817603478	1100	933	unavailable	3	unavailable	41186	unavailable
+849772837619184	1100	933	unavailable	3	unavailable	44212	unavailable
+849772858208029	1100	933	unavailable	3	unavailable	42078	unavailable
+849772877605133	1100	933	unavailable	3	unavailable	42339	unavailable
+849772897609018	1100	933	unavailable	3	unavailable	43380	unavailable
+849772917603456	1100	933	unavailable	2	unavailable	464768	unavailable
+849772937610346	1100	933	unavailable	2	unavailable	62505	unavailable
+849772960285134	1100	933	unavailable	2	unavailable	47888	unavailable
+849772977611874	1100	933	unavailable	2	unavailable	578178	unavailable
+# meminfo monotonic_ns=849772998042417 mem_available_kb=12567668 pswpin=493335
+# host monotonic_ns=849772998042417 load1=2.23 ksm_pages_sharing=631651
+# dpm_read=849772998042417
+849772998042417	1100	933	unavailable	2	unavailable	171046	unavailable
+849773017817279	1100	933	unavailable	2	unavailable	41967	unavailable
+849773037609923	1100	933	unavailable	3	unavailable	684214	unavailable
+849773057604070	1100	933	unavailable	3	unavailable	311095	unavailable
+849773077612934	1100	933	unavailable	3	unavailable	43601	unavailable
+849773097605147	1100	933	unavailable	3	unavailable	42299	unavailable
+849773117622337	1100	933	unavailable	3	unavailable	335129	unavailable
+849773138032752	1100	933	unavailable	3	unavailable	40255	unavailable
+849773157609648	1100	933	unavailable	3	unavailable	42789	unavailable
+849773177611459	1100	933	unavailable	3	unavailable	456393	unavailable
+# dpm_read=849773197720168
+849773197720168	1100	933	unavailable	3	unavailable	105535	unavailable
+849773217626152	1100	933	unavailable	3	unavailable	54110	unavailable
+849773237626530	1100	933	unavailable	2	unavailable	550496	unavailable
+849773257611160	1100	933	unavailable	2	unavailable	192455	unavailable
+849773277621406	1100	933	unavailable	3	unavailable	49562	unavailable
+849773297611556	1100	933	unavailable	2	unavailable	678152	unavailable
+849773317621011	1100	933	unavailable	3	unavailable	274657	unavailable
+849773337620728	1100	933	unavailable	3	unavailable	49171	unavailable
+849773358751674	1100	933	unavailable	3	unavailable	42499	unavailable
+849773377606507	1100	933	unavailable	3	unavailable	391713	unavailable
+# dpm_read=849773397613718
+849773397613718	1100	933	unavailable	3	unavailable	92571	unavailable
+849773417988908	1100	933	unavailable	2	unavailable	526172	unavailable
+849773437632097	1100	933	unavailable	3	unavailable	425656	unavailable
+849773457621996	1100	933	unavailable	3	unavailable	51736	unavailable
+849773477606675	1100	933	unavailable	3	unavailable	42168	unavailable
+849773497622081	1100	933	unavailable	3	unavailable	549856	unavailable
+849773517626737	1100	933	unavailable	3	unavailable	72705	unavailable
+849773537629891	1100	933	unavailable	3	unavailable	52307	unavailable
+849773557618818	1100	933	unavailable	3	unavailable	774962	unavailable
+849773577604761	1100	933	unavailable	3	unavailable	272132	unavailable
+# dpm_read=849773597612503
+849773597612503	1100	933	unavailable	3	unavailable	91259	unavailable
+849773617607342	1100	933	unavailable	3	unavailable	41166	unavailable
+849773637633157	1100	933	unavailable	2	unavailable	299403	unavailable
+849773657612848	1100	933	unavailable	3	unavailable	48891	unavailable
+849773677622303	1100	933	unavailable	3	unavailable	52147	unavailable
+849773698029274	1100	933	unavailable	3	unavailable	42879	unavailable
+849773717611641	1100	933	unavailable	3	unavailable	44923	unavailable
+849773737615646	1100	933	unavailable	3	unavailable	44533	unavailable
+849773757620644	1100	933	unavailable	3	unavailable	649349	unavailable
+849773777614000	1100	933	unavailable	3	unavailable	138335	unavailable
+# dpm_read=849773797621963
+849773797621963	1100	933	unavailable	3	unavailable	107218	unavailable
+849773817605040	1100	933	unavailable	3	unavailable	720891	unavailable
+849773838177485	1100	933	unavailable	3	unavailable	43480	unavailable
+849773857622959	1100	933	unavailable	4	unavailable	47748	unavailable
+849773877609082	1100	933	unavailable	5	unavailable	43721	unavailable
+849773897612216	1100	933	unavailable	4	unavailable	300194	unavailable
+849773926291644	1100	933	unavailable	3	unavailable	257726	unavailable
+849773938447064	1100	933	unavailable	3	unavailable	41307	unavailable
+849773957624233	1100	933	unavailable	3	unavailable	401061	unavailable
+849773977731800	1100	933	unavailable	4	unavailable	44101	unavailable
+# dpm_read=849773998422333
+849773998422333	1100	933	unavailable	5	unavailable	362199	unavailable
+849774018026761	1100	933	unavailable	4	unavailable	104062	unavailable
+849774044715563	1100	933	unavailable	3	unavailable	2552875	unavailable
+849774057614666	1100	933	unavailable	3	unavailable	43751	unavailable
+849774078085043	1100	933	unavailable	4	unavailable	299493	unavailable
+849774098055577	1100	933	unavailable	4	unavailable	41617	unavailable
+849774118299075	1100	933	unavailable	4	unavailable	592304	unavailable
+849774137612986	1100	933	unavailable	4	unavailable	44603	unavailable
+849774157631018	1100	933	unavailable	3	unavailable	331612	unavailable
+849774177611139	1100	933	unavailable	3	unavailable	46236	unavailable
+# dpm_read=849774197741408
+849774197741408	1100	933	unavailable	3	unavailable	1044689	unavailable
+849774217610214	1100	933	unavailable	3	unavailable	411089	unavailable
+849774237609601	1100	933	unavailable	3	unavailable	45023	unavailable
+849774257606984	1100	933	unavailable	2	unavailable	44442	unavailable
+849774277617853	1100	933	unavailable	2	unavailable	500123	unavailable
+849774297605468	1100	933	unavailable	2	unavailable	109713	unavailable
+849774317622167	1100	933	unavailable	3	unavailable	46015	unavailable
+849774337992529	1100	933	unavailable	3	unavailable	370595	unavailable
+849774357611444	1100	933	unavailable	3	unavailable	156669	unavailable
+# samples=269 achieved_period_ns=20000252 mean_sample_cost_ns=251667 max_sample_cost_ns=2552875 samples_with_unavailable_sensor=269 first_sample_ns=849768997543859 last_sample_ns=849774357611444
