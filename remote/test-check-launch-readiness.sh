@@ -75,6 +75,24 @@ printf '%s\n' "$image_ready" | grep -q '^checked_web_sections=1$'
 printf '%s\n' "$image_ready" | grep -q '^checked_image_services=1$'
 printf '%s\n' "$image_ready" | grep -q '^readiness=image-runtime state=present '
 
+valid_image_configuration=$(cat "$image_configuration")
+for invalid_configuration in \
+    '{"mcpServers":[]}' \
+    '{"mcpServers":"image"}' \
+    '{"mcpServers":null}' \
+    '[]'
+do
+    printf '%s\n' "$invalid_configuration" >"$image_configuration"
+    if invalid_structure=$($fixture_remote/check-launch-readiness.sh 2>&1); then
+        printf 'readiness accepted a structurally invalid MCP configuration: %s\n' \
+            "$invalid_configuration" >&2
+        exit 1
+    fi
+    printf '%s\n' "$invalid_structure" | grep -q \
+        '^readiness=mcp-configuration state=missing .* reason=invalid-structure$'
+done
+printf '%s\n' "$valid_image_configuration" >"$image_configuration"
+
 chmod -x "$image_runtime"
 if missing_image_runtime=$($fixture_remote/check-launch-readiness.sh 2>&1); then
     printf 'readiness accepted an absent image runtime identity\n' >&2; exit 1
@@ -105,4 +123,4 @@ if missing_bundle=$(FIXTURE_DEPLOYMENT_STATUS=3 $fixture_remote/check-launch-rea
     printf 'readiness accepted an absent active deployment\n' >&2; exit 1
 fi
 printf '%s\n' "$missing_bundle" | grep -q 'readiness=active-deployment state=missing'
-printf 'launch readiness fixture: scoped roster and five refusal paths passed\n'
+printf 'launch readiness fixture: scoped roster, structural validation, and five refusal paths passed\n'

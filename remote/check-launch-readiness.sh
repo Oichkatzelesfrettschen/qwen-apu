@@ -118,6 +118,22 @@ EOF
     while IFS= read -r mcp_configuration; do
         [ -n "$mcp_configuration" ] || continue
         image_report=''
+        if ! python3 -c '
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as configuration_file:
+    configuration = json.load(configuration_file)
+if not isinstance(configuration, dict):
+    raise ValueError("the MCP configuration root is not an object")
+if "mcpServers" in configuration and not isinstance(configuration["mcpServers"], dict):
+    raise ValueError("mcpServers is not an object")
+' "$mcp_configuration" 2>/dev/null; then
+            printf "readiness=mcp-configuration state=missing path=%s repair='remote/build-router-presets.sh' reason=invalid-structure\n" \
+                "$mcp_configuration"
+            failures=$((failures + 1))
+            continue
+        fi
         if image_report=$("$script_directory/read-image-mcp-server.py" \
             "$mcp_configuration" 2>&1); then
             printf 'readiness=mcp-configuration state=present path=%s\n' \
