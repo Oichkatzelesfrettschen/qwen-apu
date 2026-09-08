@@ -35,6 +35,10 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd -P)
 requirement_ledger=${2:-$repository_root/docs/install-requirements.tsv}
 requested_modules=${3:-}
+if [ "$#" -eq 3 ] && [ -z "$3" ]; then
+    printf 'unknown requirement module selector: empty\n' >&2
+    exit 2
+fi
 
 if [ ! -r "$requirement_ledger" ]; then
     printf 'requirement ledger is unreadable: %s\n' "$requirement_ledger" >&2

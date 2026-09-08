@@ -17,6 +17,24 @@ write_ledger() {
 }
 write_ledger
 
+execution_marker=$temporary_directory/executed
+sed "s|\ttrue\tAGENTS.md\$|\t: >$execution_marker\tAGENTS.md|" \
+    "$ledger" >"$temporary_directory/marker.tsv"
+if "$checker" laptop "$temporary_directory/marker.tsv" '' >/dev/null 2>&1; then
+    printf 'empty selector was accepted\n' >&2
+    exit 1
+else
+    selector_status=$?
+fi
+[ "$selector_status" -eq 2 ] || {
+    printf 'empty selector returned status %s instead of 2\n' "$selector_status" >&2
+    exit 1
+}
+if [ -e "$execution_marker" ]; then
+    printf 'empty selector executed a requirement check\n' >&2
+    exit 1
+fi
+
 if "$checker" laptop "$ledger" >/dev/null 2>&1; then
     printf 'full inventory accepted an absent developer tool\n' >&2
     exit 1
