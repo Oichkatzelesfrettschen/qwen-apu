@@ -356,21 +356,31 @@ def q8_specialization_fixture(flaw=None):
                     fields[3:6] = [f'64,{rows},1', f'{rows},1,1', '64']
                     fields[-1] = 'a' * 64
                     if role == 'K':
-                        if flaw == 'stale-selector': fields[3:5] = ['64,2,1', '2,1,1']
-                        if flaw == 'denominator-mismatch': fields[4] = '2,1,1'
-                        if flaw == 'module-changed': fields[-1] = 'c' * 64
-                        if flaw == 'columns-changed': fields[3] = '64,4,2'
-                        if flaw == 'subgroup-changed': fields[5] = '32'
-                        if flaw == 'malformed-digest': fields[-1] = 'unknown'
-                        if flaw == 'duplicate-subject': output.append('\t'.join(fields))
+                        if flaw == 'stale-selector':
+                            fields[3:5] = ['64,2,1', '2,1,1']
+                        if flaw == 'denominator-mismatch':
+                            fields[4] = '2,1,1'
+                        if flaw == 'module-changed':
+                            fields[-1] = 'c' * 64
+                        if flaw == 'columns-changed':
+                            fields[3] = '64,4,2'
+                        if flaw == 'subgroup-changed':
+                            fields[5] = '32'
+                        if flaw == 'malformed-digest':
+                            fields[-1] = 'unknown'
+                        if flaw == 'duplicate-subject':
+                            output.append('\t'.join(fields))
                 elif fields[2] == 'mul_mat_vec_q6_k_f32_f32':
                     fields[2] = 'rms_norm_mul_f32'
                     fields[3:6] = ['0,1', '1,1,1', '0']
                     fields[-1] = 'b' * 64
                     if role == 'K':
-                        if flaw == 'null-module-changed': fields[-1] = 'c' * 64
-                        if flaw == 'null-constants-changed': fields[3] = '0,2'
-                        if flaw == 'null-denominator-changed': fields[4] = '2,1,1'
+                        if flaw == 'null-module-changed':
+                            fields[-1] = 'c' * 64
+                        if flaw == 'null-constants-changed':
+                            fields[3] = '0,2'
+                        if flaw == 'null-denominator-changed':
+                            fields[4] = '2,1,1'
                 output.append('\t'.join(fields))
             with open(path, 'w') as handle:
                 handle.write('\n'.join(output) + '\n')
