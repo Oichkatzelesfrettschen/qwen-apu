@@ -21,7 +21,9 @@ result, tested head and reused-cell count. A historical PID or quiet log carries
 zero completion authority. Confirm GitHub PR and merge state independently of
 local driver output; keep a failed or interrupted gate as its actual outcome.
 
-The device queue starts with one named 2B single-mode canary. Admission requires
+The first 2B canary stopped after completed warmup because required hwmon
+sensors were unbound. Authenticated service restoration passed. Further device
+windows remain held; a future authorized canary requires the gated hwmon repair. Admission requires
 a completed streamed warmup, four fixed-length repeats, actual executable,
 model, Q4_K selection, placement and thread identity, accepted delivered-clock
 telemetry, bounded teardown, state restoration and authenticated service health.
