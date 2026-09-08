@@ -358,7 +358,7 @@ testApi.startNewConversation();
 pendingFileReaders[0].result = 'data:image/png;base64,c3RhbGU=';
 pendingFileReaders[0].onload();
 await staleAttachment;
-assert.deepEqual(testApi.state().attachments, [],
+assert.equal(testApi.state().attachments.length, 0,
   'a stale FileReader inserted an image into the new conversation');
 const requestCountBeforeStaleProposals = pendingRequests.length;
 const staleProposalResult = await testApi.runStaleProposalCheck(modelB);
