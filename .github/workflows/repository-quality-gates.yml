@@ -20,7 +20,8 @@ jobs:
       - name: Install pinned analysis tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap iproute2 shellcheck
+          sudo apt-get install --yes bubblewrap iproute2 shellcheck \
+            glslang-tools spirv-tools
           python3 -m venv /tmp/qwen-apu-quality-gates
           /tmp/qwen-apu-quality-gates/bin/pip install \
             mypy==1.19.1 ruff==0.14.11
