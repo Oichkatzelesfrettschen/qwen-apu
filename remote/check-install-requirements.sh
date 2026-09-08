@@ -17,8 +17,8 @@ set -eu
 # carries the software, which is the boundary `check-ledger-evidence.sh` draws
 # for the three runtime ledgers.
 
-if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-    printf 'usage: %s laptop|workstation|validate [REQUIREMENT_TSV]\n' "$0" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+    printf 'usage: %s laptop|workstation|validate [REQUIREMENT_TSV] [MODULES]\n' "$0" >&2
     exit 2
 fi
 
@@ -34,6 +34,7 @@ esac
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd -P)
 requirement_ledger=${2:-$repository_root/docs/install-requirements.tsv}
+requested_modules=${3:-}
 
 if [ ! -r "$requirement_ledger" ]; then
     printf 'requirement ledger is unreadable: %s\n' "$requirement_ledger" >&2
@@ -46,6 +47,36 @@ if [ "$observed_header" != "$expected_header" ]; then
     printf 'requirement ledger header is not the seven declared columns: %s\n' \
         "$requirement_ledger" >&2
     exit 2
+fi
+
+# Validate selectors against the complete ledger before executing any selected
+# row. This keeps a misspelled module from producing a partial green result.
+module_names=$(awk -F '\t' 'NR > 1 && $1 !~ /^[[:space:]]*(#|$)/ { print $1 }' \
+    "$requirement_ledger" | LC_ALL=C sort -u)
+if [ -n "$requested_modules" ]; then
+    case $requested_modules in
+        *,,* | ,* | *,)
+            printf 'unknown requirement module selector: %s\n' "$requested_modules" >&2
+            exit 2
+            ;;
+    esac
+    remaining_modules=$requested_modules
+    while [ -n "$remaining_modules" ]; do
+        case $remaining_modules in
+            *,*) selected_module=${remaining_modules%%,*}; remaining_modules=${remaining_modules#*,} ;;
+            *) selected_module=$remaining_modules; remaining_modules='' ;;
+        esac
+        case $selected_module in
+            '' | *[!a-z0-9-]*)
+                printf 'unknown requirement module selector: %s\n' "$selected_module" >&2
+                exit 2
+                ;;
+        esac
+        if ! printf '%s\n' "$module_names" | grep -Fx "$selected_module" >/dev/null 2>&1; then
+            printf 'unknown requirement module selector: %s\n' "$selected_module" >&2
+            exit 2
+        fi
+    done
 fi
 
 field_separator=$(printf '\t')
@@ -167,6 +198,15 @@ while IFS=$field_separator read -r row_module row_host row_kind row_name \
     # sent. The gate asserts them where the tree is.
     if [ "$requested_mode" = validate ]; then
         validate_source_refs "$row_source_ref" "$row_module" "$row_name"
+        continue
+    fi
+
+    if [ -n "$requested_modules" ] &&
+        ! printf '%s\n' "$requested_modules" | awk -F',' -v module="$row_module" \
+            '{ for (field_index = 1; field_index <= NF; field_index++) if ($field_index == module) found = 1 } END { exit !found }'; then
+        skipped_count=$((skipped_count + 1))
+        printf 'requirement module=%s kind=%s name=%s result=skipped selector=%s\n' \
+            "$row_module" "$row_kind" "$row_name" "$requested_modules"
         continue
     fi
 

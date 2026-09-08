@@ -74,6 +74,13 @@ remote/check-install-requirements.sh workstation   # beside the Git tree
 remote/check-install-requirements.sh validate      # row shape and cited paths
 ```
 
+The optional third argument selects comma-separated ledger modules for a host
+check. Launch readiness selects `runtime-root,launch-chain`, then checks the
+active preset's models, search installation, and image runtime separately.
+Build tools and repository linters remain requirements of the full installation
+check. Module selection preserves validation of every ledger row and refuses
+unknown or empty module names.
+
 `validate` runs the shape rules and the cited-path rule alone, and
 `remote/repository-quality-gates.sh` calls it beside
 `check-validated-tuples.sh` and `check-ledger-evidence.sh`. Row shape and the

@@ -258,6 +258,9 @@ gate_cell check-ledger-evidence derive remote/check-ledger-evidence.sh \
 # the workstation helper and run there under the host argument.
 gate_cell check-install-requirements derive remote/check-install-requirements.sh \
     'remote/check-install-requirements.sh validate'
+gate_cell test-install-requirements files \
+    'remote/test-install-requirements.sh remote/check-install-requirements.sh AGENTS.md' \
+    remote/test-install-requirements.sh
 gate_cell test-model-registry derive remote/test-model-registry.sh \
     remote/test-model-registry.sh
 gate_cell test-model-tiers derive remote/test-model-tiers.sh \

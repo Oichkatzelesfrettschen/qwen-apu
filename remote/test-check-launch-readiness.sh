@@ -22,13 +22,15 @@ write_authority() {
     chmod +x "$fixture_remote/$authority_name"
 }
 write_authority runtime-root.sh 'exit "${FIXTURE_LAYOUT_STATUS:-0}"'
-write_authority check-install-requirements.sh 'exit "${FIXTURE_REQUIREMENTS_STATUS:-0}"'
+write_authority check-install-requirements.sh \
+    'printf "%s\\n" "$*" >"$FIXTURE_REQUIREMENTS_ARGS"; exit "${FIXTURE_REQUIREMENTS_STATUS:-0}"'
 write_authority searxng-launch.sh 'exit "${FIXTURE_SEARXNG_STATUS:-0}"'
 write_authority resolve-active-deployment.sh \
     'printf "active_deployment_router_presets=%s\\n" "$QWEN_HOME/deployments/bundle/router-presets.ini"; exit "${FIXTURE_DEPLOYMENT_STATUS:-0}"'
 write_authority open-verified-lock-descriptor.py 'shift 3; exec "$@"'
 : >"$fixture_home/deployments/.activate.lock"
 chmod 600 "$fixture_home/deployments/.activate.lock"
+export FIXTURE_REQUIREMENTS_ARGS=$temporary_directory/requirements.args
 model_path=$fixture_home/models/model.gguf
 printf 'model\n' >"$model_path"
 printf '[model]\nLLAMA_ARG_MODEL = %s\n' "$model_path" \
@@ -42,6 +44,11 @@ printf '%s\n' "$accepted" | grep -q '^checked_web_sections=0$'
 printf '%s\n' "$accepted" | grep -q '^checked_image_services=0$'
 printf '%s\n' "$accepted" | grep -q '^checked_model_artifacts=1$'
 printf '%s\n' "$accepted" | grep -q '^chat_history=preserved_in_browser_storage$'
+grep -Fq "laptop $fixture_remote/../docs/install-requirements.tsv runtime-root,launch-chain" \
+    "$FIXTURE_REQUIREMENTS_ARGS" || {
+    printf 'readiness did not select runtime-root and launch-chain\n' >&2
+    exit 1
+}
 
 # A tool-free roster does not depend on a search service that it cannot reach.
 tool_free=$(FIXTURE_SEARXNG_STATUS=7 $fixture_remote/check-launch-readiness.sh)
