@@ -687,7 +687,7 @@ cp -- "$harness" "$run_harness_path"
 chmod +x "$run_harness_path"
 cp -- "$artifact_ledger" "$run_directory/model-artifacts.tsv"
 for linked_member in model-registry.sh qwen-home.sh models.tsv ctx-checkpoints.tsv \
-    validated-tuples.tsv quarantine.tsv draft-pairs.tsv census-arm-lib.sh \
+    validated-tuples.tsv quarantine.tsv draft-pairs.tsv census-arm-lib.sh llama-patch-series.tsv \
     summarize-census-controls.py summarize-bracket-ab.py sample-clock-sidecar.py \
     verify-external-vulkan-lease.py \
     telemetry-broker.c build-telemetry-broker.sh; do
@@ -1921,6 +1921,27 @@ run_pair() {
         return 1
     fi
 }
+shared_patch=llama-vulkan-q4k-row-select.patch
+shared_control=$temporary_directory/shared-control
+shared_candidate=$temporary_directory/shared-candidate
+mkdir -p "$shared_control/bin" "$shared_candidate/bin"
+cp -- "$control_server" "$shared_control/bin/llama-server"
+cp -- "$candidate_server" "$shared_candidate/bin/llama-server"
+write_manifest "$shared_control/artifact-manifest.tsv" "$control_bytes" \
+    "$control_sha256" "$shared_patch" verified-candidate "$serving_cmake" "$serving_compiler"
+write_manifest "$shared_candidate/artifact-manifest.tsv" "$candidate_bytes" \
+    "$candidate_sha256" "$candidate_patch,$shared_patch" verified-candidate "$serving_cmake" "$serving_compiler"
+run_pair shared_series_registered "$reached_preflight_end" \
+    "$shared_control" "$shared_candidate" QWEN_AB_SHARED_CANDIDATE_SERIES="$shared_patch"
+run_pair shared_series_unregistered 'must name candidate_series - alone' \
+    "$shared_control" "$shared_candidate"
+write_manifest "$shared_control/artifact-manifest.tsv" "$control_bytes" \
+    "$control_sha256" "$shared_patch" verified-candidate "$serving_cmake" "$serving_compiler" \
+    1111111111111111111111111111111111111111111111111111111111111111
+run_pair shared_control_digest_stale 'control shared candidate series digest differs' \
+    "$shared_control" "$shared_candidate" QWEN_AB_SHARED_CANDIDATE_SERIES="$shared_patch"
+printf 'shared_series_preflight=accepted\n'
+
 census_patch=llama-vulkan-pipeline-census.patch
 control_instrumented=$temporary_directory/control-instrumented
 mkdir -p "$control_instrumented/bin"

@@ -845,3 +845,41 @@ CENSUS_TUPLE
         "$(sha256sum "$census_scoreboard_models" | cut -d ' ' -f 1)" \
         "$(sha256sum "$census_scoreboard_inputs" | cut -d ' ' -f 1)"
 }
+
+# Bind a shared candidate series explicitly while isolating one added patch.
+# Ledger order matches the builder's manifest, including the census member.
+census_expected_ab_series() {
+    python3 - "$@" <<'PY'
+import sys
+from pathlib import Path
+
+mode, census_patch, delta, shared, ledger = sys.argv[1:]
+candidates = []
+for line in Path(ledger).read_text().splitlines():
+    if not line or line.startswith('#'):
+        continue
+    fields = line.split('\t')
+    if len(fields) != 2:
+        raise SystemExit('malformed candidate ledger')
+    if fields[0] == 'candidate':
+        candidates.append(fields[1])
+if len(candidates) != len(set(candidates)):
+    raise SystemExit('duplicate candidate ledger member')
+base = [] if shared == '-' else shared.split(',')
+if len(base) != len(set(base)) or any(name not in candidates for name in base):
+    raise SystemExit('shared candidate series has duplicate or unknown members')
+if base != [name for name in candidates if name in base]:
+    raise SystemExit('shared candidate series differs from ledger order')
+if delta not in candidates or delta in base or census_patch in base or delta == census_patch:
+    raise SystemExit('shared candidate series does not isolate the requested delta')
+if mode not in ('served', 'kernel-delta'):
+    raise SystemExit('unknown comparison mode')
+control = base + ([census_patch] if mode == 'kernel-delta' else [])
+if any(name not in candidates for name in control):
+    raise SystemExit('census member absent from candidate ledger')
+candidate = control + [delta]
+control_series = ','.join(name for name in candidates if name in control) or '-'
+candidate_series = ','.join(name for name in candidates if name in candidate)
+print(control_series + '\t' + candidate_series)
+PY
+}

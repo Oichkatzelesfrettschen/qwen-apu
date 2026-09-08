@@ -87,6 +87,8 @@ set -eu
 # usage: run-served-binary-ab.sh CONTROL_SERVER CANDIDATE_SERVER MODEL_ID OUTPUT_DIRECTORY
 #   QWEN_CENSUS_PRODUCTION_RECEIPT   identity-check.tsv of the fixed-64 scoreboard
 #                                    sweep, whose one server row is the control
+#   QWEN_AB_SHARED_CANDIDATE_SERIES  comma-separated shared release members in
+#                                    patch-ledger order; default -
 #   QWEN_AB_REPLICATES               paired deltas, default 4, even, 2 through 8
 #   QWEN_AB_BOUND                    one-sided promotion bound, default 0.05
 #   QWEN_AB_CANDIDATE_PATCH          the one candidate series member the candidate
@@ -865,24 +867,20 @@ case $control_candidate_rows in
 esac
 candidate_candidate_series=$(census_manifest_value "$candidate_manifest" candidate_series candidate) \
     || exit 2
-# build-llama-preset.sh writes the selected candidates as a comma-joined list
-# and `-` where none was selected, so the control's row is the empty selection
-# and the candidate's is exactly one name; a second member leaves a comma in
-# the field and is refused here, which is what makes the comparison isolate
-# one patch. Under kernel-delta both trees carry the census instrument as
-# their first member and the candidate's series is that member followed by
-# the candidate patch, so the comparison still isolates one patch and the
-# instrument is the same source on both sides.
-case $ab_mode in
-    kernel-delta)
-        expected_control_series=$census_patch
-        expected_candidate_series=$census_patch,$candidate_patch
-        ;;
-    *)
-        expected_control_series=-
-        expected_candidate_series=$candidate_patch
-        ;;
-esac
+# A release can retain shared candidate members. The explicit registration
+# binds those members in both roles; ledger order and one added delta remain
+# mandatory, and the executable binding above still names the denominator.
+shared_candidate_series=${QWEN_AB_SHARED_CANDIDATE_SERIES:--}
+if [ "$experiment_key_mode" -eq 1 ] && [ "$shared_candidate_series" != - ]; then
+    printf 'shared candidate series is registered only for a binary delta, not a keyed comparison\n' >&2
+    exit 2
+fi
+expected_series=$(census_expected_ab_series "$ab_mode" "$census_patch" \
+    "$candidate_patch" "$shared_candidate_series" \
+    "$script_directory/llama-patch-series.tsv") || exit 2
+IFS="$(printf '\t')" read -r expected_control_series expected_candidate_series <<EOF
+$expected_series
+EOF
 # A witness reports the ids two binaries generated, so the ids it reports are
 # evidence about this comparison only where it ran this comparison. Its own
 # inputs.tsv names the model and both server digests, and each must equal this
@@ -994,6 +992,20 @@ if [ "$candidate_series_sha256" != "$candidate_series_recomputed" ]; then
         "$candidate_series_sha256" "$candidate_candidate_series" \
         "$candidate_series_recomputed" >&2
     exit 2
+fi
+if [ "$shared_candidate_series" != - ]; then
+    control_series_sha256=$(census_manifest_value "$control_manifest" \
+        candidate_series_sha256 control) || exit 2
+    control_series_identity=''
+    for control_series_member in $(printf '%s\n' "$control_candidate_series" | tr ',' ' '); do
+        control_series_identity=$control_series_identity$(
+            sha256sum "$patch_directory/$control_series_member" | cut -d ' ' -f 1)
+    done
+    control_series_recomputed=$(printf '%s' "$control_series_identity" | sha256sum | cut -d ' ' -f 1)
+    if [ "$control_series_sha256" != "$control_series_recomputed" ]; then
+        printf 'the control shared candidate series digest differs from the registered patch bytes\n' >&2
+        exit 2
+    fi
 fi
 if [ "$ab_mode" = kernel-delta ]; then
     control_series_tree=$(census_manifest_value "$control_manifest" checkpoint_series_tree control) \
@@ -1247,6 +1259,7 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$candidate_manifest" "$candidate_manifest_sha256"
     printf 'candidate_checkpoint_semantics\t%s\ncandidate_patch_series_sha256\t%s\n' \
         "$candidate_semantics" "$candidate_series"
+    printf 'shared_candidate_series\t%s\n' "$shared_candidate_series"
     printf 'candidate_series\t%s\ncandidate_patch\t%s\n' \
         "$candidate_candidate_series" "$candidate_patch"
     printf 'ab_mode\t%s\ninstrumentation\t%s\nbracket_subject\t%s\nbracket_null\t%s\nbracket_bound\t%s\n' \

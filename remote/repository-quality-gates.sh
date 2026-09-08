@@ -344,6 +344,10 @@ gate_cell test-sanitize-capture derive \
 gate_cell sweep-coverage-current derive \
     'remote/classify-sweep-coverage.py evidence/home-directory-sweep-coverage.tsv evidence/home-directory-sweep-producers.tsv evidence/home-directory-sweep-retention.tsv evidence/home-sweep-recovery/producer-receipts.tsv evidence/SHA256SUMS' \
     'python3 remote/classify-sweep-coverage.py --check'
+gate_cell test-ab-shared-series derive \
+    'remote/test-ab-shared-series.py remote/census-arm-lib.sh remote/llama-patch-series.tsv' \
+    python3 remote/test-ab-shared-series.py
+
 gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
     remote/test-run-served-binary-ab.sh
 gate_cell test-run-checkpoint-baseline derive \
