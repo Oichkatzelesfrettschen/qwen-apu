@@ -12,7 +12,7 @@ permissions:
 jobs:
   clone-local:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -20,13 +20,43 @@ jobs:
       - name: Install pinned analysis tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes shellcheck
+          sudo apt-get install --yes bubblewrap iproute2 shellcheck
           python3 -m venv /tmp/qwen-apu-quality-gates
           /tmp/qwen-apu-quality-gates/bin/pip install \
             mypy==1.19.1 ruff==0.14.11
+
+      - name: Prepare the isolated gate checkout
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/qwen-apu-gate" HEAD
+          # Ubuntu restricts unprivileged namespaces on the ephemeral runner.
+          # The gate uses a private PID namespace with its matching procfs.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - name: Run clone-local gates
         env:
           PATH: /tmp/qwen-apu-quality-gates/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           QWEN_CHROMIUM: google-chrome
-        run: remote/repository-quality-gates.sh
+        run: |
+          gate_status=0
+          remote/run-repository-gate.sh \
+            -r "$RUNNER_TEMP/qwen-gate-results" \
+            -c "$RUNNER_TEMP/qwen-gate-cache" \
+            "$RUNNER_TEMP/qwen-apu-gate" || gate_status=$?
+          for gate_result in "$RUNNER_TEMP"/qwen-gate-results/*/result.tsv; do
+            test -f "$gate_result" || continue
+            cat "$gate_result"
+            if test "$gate_status" -ne 0; then
+              tail -n 100 "${gate_result%/*}/gate.log"
+            fi
+          done
+          exit "$gate_status"
+
+      - name: Retain the gate terminal result and log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: repository-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/qwen-gate-results/*/result.tsv
+            ${{ runner.temp }}/qwen-gate-results/*/gate.log
+          if-no-files-found: warn
