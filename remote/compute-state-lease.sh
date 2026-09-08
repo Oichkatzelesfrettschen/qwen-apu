@@ -102,7 +102,7 @@ set -eu
 usage() {
     printf 'usage: %s PROFILE COMMAND [ARG...]\n' "$0" >&2
     printf '       %s status\n' "$0" >&2
-    printf 'profiles: measure-fixed serve-performance-candidate\n' >&2
+    printf 'profiles: serve-baseline-fixed measure-fixed serve-performance-candidate\n' >&2
     printf '          measure-fixed-package-default measure-fixed-package-20w measure-fixed-package-25w\n' >&2
     printf '          serve-fixed-package-default serve-fixed-package-20w serve-fixed-package-25w\n' >&2
     printf '          serve-auto-baseline serve-fixed-cpu-capped serve-fixed-cpu-capped-fclk-range\n' >&2
@@ -196,6 +196,16 @@ resolve_profile() {
     # accident.
     profile_write_clock_selection=1
     case $1 in
+        serve-baseline-fixed)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=0
+            profile_child_io_class=best-effort
+            profile_child_cpu_list=0,1
+            profile_ksm_run=preserve
+            profile_power_envelope=platform-default
+            ;;
         measure-fixed)
             profile_dpm_level=manual
             profile_sclk_levels='2=1100'
@@ -763,6 +773,11 @@ if [ "$snapshot_ksm_run" = 2 ]; then
     exit 2
 fi
 
+# The served baseline retains the observed KSM switch through the transaction.
+if [ "$profile_ksm_run" = preserve ]; then
+    profile_ksm_run=$snapshot_ksm_run
+fi
+
 # The child inherits the harness's priority terms, so they are applied to this
 # shell and read back from the kernel before anything is written. Lowering a
 # nice level requires CAP_SYS_NICE, so a compute-performance profile started
@@ -1205,6 +1220,7 @@ command_name=$1
     census_arm_exec "$arm_environment_record" \
         QWEN_VULKAN_EXTERNAL_LEASE_PROOF="$lease_proof" \
         QWEN_COMPUTE_STATE_PROFILE="$profile_name" \
+        QWEN_COMPUTE_STATE_RECORD="$state_record" \
         ${QWEN_COMPUTE_STATE_FORWARD:-} \
         -- \
         "$@"

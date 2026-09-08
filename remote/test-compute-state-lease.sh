@@ -965,6 +965,26 @@ else
     cat "$temporary_directory/power-owner.log" >&2
 fi
 
+# The baseline preserves either observed KSM state and keeps the monitor at nice 0.
+for initial_ksm in 0 1; do
+    reset_fixture
+    printf '%s\n' "$initial_ksm" >"$ksm_fixture/run"
+    baseline_status=0
+    run_transaction serve-baseline-fixed "$stub_directory/observer" baseline-arm \
+        >"$temporary_directory/baseline.log" 2>&1 || baseline_status=$?
+    if [ "$baseline_status" -eq 0 ] &&
+        [ "$(observer_field observed_ksm_run)" = "$initial_ksm" ] &&
+        [ "$(observer_field observed_nice)" = 0 ] &&
+        [ "$(cat "$ksm_fixture/run")" = "$initial_ksm" ] &&
+        grep -q '^apply platform-default$' "$power_envelope_log" &&
+        grep -q '^restoration=held profile=serve-baseline-fixed ' "$temporary_directory/baseline.log"; then
+        report 0 "baseline_preserves_ksm_$initial_ksm"
+    else
+        report 1 "baseline_preserves_ksm_$initial_ksm"
+        cat "$temporary_directory/baseline.log" >&2
+    fi
+done
+
 # P0: serve-auto-baseline writes the level word alone, at nice 0 the same way
 # every rung the served harness runs carries, and reports its clock
 # expectation as unverified rather than gating on it, since the governor is

@@ -1,33 +1,11 @@
 #!/bin/sh
 set -eu
 
-# A reproducible per-checkpoint baseline over the runtime-root epoch: what one
-# registry row costs to load, how long its first token takes, and what it
-# decodes at once it is warm, each recorded as its own quantity against one
-# bound identity.
-#
-# The three quantities separate only inside one served session. A load measured
-# beside a rate reports the two together, which is what the fixed-64 campaign's
-# one-request-per-launch shape leaves entangled, so this runner launches once,
-# polls readiness, times the first token of one streamed request, and then runs
-# a fixed block of identical 64-token requests. Every repeat retains its own
-# token-id array and the block compares them, because a rate measured over
-# replies that differ measures two computations.
-#
-# Identity is bound before the device is touched and the summary rests on it:
-# the model bytes and digest, the server bytes and digest, the patch series the
-# build's own manifest declares, the digest of each request body sent, and the
-# tuple read off the server the policy launched rather than off the registry the
-# policy read. `--bracket` runs the same session driver four times as `C K K C`
-# so a candidate binary is measured between two control arms, and the summarizer
-# reports the role ratio beside every arm's own spread.
-#
-# The campaign runs under compute-state-lease.sh's `measure-fixed` transaction,
-# which holds the shared Vulkan lease on descriptor 8, pins GFXCLK 1100 with
-# FCLK 933, proves the delivered clock before the command, and verifies the
-# restore after it. This runner therefore takes no lock and writes no DPM level;
-# it proves it inherited the lease and holds every arm's clock record to the
-# forced-policy invariant.
+# One served launch separates readiness, completed warmup and repeated decode.
+# The ordinary-appliance fixed-clock cell preserves KSM as found, leaves the
+# standing VM running and uses stock package power. The lease orchestrator and
+# monitor run at nice 0; serving policy assigns inference priority independently.
+# A bracket supplies two launches per role and reports a descriptive ratio.
 #
 # usage: run-checkpoint-baseline.sh MODEL_ID OUTPUT_DIRECTORY
 #        run-checkpoint-baseline.sh --bracket CONTROL_SERVER CANDIDATE_SERVER \
@@ -95,7 +73,7 @@ fi
 
 repeats=${QWEN_BASELINE_REPEATS:-4}
 case $repeats in
-    '' | *[!0-9]* | 0 | 1) usage_repeats=1 ;;
+    '' | *[!0-9]* | 0* | 1 | ??????????*) usage_repeats=1 ;;
     *) usage_repeats=0 ;;
 esac
 if [ "$usage_repeats" -eq 1 ] || [ "$repeats" -gt 16 ]; then
@@ -104,15 +82,24 @@ if [ "$usage_repeats" -eq 1 ] || [ "$repeats" -gt 16 ]; then
 fi
 generate_tokens=${QWEN_BENCH_GENERATE:-64}
 case $generate_tokens in
-    '' | *[!0-9]* | 0 | 1)
+    '' | *[!0-9]* | 0* | 1 | ??????????*)
         printf 'QWEN_BENCH_GENERATE covers at least one decode transition: %s\n' \
             "$generate_tokens" >&2
         exit 2
         ;;
 esac
 profile=${QWEN_BASELINE_PROFILE:-low-async}
+request_deadline=${QWEN_BASELINE_REQUEST_DEADLINE_S:-900}
+export QWEN_BASELINE_REQUEST_DEADLINE_S=$request_deadline
 ready_deadline=${QWEN_BASELINE_READY_DEADLINE_S:-300}
 cooldown_s=${QWEN_BASELINE_COOLDOWN_S:-30}
+for bounded_value in "$ready_deadline" "$request_deadline" "$cooldown_s" "$generate_tokens"; do
+    case $bounded_value in '' | *[!0-9]* | 0* | ??????*)
+        printf 'baseline deadlines and counts require bounded positive decimal integers: %s\n' "$bounded_value" >&2
+        exit 2 ;;
+    esac
+    [ "$bounded_value" -le 32768 ] || exit 2
+done
 sampling_seed=1
 # One prompt for every arm and every repeat, stated here rather than read from a
 # file, so the request digest identifies the campaign's own workload and a
@@ -125,12 +112,18 @@ teardown_script=${QWEN_TEARDOWN_SCRIPT:-"$script_directory/qwen-teardown.sh"}
 state_directory=${QWEN_STATE_DIRECTORY:-"$qwen_home_state"}
 models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
 summarizer=$script_directory/summarize-checkpoint-baseline.py
-sidecar=${QWEN_CENSUS_SIDECAR:-"$script_directory/sample-clock-sidecar.py"}
+sidecar=${QWEN_CENSUS_BROKER:-"$qwen_home_build_cache/telemetry-broker"}
 sidecar_validator=$script_directory/validate-clock-sidecar.py
 lease_verifier=$script_directory/verify-external-vulkan-lease.py
 quiescence_poller=$script_directory/await-quiescence.sh
 endpoint=http://127.0.0.1:${QWEN_SERVER_PORT:-8080}
 drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
+
+sidecar_source_sha256=$(sha256sum "$script_directory/telemetry-broker.c" | cut -d ' ' -f 1)
+if [ ! -f "$sidecar.source-sha256" ] || [ "$(cat "$sidecar.source-sha256")" != "$sidecar_source_sha256" ]; then
+    printf 'baseline requires a broker built from the recorded source before the window\n' >&2
+    exit 2
+fi
 
 for required_reader in "$summarizer" "$sidecar" "$sidecar_validator"; do
     if [ ! -r "$required_reader" ]; then
@@ -141,15 +134,29 @@ done
 
 # The sidecar geometry is the census campaign's, read under its own names, since
 # one machine carries one acquisition contract. The gap bound is the forced
-# policy's 250 ms rather than the governor's 100 ms: measure-fixed holds one
+# policy's 250 ms rather than the governor's 100 ms: serve-baseline-fixed holds one
 # level and the samples bracketing a gap state what the firmware held inside it.
 sidecar_period_ms=${QWEN_CENSUS_SIDECAR_PERIOD_MS:-20}
 sidecar_tolerance=${QWEN_CENSUS_SIDECAR_TOLERANCE:-0.25}
 sidecar_cost_ns=${QWEN_CENSUS_SIDECAR_COST_NS:-1000000}
 sidecar_max_lost=${QWEN_CENSUS_SIDECAR_MAX_LOST:-0.03}
 sidecar_cpu=${QWEN_CENSUS_SIDECAR_CPU:-0,1}
-sidecar_max_gap_ns=$((${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-250} * 1000000))
+sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-250}
+case $sidecar_max_gap_ms in '' | *[!0-9]* | 0* | ?????*) exit 2 ;; esac
+sidecar_max_gap_ns=$((sidecar_max_gap_ms * 1000000))
 mclk_floor_mhz=${QWEN_CENSUS_MCLK_FLOOR_MHZ:-933}
+python3 - "$sidecar_period_ms" "$sidecar_tolerance" "$sidecar_cost_ns" "$sidecar_max_lost" "$sidecar_cpu" <<'PY'
+import math
+import re
+import sys
+period, tolerance, cost, lost, affinity = sys.argv[1:]
+for name, raw, low, high in (("period", period, 1, 100), ("tolerance", tolerance, 0, 1), ("lost", lost, 0, 1)):
+    value = float(raw)
+    if not math.isfinite(value) or not low <= value <= high:
+        raise SystemExit(f"sampler {name} is outside its finite bounds")
+if not re.fullmatch(r"[1-9][0-9]{0,8}", cost) or affinity != "0,1":
+    raise SystemExit("baseline sampler requires a bounded cost and registered affinity 0,1")
+PY
 case $mclk_floor_mhz in
     0 | 0[0-9]* | '' | *[!0-9]*)
         printf 'QWEN_CENSUS_MCLK_FLOOR_MHZ is a positive megahertz count: %s\n' \
@@ -157,18 +164,26 @@ case $mclk_floor_mhz in
         exit 2
         ;;
 esac
-# measure-fixed commands the highest graphics step the table lists, so that
-# value is the one every arm's window is held to.
+# The registered cell requires table level 2 at 1100 MHz.
 sclk_path=$drm_device/pp_dpm_sclk
 if [ ! -r "$sclk_path" ]; then
     printf 'the clock invariant reads pp_dpm_sclk: %s\n' "$sclk_path" >&2
     exit 2
 fi
-required_sclk_mhz=$(census_engine_clock_highest_mhz "$sclk_path") || {
+required_sclk_mhz=$(census_engine_clock_level_mhz "$sclk_path" 2) || {
     printf 'pp_dpm_sclk lists no graphics clock step: %s\n' "$sclk_path" >&2
     exit 2
 }
 
+if [ "${QWEN_COMPUTE_STATE_PROFILE:-}" != serve-baseline-fixed ]; then
+    printf 'baseline requires compute-state-lease.sh serve-baseline-fixed\n' >&2
+    exit 2
+fi
+if [ "$(ps -o ni= -p "$$" | tr -d ' ')" != 0 ]; then
+    printf 'baseline orchestrator requires nice 0\n' >&2
+    exit 2
+fi
+[ "$required_sclk_mhz" = 1100 ] && [ "$mclk_floor_mhz" = 933 ] || exit 2
 baseline_require_inherited_lease "$state_directory" \
     "${QWEN_VULKAN_EXTERNAL_LEASE_PROOF:-}" "$lease_verifier" || exit 2
 
@@ -184,6 +199,10 @@ registry_cache_k=$("$registry_reader" id "$model_id" cache_type_k)
 registry_cache_v=$("$registry_reader" id "$model_id" cache_type_v)
 registry_flash=$("$registry_reader" id "$model_id" flash_attention)
 ctx_checkpoints=$("$registry_reader" ctx-checkpoint "$model_id")
+registry_q4k_variant=$("$registry_reader" id "$model_id" q4k_variant)
+[ "$registry_q4k_variant" != - ] || registry_q4k_variant=production/4
+registry_q4k_variant=${QWEN_BASELINE_Q4K_VARIANT:-$registry_q4k_variant}
+"$registry_reader" validate-q4k-variant "$registry_q4k_variant" || exit 2
 if [ ! -r "$model_path" ]; then
     printf 'model file is unreadable: %s\n' "$model_path" >&2
     exit 2
@@ -234,9 +253,10 @@ bind_role() {
     printf '%s\t%s\n' "$bind_role_binding" "$bind_role_manifest"
 }
 
+control_binding=$(bind_role control "$control_server") || exit 2
 IFS="$baseline_tab" read -r control_sha256 control_bytes control_manifest_sha256 \
     control_semantics control_series control_manifest <<EOF
-$(bind_role control "$control_server")
+$control_binding
 EOF
 control_patch_series=$(census_manifest_value "$control_manifest" \
     checkpoint_patch_series_sha256 control) || exit 2
@@ -247,10 +267,11 @@ candidate_semantics=-
 candidate_series=-
 candidate_patch_series=-
 if [ "$mode" = bracket ]; then
+    candidate_binding=$(bind_role candidate "$candidate_server") || exit 2
     IFS="$baseline_tab" read -r candidate_sha256 candidate_bytes \
         candidate_manifest_sha256 candidate_semantics candidate_series \
         candidate_manifest <<EOF
-$(bind_role candidate "$candidate_server")
+$candidate_binding
 EOF
     candidate_patch_series=$(census_manifest_value "$candidate_manifest" \
         checkpoint_patch_series_sha256 candidate) || exit 2
@@ -275,7 +296,50 @@ EOF
     rm -r -- "$identity_scratch"
 fi
 
+# shellcheck disable=SC2154  # qwen-home.sh declares the runtime result root
+case $(realpath -m -- "$output_directory") in
+    "$qwen_home_results"/*) ;;
+    *) printf 'baseline acquisitions belong under the runtime results root\n' >&2; exit 2 ;;
+esac
 mkdir -p "$output_directory/arms"
+cp -- "$control_manifest" "$output_directory/control-manifest.tsv"
+if [ "$mode" = bracket ]; then
+    cp -- "$candidate_manifest" "$output_directory/candidate-manifest.tsv"
+fi
+runtime_manifest=$script_directory/runtime-tree-manifest.tsv
+[ -f "$runtime_manifest" ] || runtime_manifest=$script_directory/../runtime-tree-manifest.tsv
+"$script_directory/check-runtime-tree.sh" "$script_directory/.." >"$output_directory/runtime-check.txt" || exit 2
+cp -- "$runtime_manifest" "$output_directory/runtime-tree-manifest.tsv" || exit 2
+python3 - "$runtime_manifest" "$script_directory/.." "$output_directory/runtime-source.tar" <<'PY'
+import hashlib
+import sys
+import tarfile
+from pathlib import Path
+manifest, root, output = sys.argv[1:]
+with tarfile.open(output, "w") as archive:
+    for line in Path(manifest).read_text().splitlines():
+        fields = line.split("\t")
+        if len(fields) == 3 and fields[0].startswith(("remote/", "patches/")):
+            source = Path(root, fields[0])
+            if source.is_symlink() or hashlib.sha256(source.read_bytes()).hexdigest() != fields[1]:
+                raise SystemExit("runtime payload changed before retention")
+            archive.add(source, arcname=fields[0], recursive=False)
+PY
+cp -- "$script_directory/summarize-checkpoint-baseline.py" "$output_directory/acquisition-reader.py"
+cp -- "$script_directory/checkpoint-baseline-lib.sh" "$output_directory/acquisition-lib.sh"
+cp -- "$0" "$output_directory/acquisition-runner.sh"
+cp -- "$sidecar_validator" "$output_directory/acquisition-clock-validator.py"
+cp -- "$sidecar" "$output_directory/acquisition-sampler"
+cp -- "$script_directory/telemetry-broker.c" "$output_directory/acquisition-sampler.c"
+cp -- "$script_directory/compute-state-lease.sh" "$output_directory/acquisition-lease.sh"
+cp -- "$QWEN_COMPUTE_STATE_RECORD" "$output_directory/compute-state.tsv"
+{
+    printf 'key\tvalue\n'
+    printf 'period_ms\t%s\nperiod_tolerance\t%s\ncost_bound_ns\t%s\nmax_gap_ns\t%s\nmax_lost_fraction\t%s\n' \
+        "$sidecar_period_ms" "$sidecar_tolerance" "$sidecar_cost_ns" "$sidecar_max_gap_ns" "$sidecar_max_lost"
+    printf 'allowed_unavailable\tpp_dpm_fclk_surface_mhz\n'
+    printf 'nice\t19\ncpu_affinity\t%s\nsclk_source\tsclk_actual_mhz\n' "$sidecar_cpu"
+} >"$output_directory/sampler-contract.tsv"
 ttft_body=$output_directory/request-ttft.json
 decode_body=$output_directory/request-decode.json
 baseline_request_body "$ttft_body" "$baseline_prompt" "$generate_tokens" \
@@ -287,8 +351,15 @@ decode_request_sha256=$(sha256sum "$decode_body" | cut -d ' ' -f 1)
 
 {
     printf 'key\tvalue\n'
-    printf 'schema\tcheckpoint-baseline-identity-v1\n'
+    printf 'schema\tcheckpoint-baseline-identity-v2\n'
+    for identity_file in runtime-tree-manifest.tsv runtime-source.tar acquisition-reader.py \
+        acquisition-lib.sh acquisition-runner.sh acquisition-clock-validator.py \
+        acquisition-sampler acquisition-sampler.c acquisition-lease.sh compute-state.tsv sampler-contract.tsv; do
+        printf '%s_sha256\t%s\n' "$identity_file" "$(sha256sum "$output_directory/$identity_file" | cut -d ' ' -f 1)"
+    done
     printf 'mode\t%s\n' "$mode"
+    printf 'compute_state_profile\tserve-baseline-fixed\nksm_policy\tpreserve-as-found\n'
+    printf 'q4k_variant\t%s\nthreads\t1\nthreads_batch\t1\ndevice\tVulkan0\ngpu_layers\tall\n' "$registry_q4k_variant"
     printf 'model_id\t%s\n' "$model_id"
     printf 'model_file\t%s\n' "$model_file"
     printf 'model_bytes\t%s\n' "$model_bytes"
@@ -322,17 +393,50 @@ decode_request_sha256=$(sha256sum "$decode_body" | cut -d ' ' -f 1)
 } >"$output_directory/identity.tsv"
 
 teardown_arm() {
-    sh -c 'exec "$0" "$@" 8>&- 9>&-' "$teardown_script" \
+    timeout --signal=TERM --kill-after=5 60 sh -c 'exec "$0" "$@" 8>&- 9>&-' "$teardown_script" \
         >>"$output_directory/teardown.txt" 2>&1 || return 1
 }
 sidecar_pid=''
+sidecar_status=unrun
+arm_directory=''
+arm_reason=-
+cleanup_status=unrun
 stop_sidecar() {
     [ -n "$sidecar_pid" ] || return 0
     kill -TERM "$sidecar_pid" 2>/dev/null || true
-    wait "$sidecar_pid" 2>/dev/null || true
+    sidecar_status=0
+    # The owned child is given a bounded drain; the wait status remains authoritative.
+    python3 -c 'import os, signal, sys, time; time.sleep(5); os.kill(int(sys.argv[1]), signal.SIGKILL)' "$sidecar_pid" 2>/dev/null &
+    sidecar_guard=$!
+    wait "$sidecar_pid" 2>/dev/null || sidecar_status=$?
+    kill -TERM "$sidecar_guard" 2>/dev/null || true
+    wait "$sidecar_guard" 2>/dev/null || true
     sidecar_pid=''
 }
-trap 'stop_sidecar; teardown_arm || true' EXIT
+write_terminal() {
+    [ -n "$arm_directory" ] || return 0
+    printf 'key\tvalue\nstatus\t%s\nreason\t%s\nsidecar_status\t%s\nvalidator_status\t%s\nteardown_status\t%s\nquiescence_status\t%s\n' \
+        "$arm_status" "$arm_reason" "$sidecar_status" "${validator_status:-unrun}" \
+        "$cleanup_status" "${quiescence_status:-unrun}" >"$arm_directory/terminal.tsv"
+}
+cleanup() {
+    original_status=$?
+    trap - EXIT INT TERM
+    stop_sidecar
+    cleanup_status=0
+    teardown_arm || cleanup_status=$?
+    if [ "$original_status" -ne 0 ] && [ -n "$arm_directory" ] && [ ! -f "$arm_directory/terminal.tsv" ]; then
+        arm_status=incomplete
+        [ "$arm_reason" != - ] || arm_reason=interrupted
+        write_terminal
+        printf '%s\t%s\t%s\t%s\tincomplete\t%s\n' "$arm_slot" "$arm_letter" "$arm_role" "$arm_digest" "$arm_reason" >>"$output_directory/arms.tsv"
+    fi
+    printf 'key\tvalue\nstatus\t%s\ncleanup_status\t%s\n' \
+        "$original_status" "$cleanup_status" >"$output_directory/run-terminal.tsv"
+    [ "$original_status" -ne 0 ] || original_status=$cleanup_status
+    exit "$original_status"
+}
+trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -364,12 +468,35 @@ run_arm() {
 
     arm_reason=-
     arm_status=completed
+    sidecar_status=unrun
+    validator_status=unrun
+    quiescence_status=unrun
+    cleanup_status=unrun
+    if [ "$arm_slot" = 01 ]; then
+        quiescence_status=0
+        "$quiescence_poller" --sclk-forced --max-seconds "$cooldown_s" --drm-device "$drm_device" \
+            >"$arm_directory/initial-quiescence.txt" 2>&1 || quiescence_status=$?
+        if [ "$quiescence_status" -ne 0 ]; then
+            arm_status=incomplete
+            arm_reason=quiescence
+            write_terminal
+            printf '%s\t%s\t%s\t%s\tincomplete\tquiescence\n' "$arm_slot" "$arm_letter" "$arm_role" "$arm_digest" >>"$output_directory/arms.tsv"
+            return 1
+        fi
+    fi
+    QWEN_SERVER_HOST=127.0.0.1 \
+    QWEN_ROUTER=0 \
+    QWEN_Q4K_EXPERIMENT_ARM=1 \
+    QWEN_Q4K_VARIANT=$registry_q4k_variant \
     QWEN_LLAMA_SERVER=$arm_server \
     QWEN_MODEL_PATH=$model_path \
         baseline_launch "$arm_directory" "$launch_script" "$profile" \
         "$endpoint" "$ready_deadline" || {
         printf '%s\t%s\t%s\t%s\tfailed\tlaunch\n' "$arm_slot" "$arm_letter" "$arm_role" \
             "$arm_digest" >>"$output_directory/arms.tsv"
+        arm_reason=launch
+        arm_status=failed
+        write_terminal
         return 1
     }
     # The load record ends where the readiness poll did, so the slot and role
@@ -391,6 +518,11 @@ run_arm() {
         arm_status=failed
         arm_reason=tuple_mismatch
     fi
+    if [ "$arm_status" = completed ] && ! baseline_process_identity "$arm_directory" \
+        "$state_directory" "$arm_server" "$arm_digest" "$model_path" "$registry_q4k_variant" "$endpoint"; then
+        arm_status=failed
+        arm_reason=process_identity
+    fi
     if [ "$arm_status" = completed ] && \
         ! baseline_first_token "$arm_directory" "$endpoint" "$ttft_body" "$api_key"; then
         arm_status=failed
@@ -402,22 +534,28 @@ run_arm() {
         # token are their own quantities and a window spanning them would price
         # a clock the steady rate never ran at.
         "$sidecar" "$arm_directory/clock-samples.tsv" \
-            --period-ms "$sidecar_period_ms" --cpu "$sidecar_cpu" --nice 19 \
-            --drm-device "$drm_device" &
+            --period-ms "$sidecar_period_ms" --cpu "$sidecar_cpu" \
+            --drm-device "$drm_device" 2>"$arm_directory/sidecar.stderr" &
         sidecar_pid=$!
+        if ! baseline_await_sampler "$arm_directory/sidecar.stderr" "$sidecar_pid"; then
+            arm_status=failed
+            arm_reason=clock_invariant
+        fi
         window_begin_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
-        if ! baseline_decode_block "$arm_directory" "$endpoint" "$decode_body" \
+        if [ "$arm_status" = completed ] && ! baseline_decode_block "$arm_directory" "$endpoint" "$decode_body" \
             "$api_key" "$repeats" "$generate_tokens"; then
             arm_status=failed
             arm_reason=decode_block
         fi
         window_end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+        sleep 0.3
         stop_sidecar
         printf 'key\tvalue\nclock\tCLOCK_MONOTONIC\nbegin_ns\t%s\nend_ns\t%s\n' \
             "$window_begin_ns" "$window_end_ns" \
             >"$arm_directory/decode-window.tsv"
-        if ! "$sidecar_validator" "$arm_directory/clock-samples.tsv" \
-            --sidecar-status 0 --period-ms "$sidecar_period_ms" \
+        validator_status=0
+        "$sidecar_validator" "$arm_directory/clock-samples.tsv" \
+            --sidecar-status "$sidecar_status" --allow-unavailable pp_dpm_fclk_surface_mhz --expected-nice 19 --expected-cpu-affinity "$sidecar_cpu" --period-ms "$sidecar_period_ms" \
             --period-tolerance "$sidecar_tolerance" \
             --cost-bound-ns "$sidecar_cost_ns" \
             --max-gap-ns "$sidecar_max_gap_ns" \
@@ -426,13 +564,17 @@ run_arm() {
             --window-end-ns "$window_end_ns" \
             --required-sclk-mhz "$required_sclk_mhz" \
             --required-mclk-mhz "$mclk_floor_mhz" \
-            >"$arm_directory/clock-validation.txt" 2>&1; then
+            >"$arm_directory/clock-validation.txt" 2>&1 || validator_status=$?
+        if [ "$sidecar_status" != 0 ] || [ "$validator_status" -ne 0 ] || \
+            ! grep -q 'sclk_source=sclk_actual_mhz' "$arm_directory/clock-validation.txt"; then
             arm_status=failed
             [ "$arm_reason" = - ] && arm_reason=clock_invariant
         fi
     fi
 
+    cleanup_status=0
     teardown_arm || {
+        cleanup_status=$?
         arm_status=failed
         [ "$arm_reason" = - ] && arm_reason=teardown
     }
@@ -440,6 +582,16 @@ run_arm() {
         arm_status=failed
         [ "$arm_reason" = - ] && arm_reason=runtime_evidence
     fi
+    if [ "$arm_status" = completed ]; then
+        quiescence_status=0
+        "$quiescence_poller" --sclk-forced --max-seconds "$cooldown_s" --drm-device "$drm_device" \
+            >"$arm_directory/quiescence.txt" 2>&1 || quiescence_status=$?
+        if [ "$quiescence_status" -ne 0 ]; then
+            arm_status=incomplete
+            arm_reason=quiescence
+        fi
+    fi
+    write_terminal
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$arm_slot" "$arm_letter" "$arm_role" \
         "$arm_digest" "$arm_status" "$arm_reason" >>"$output_directory/arms.tsv"
     [ "$arm_status" = completed ] || return 1
@@ -450,21 +602,12 @@ run_status=0
 for arm_letter in $arm_list; do
     slot_index=$((slot_index + 1))
     slot_label=$(printf '%02d' "$slot_index")
-    if [ "$slot_index" -gt 1 ] && [ "$cooldown_s" -gt 0 ]; then
-        if [ -x "$quiescence_poller" ]; then
-            "$quiescence_poller" --sclk-forced --deadline-s "$cooldown_s" \
-                >>"$output_directory/cooldown.txt" 2>&1 || true
-        else
-            sleep "$cooldown_s"
-        fi
-    fi
     if ! run_arm "$slot_label" "$arm_letter"; then
         run_status=1
         break
     fi
 done
 
-trap - EXIT
 stop_sidecar
 
 if [ "$run_status" -ne 0 ]; then

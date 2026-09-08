@@ -1,14 +1,8 @@
 # shellcheck shell=sh
-# The served session one checkpoint baseline arm is made of: one launch through
-# the guarded chain, one readiness poll, one streamed request that times the
-# first token, a fixed block of identical 64-token requests that measures steady
-# decode, and one teardown. measure-served-decode.sh answers a different
-# question with the same chain -- it loads, sends exactly one request, and tears
-# down -- so its cold load is inseparable from its rate and it retains no token
-# array. The three quantities this file separates exist only inside one session,
-# which is why the driver lives here rather than as a flag on that runner, and
-# that runner's own behavior stays bound to the fixed-64 receipts it already
-# wrote.
+# A baseline arm retains launch-to-readiness, first-content latency, a completed
+# streamed warmup, and repeated ordinary decode requests in one served session.
+# Server decode timing excludes model load; startup can influence later cache,
+# clock and thermal state. Acquisition and reader identities remain separate.
 #
 # This file is sourced and runs nothing. Every function reads its arguments and
 # the paths they name and writes into the arm directory it is given.
@@ -64,35 +58,62 @@ baseline_launch() {
     baseline_profile=$3
     baseline_endpoint=$4
     baseline_deadline=$5
-    baseline_launch_begin_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
-    if ! sh -c 'exec "$0" "$@" 8>&- 9>&-' "$baseline_launch_script" \
-        "$baseline_profile" >"$baseline_arm/launch.txt" 2>&1; then
-        sed -n '1,40p' "$baseline_arm/launch.txt" >&2
-        return 1
-    fi
-    baseline_health_elapsed=0
-    while [ "$baseline_health_elapsed" -lt "$baseline_deadline" ]; do
-        if curl --silent --fail --max-time 5 "$baseline_endpoint/health" \
-            >/dev/null 2>&1; then
-            break
-        fi
-        baseline_health_elapsed=$((baseline_health_elapsed + 1))
-        sleep 1
-    done
-    if [ "$baseline_health_elapsed" -ge "$baseline_deadline" ]; then
-        printf 'the served endpoint did not report health within %s seconds: %s\n' \
-            "$baseline_deadline" "$baseline_endpoint" >&2
-        return 1
-    fi
-    baseline_ready_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
-    {
-        printf 'key\tvalue\n'
-        printf 'launch_begin_ns\t%s\n' "$baseline_launch_begin_ns"
-        printf 'health_ready_ns\t%s\n' "$baseline_ready_ns"
-        printf 'load_wall_ms\t%s\n' \
-            "$(awk -v begin="$baseline_launch_begin_ns" -v end="$baseline_ready_ns" \
-                'BEGIN { printf "%.3f", (end - begin) / 1000000 }')"
-    } >"$baseline_arm/load.tsv"
+    python3 - "$baseline_arm" "$baseline_launch_script" "$baseline_profile" \
+        "$baseline_endpoint" "$baseline_deadline" <<'PY'
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+arm, launcher, profile, endpoint, seconds = sys.argv[1:]
+begin = time.monotonic_ns()
+deadline = time.monotonic() + int(seconds)
+with open(f"{arm}/launch.txt", "wb") as log:
+    process = subprocess.Popen([launcher, profile], stdout=log, stderr=log,
+                               close_fds=True, start_new_session=True)
+    try:
+        status = process.wait(timeout=max(0.001, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        raise SystemExit("launch readiness deadline expired")
+    if status:
+        raise SystemExit(f"launcher exited {status}")
+
+def expired(signum, frame):
+    raise TimeoutError("readiness elapsed deadline expired")
+
+signal.signal(signal.SIGALRM, expired)
+remaining = deadline - time.monotonic()
+if remaining <= 0:
+    raise SystemExit("readiness elapsed deadline expired")
+signal.setitimer(signal.ITIMER_REAL, remaining)
+while time.monotonic() < deadline:
+    try:
+        with urllib.request.urlopen(f"{endpoint}/health", timeout=min(2, deadline - time.monotonic())) as response:
+            if response.status == 200:
+                break
+    except (urllib.error.URLError, TimeoutError):
+        if time.monotonic() >= deadline:
+            raise SystemExit("readiness elapsed deadline expired")
+    time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+else:
+    raise SystemExit("readiness elapsed deadline expired")
+signal.setitimer(signal.ITIMER_REAL, 0)
+ready = time.monotonic_ns()
+Path(f"{arm}/load.tsv").write_text(
+    f"key\tvalue\nlaunch_begin_ns\t{begin}\nhealth_ready_ns\t{ready}\n"
+    f"load_wall_ms\t{(ready-begin)/1e6:.3f}\n")
+PY
 }
 
 # baseline_request_body OUTPUT PROMPT PREDICT SEED STREAM
@@ -142,10 +163,11 @@ baseline_first_token() {
     baseline_key=$4
     baseline_ttft_status=0
     python3 - "$baseline_arm" "$baseline_endpoint" "$baseline_body" \
-        "$baseline_key" <<'PY' || baseline_ttft_status=$?
+        "$baseline_key" "${QWEN_BASELINE_REQUEST_DEADLINE_S:-900}" <<'PY' || baseline_ttft_status=$?
 import json
 import sys
 import time
+import signal
 import urllib.request
 
 arm, endpoint, body_path, api_key = sys.argv[1:5]
@@ -156,27 +178,51 @@ request = urllib.request.Request(
 )
 if api_key:
     request.add_header("Authorization", f"Bearer {api_key}")
+def expired(signum, frame):
+    raise TimeoutError("streamed warmup elapsed deadline expired")
+
+signal.signal(signal.SIGALRM, expired)
+signal.setitimer(signal.ITIMER_REAL, int(sys.argv[5]))
 begin = time.monotonic_ns()
 first = None
-with urllib.request.urlopen(request, timeout=900) as response:
-    for raw in response:
-        line = raw.decode("utf-8").strip()
-        if not line.startswith("data: "):
-            continue
-        payload = line[len("data: "):]
-        if payload == "[DONE]":
-            break
-        event = json.loads(payload)
-        if event.get("content"):
-            first = time.monotonic_ns()
-            break
+terminal = None
+tokens = []
+with open(f"{arm}/warmup.sse", "wb") as retained:
+    with urllib.request.urlopen(request, timeout=int(sys.argv[5])) as response:
+        for raw in response:
+            retained.write(raw)
+            retained.flush()
+            line = raw.decode("utf-8").strip()
+            if not line.startswith("data: "):
+                continue
+            payload = line[len("data: "):]
+            if payload == "[DONE]":
+                break
+            event = json.loads(payload)
+            tokens.extend(event.get("tokens", []))
+            if terminal is not None:
+                raise SystemExit("stream carried an event after terminal completion")
+            if event.get("content") and first is None:
+                first = time.monotonic_ns()
+            if event.get("stop") is True:
+                terminal = event
+end = time.monotonic_ns()
+signal.setitimer(signal.ITIMER_REAL, 0)
+if terminal is None or not isinstance(terminal.get("timings"), dict):
+    raise SystemExit("stream ended before a completed warmup response")
+expected = json.loads(body)["n_predict"]
+if len(tokens) != expected or terminal["timings"].get("predicted_n") != expected:
+    raise SystemExit("streamed warmup token population differs from request")
+with open(f"{arm}/warmup-response.json", "w") as retained:
+    json.dump(terminal, retained)
 if first is None:
     sys.stderr.write("the streamed reply carried no content delta\n")
     raise SystemExit(1)
 with open(f"{arm}/ttft.tsv", "w", encoding="utf-8") as handle:
     handle.write("key\tvalue\n")
     handle.write(f"request_begin_ns\t{begin}\n")
-    handle.write(f"first_token_ns\t{first}\n")
+    handle.write(f"first_content_ns\t{first}\n")
+    handle.write(f"response_end_ns\t{end}\nstatus\tcompleted\n")
     handle.write(f"ttft_ms\t{(first - begin) / 1_000_000:.3f}\n")
 PY
     return "$baseline_ttft_status"
@@ -205,49 +251,39 @@ baseline_decode_block() {
         baseline_repeat_label=$(printf '%02d' "$baseline_repeat_index")
         baseline_repeat_directory=$baseline_arm/repeats/$baseline_repeat_label
         mkdir -p "$baseline_repeat_directory"
+        baseline_request_begin=$(python3 -c 'import time; print(time.monotonic_ns())')
         if [ -n "$baseline_key" ]; then
-            curl --silent --show-error --fail-with-body --max-time 900 \
+            curl --silent --show-error --fail-with-body --max-time "${QWEN_BASELINE_REQUEST_DEADLINE_S:-900}" \
                 --header 'Content-Type: application/json' \
                 --header "Authorization: Bearer $baseline_key" \
                 --data @"$baseline_body" "$baseline_endpoint/completion" \
                 >"$baseline_repeat_directory/response.json" || return 1
         else
-            curl --silent --show-error --fail-with-body --max-time 900 \
+            curl --silent --show-error --fail-with-body --max-time "${QWEN_BASELINE_REQUEST_DEADLINE_S:-900}" \
                 --header 'Content-Type: application/json' \
                 --data @"$baseline_body" "$baseline_endpoint/completion" \
                 >"$baseline_repeat_directory/response.json" || return 1
         fi
+        baseline_request_end=$(python3 -c 'import time; print(time.monotonic_ns())')
+        printf 'key\tvalue\nbegin_ns\t%s\nend_ns\t%s\n' \
+            "$baseline_request_begin" "$baseline_request_end" \
+            >"$baseline_repeat_directory/request-time.tsv"
+        # shellcheck disable=SC2154  # script_directory belongs to the sourcing runner
         python3 - "$baseline_repeat_directory" "$baseline_repeat_label" \
-            "$baseline_predict" >>"$baseline_arm/decode-rows.tsv" <<'PY' || return 1
+            "$baseline_predict" "$script_directory/summarize-checkpoint-baseline.py" \
+            >>"$baseline_arm/decode-rows.tsv" <<'PY' || return 1
 import hashlib
-import json
+import runpy
 import sys
+from pathlib import Path
 
-directory, label, predict = sys.argv[1:4]
-document = json.load(open(f"{directory}/response.json", encoding="utf-8"))
-tokens = document.get("tokens")
-if not isinstance(tokens, list) or len(tokens) != int(predict):
-    raise SystemExit(
-        f"repeat {label} returned {len(tokens) if isinstance(tokens, list) else 'no'} "
-        f"tokens where {predict} were requested"
-    )
-if any(isinstance(value, bool) or not isinstance(value, int) for value in tokens):
-    raise SystemExit(f"repeat {label} token array holds a non-integer entry")
-text = "".join(f"{value}\n" for value in tokens)
-with open(f"{directory}/tokens.txt", "w", encoding="utf-8") as handle:
-    handle.write(text)
-timings = document.get("timings")
-if not isinstance(timings, dict):
-    raise SystemExit(f"repeat {label} reply carries no timings object")
-rate = timings.get("predicted_per_second")
-elapsed = timings.get("predicted_ms")
-if not isinstance(rate, (int, float)) or not rate > 0:
-    raise SystemExit(f"repeat {label} reports no positive decode rate")
-digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-print(
-    label, rate, elapsed, timings.get("prompt_n"), timings.get("predicted_n"),
-    digest, sep="\t",
-)
+directory, label, predict, reader = sys.argv[1:]
+functions = runpy.run_path(reader)
+text, rate, elapsed, prompt_n = functions["response_values"](
+    functions["read_json"](Path(directory) / "response.json"), int(predict))
+Path(directory, "tokens.txt").write_text(text)
+print(label, rate, elapsed, prompt_n, predict,
+      hashlib.sha256(text.encode()).hexdigest(), sep="\t")
 PY
         baseline_repeat_index=$((baseline_repeat_index + 1))
     done
@@ -375,4 +411,79 @@ baseline_compare_tuple() {
         fi
     done
     [ "$baseline_tuple_mismatch" -eq 0 ]
+}
+
+# A broker's first retained sample precedes the decode window marker.
+baseline_await_sampler() {
+    python3 - "$1" "$2" <<'PY'
+import os
+import sys
+import time
+from pathlib import Path
+
+record, pid = sys.argv[1:]
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    os.kill(int(pid), 0)
+    if Path(record).exists() and "telemetry_broker=sampled " in Path(record).read_text():
+        raise SystemExit(0)
+    time.sleep(0.02)
+raise SystemExit("sampler first-sample deadline expired")
+PY
+}
+
+# The process supplies the executable, placement, priority and selected variant.
+baseline_process_identity() {
+    python3 - "$@" <<'PY'
+import hashlib
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+arm, state, server, digest, model, variant, endpoint = sys.argv[1:]
+arm = Path(arm)
+pid = dict(line.split("\t", 1) for line in (arm / "served-tuple.tsv").read_text().splitlines()[1:])["server_pid"]
+process = Path("/proc") / pid
+start = (process / "stat").read_text().rsplit(")", 1)[1].split()[19]
+actual_digest = hashlib.file_digest((process / "exe").open("rb"), "sha256").hexdigest()
+argv = [value for value in (process / "cmdline").read_bytes().decode().split("\0") if value]
+if any(value.startswith("--spec") or value in ("--model-draft", "--mmproj") for value in argv):
+    raise SystemExit("ordinary text baseline refuses speculative or projector argv")
+environment = dict(entry.split("=", 1) for entry in (process / "environ").read_bytes().decode().split("\0") if "=" in entry)
+# The receipt retains the serving argv with credential arguments redacted.
+redacted = list(argv)
+for index, value in enumerate(argv[:-1]):
+    if value in ("--api-key", "--api-key-file"):
+        redacted[index + 1] = "<redacted>"
+(arm / "server-argv.json").write_text(json.dumps(redacted))
+values = {"server_pid": pid, "process_start": start, "server_sha256": actual_digest,
+          "executable": os.readlink(process / "exe"),
+          "nice": str(os.getpriority(os.PRIO_PROCESS, int(pid))),
+          "cpu_affinity": ",".join(str(cpu) for cpu in sorted(os.sched_getaffinity(int(pid))))}
+for flag, name in (("--threads", "threads"), ("--threads-batch", "threads_batch"),
+                   ("--device", "device"), ("--n-gpu-layers", "gpu_layers"),
+                   ("--model", "model"), ("--parallel", "parallel"), ("--port", "port")):
+    indices = [index for index, value in enumerate(argv) if value == flag]
+    if len(indices) != 1 or indices[0] + 1 >= len(argv):
+        raise SystemExit(f"process identity requires exactly one {flag}")
+    values[name] = argv[indices[0] + 1]
+selected = environment.get("GGML_VK_Q4K_VARIANT", "unobserved")
+log = Path(state, "server.log").read_text(errors="replace")
+observed = re.findall(r"q4k_variant=(\S+) q4k_rows=(\d+)", log)
+if not observed or any(key != variant or rows != variant.split("/")[-1] for key, rows in observed):
+    raise SystemExit("server log fails selected Q4_K variant admission")
+values["q4k_variant"] = selected
+(arm / "process-identity.tsv").write_text("key\tvalue\n" + "".join(f"{key}\t{value}\n" for key, value in values.items()))
+if (actual_digest != digest or Path(server).resolve() != (process / "exe").resolve()
+        or values["threads"] != "1" or values["threads_batch"] != "1"
+        or values["device"] != "Vulkan0" or values["gpu_layers"] != "all"
+        or values["port"] != endpoint.rsplit(":", 1)[1]
+        or values["parallel"] != "1" or Path(values["model"]).resolve() != Path(model).resolve()
+        or values["nice"] != "19" or selected != variant):
+    raise SystemExit(f"running process differs from baseline identity: {values}; expected executable={server} digest={digest} model={model} variant={variant}")
+if (process / "stat").read_text().rsplit(")", 1)[1].split()[19] != start:
+    raise SystemExit("process identity changed during acquisition")
+PY
 }

@@ -114,7 +114,7 @@ registered mechanism below is stated against.
   census build reached through an explicit `QWEN_LLAMA_SERVER` since bundle
   assembly refuses an instrumented manifest, the single-model path since router
   mode refuses every speculation key, `QWEN_SPEC_TYPE=draft-mtp` with
-  `QWEN_SPEC_DRAFT_N_MAX=1` so the target verifies exactly two columns, and a
+  `QWEN_SPEC_DRAFT_N_MAX=1` to cap proposals at one; the observed target pass must establish its realized width, and a
   mirrored `C K K C` quadruple whose C arms run the same server with speculation
   off. Each arm binds its request digest, runtime identity, and clock sidecar the
   way every census arm does.
@@ -127,10 +127,13 @@ registered mechanism below is stated against.
   document reasons in; or the absence of a `64,4,2` row, which says the
   verification never reached the wider GEMV and makes every column figure above
   a measurement of something else.
-- Dependency: the served window #55 holds. Nothing in this arm runs on the
-  workstation.
+- Dependency: the served baseline admits the workload, and a compatible census
+  calibration separately admits the instrument. A paired instrumented comparison
+  lacking that calibration states its measured overhead limits. The historical
+  100--140 ms prediction remains a falsifier, including a substantially faster
+  result; prediction failure does not itself reject a valid acquisition.
 
-## The specialization half is a device question, and the workstation says why
+## Q8 helper evidence remains separate from Q4_K specialization
 
 `mul_mat_vec_base.glsl` at the pinned commit `f280b269` declares the geometry as
 three specialization constants, and `mul_mat_vec_q4_k.comp` sizes its
@@ -150,7 +153,7 @@ is one module under three specialization triples rather than three modules. The
 workstation half is therefore module identity, and the register allocation that
 separates the three comes from RADV's own ACO backend on the target part.
 
-`remote/compile-q8-mat-vec-spv.sh` over the pinned clean tree emits the served
+`remote/compile-q8-mat-vec-spv.sh` over the pinned clean tree emits the Q8_0
 mat-vec module and its subgroup-reduction variant, retained in
 `workstation-spirv/spirv-manifest.tsv`:
 
@@ -175,8 +178,8 @@ device-mode run here would report another vendor's allocation under a receipt
 shaped like the appliance's. Nothing labelled "workstation RADV" exists to
 retain.
 
-`remote/raven2-shader-lab/q8-mat-vec-receipt.sh` gained the one flag the
-two-column arm needs. `--num-cols N` sets specialization constant 2 the way
+`remote/raven2-shader-lab/q8-mat-vec-receipt.sh` carries a Q8_0 column-selection
+capability separate from the Q4_K experiment. `--num-cols N` sets specialization constant 2 the way
 `--num-rows` sets constant 1, under the same uint32 value space, the same
 canonical-decimal refusals, and the same rule that a value away from the served
 one requires `--allow-device`; `specialization.tsv` records the column count and
@@ -184,34 +187,54 @@ the served value beside the row count. `remote/test-q8-mat-vec-receipt.sh` cover
 it with five checks over the recorded argv and the retained record, and the
 existing `test-q8-mat-vec-receipt` gate cell keys on both files.
 
-Scope cut, stated rather than made silently: the helper compiles the Q8_0
-mat-vec, and the 4B verifies through `mul_mat_vec_q4_k`. No tracked script
-compiles `mul_mat_vec_q4_k.comp` standalone, and writing one changes no answer
-here, since both counts are pipeline-time specialization and the module digest a
-Q4_K compile would add says nothing about the three row counts. That compile is a
-prerequisite of the lab arm below rather than of this record.
+The Q8_0 receipt proves Q8_0 module and helper behavior. The Q4_K subject
+requires the exact module from the instrumented executable, or a fully matched
+compile whose source, preprocessing definitions, compiler, target and module digest
+join that executable. Retain the extracted module and pipeline receipt. An offline
+RADV compiler with matched target can produce static allocation evidence on a
+workstation; actual delivery and timing remain device measurements.
 
 ## The registered mechanism
 
 Register demand of the GEMV grows with the product `NUM_COLS * NUM_ROWS`, since
 `temp[NUM_COLS][NUM_ROWS]` is per-invocation storage and the unrolled column loop
 holds four `vec4` loads of `b` live per column against a 256-register file per
-lane. A verification pass at two columns therefore occupies fewer waves per SIMD
-than the one-column decode at the same four rows, and lowering `NUM_ROWS` at two
-columns restores the occupancy the second column spent.
+lane. The hypothesis predicts fewer waves per SIMD for two columns at four rows and
+recovered occupancy when fewer rows reduce live storage. The compiler receipts
+and executed pipeline determine whether either occupancy change occurs.
 
-- Lab falsifier, one pipeline creation on the appliance, no teardown window:
-  `remote/raven2-shader-lab/q8-mat-vec-receipt.sh --allow-device --num-cols 2`
-  at `--num-rows 1`, `2`, and `4`. The mechanism is refuted where the three arms
-  report equal `vgprs` and equal `waves_per_simd`, which makes register demand
-  independent of the row count, and equally where the two-column arm at the
-  served row count reports the same `waves_per_simd` as the retained one-column
-  pipeline, which leaves no occupancy step for the second column to have spent.
+- Lab subject: the Q4_K module bound to the instrumented executable. Create
+  `(64,1,2)`, `(64,2,2)` and `(64,4,2)` pipelines through the general lab, retaining
+  the matched `(64,4,1)` control. Read binding count and push-constant size from
+  the matched module/host layout before invocation. For the base mat-vec layout
+  with five storage bindings and 52 push-constant bytes:
+
+  ```sh
+  for rows in 1 2 4; do
+      remote/raven2-shader-lab/lab.sh "$Q4K_SPV" "$RESULTS/q4k-rows-$rows-cols-2" \
+          --spec 0:64 --spec "1:$rows" --spec 2:2 --subgroup 64 \
+          --bindings 5 --push-constants 52
+  done
+  remote/raven2-shader-lab/lab.sh "$Q4K_SPV" "$RESULTS/q4k-rows-4-cols-1" \
+      --spec 0:64 --spec 1:4 --spec 2:1 --subgroup 64 \
+      --bindings 5 --push-constants 52
+  ```
+
+  Equal register allocation and occupancy across row counts refutes the proposed
+  row-driven occupancy mechanism. Match each result to its module and specialization.
 - Bracket falsifier, one served window: under `QWEN_CENSUS_AB_MODE=kernel-delta`,
   the row count the lab selects must shorten the two-column pass's own exclusive
   interval by at least 5%. A smaller move leaves the mechanism real and useless
   as a lever, which is the reading this tree gives an effect below the spread it
   can resolve.
 
-Both falsifiers need the device and neither needs the appliance torn down for
-the lab half. The bracket half queues behind #55 with the attribution arm.
+Pipeline creation uses one reserved, bounded window under the established device
+policy. A static receipt and a served timing answer separate questions.
+
+The realized census retains module, specialization, proposed drafts, target-pass
+widths, accepted and rejected drafts, implementation-specific bonus tokens and
+committed output. A one-token proposal maximum establishes no realized width by
+itself. Verification rounds differ from ordinary `predicted_n - 1` decode graphs.
+The effective rate is committed output tokens divided by draft time plus target
+verification time plus bookkeeping time. Residency and restore costs remain
+recorded. Faster verification can lose overall when draft cost or rejection grows.
