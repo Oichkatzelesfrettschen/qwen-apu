@@ -2309,9 +2309,12 @@ function renderReviewChecklist(card, reviewResult) {
   const completionTokens = reviewResult.completion_tokens === null
     ? '; completion tokens unreported'
     : `; completion tokens ${reviewResult.completion_tokens}`;
-  heading.textContent = `reviewed by ${reviewResult.requested_model}${responseModel}; ` +
-    `finish ${reviewResult.finish_reason}${completionTokens}`;
+  heading.textContent = `reviewed by ${reviewResult.requested_model}`;
   block.append(heading);
+  const diagnostics = document.createElement('div');
+  diagnostics.className = 'review-diagnostics meta';
+  diagnostics.textContent = `finish ${reviewResult.finish_reason}${completionTokens}${responseModel}`;
+  block.append(diagnostics);
   // The structured result remains attached to the live card for diagnosis.
   // Conversation persistence never reads the card, so reasoning text and
   // response usage reach neither saved history nor later model requests.

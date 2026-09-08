@@ -531,8 +531,9 @@ console.log('composed_prompt_bounds=accepted');
 
     const reviewBlock = card.querySelector('.image-review');
     assert.ok(reviewBlock, 'the admitted review rendered no checklist');
-    assert.ok(reviewBlock.children[0].textContent.includes('finish stop; completion tokens 29'),
-      'the review heading omitted validated terminal status or completion usage');
+    assert.equal(reviewBlock.children[0].textContent, 'reviewed by vision-model');
+    assert.ok(reviewBlock.children[1].textContent.includes('finish stop; completion tokens 29'),
+      'the review diagnostics omitted validated terminal status or completion usage');
     assert.equal(reviewBlock.reviewResult.completion_tokens, 29);
     assert.equal(reviewBlock.reviewResult.reasoning_content, 'private review reasoning');
 
