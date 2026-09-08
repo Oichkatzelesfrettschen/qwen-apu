@@ -1,0 +1,11 @@
+role	path	sha256
+reader	remote/summarize-pipeline-family.py	b2e7c0207733109fa5c717d46d7d2d9af248b8213b86f52ff4f7846f839548d5
+acquisition	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/18-I1/pipeline-ledger-decode.tsv	c50111565f5b445592668f0578c322c658faf88dd8bf7c5fb48407e406db515e
+acquisition	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/19-I1/pipeline-ledger-decode.tsv	3b28ecd91bc7175bb0cccd44ee71d2fec579f3d632b03883ffb2e73b4805d3f6
+acquisition	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/22-I1/pipeline-ledger-decode.tsv	92d1cc9cfd03b8385108dc95046a18c3d86953077b337c034d83558355c11932
+acquisition	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/23-I1/pipeline-ledger-decode.tsv	a8d2091d1f78311ffe2185f6b4865f66be4934e1f4504b449ec59fdf0c8a2c39
+acquisition	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/arms/18-I1/pipeline-ledger-decode.tsv	c75c4a619c64b41639b57da645ef0333aa3493248e4fde2ff2b373307c80dddf
+acquisition	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/arms/19-I1/pipeline-ledger-decode.tsv	75a5db8ee7f3e0933020e4ea9c43c14d87f8e4eca04f038aedaa8e1e922b69ec
+acquisition	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/arms/23-I1/pipeline-ledger-decode.tsv	18fa581ca8de957ef18b52e6f8eaac1702bdecf12dc107a9f463c0a23d35def4
+acquisition	evidence/q8-attribution/device-20260905/calibration/arms/18-I1/pipeline-ledger-decode.tsv	049fee01b8d4299b23a32fb37712b683e7bb6ac0a3ba639ef78ff91c829515d6
+refused_acquisition	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/arms/22-I1/pipeline-ledger-decode.tsv	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
