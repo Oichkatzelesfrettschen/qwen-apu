@@ -1,41 +1,41 @@
-arm	ledger	phase	graphs	raw_bracket_sum_ms	bracket_union_ms	cross_pipeline_overlap_fraction	overlap_threshold	family_prefix	pipelines_selected	pipelines_total
+arm	ledger	phase	graphs	raw_bracket_sum_ms	bracket_union_ms	cross_pipeline_overlap_fraction	overlap_threshold	pipeline_ownership	family_ownership	family_prefix	pipelines_selected	pipelines_total
 family	value_format	pipelines	calls_per_graph	bracket_upper_bound_ms	exclusive_lower_bound_ms	ambiguous_overlap_ms_upper_bound	upper_bound_share_of_raw_sum	lower_bound_share_of_raw_sum
 member	value_format	name	calls_per_graph	workgroups_per_graph	bracket_upper_bound_ms	exclusive_bracket_ms	ambiguous_overlap_ms	vgprs	lds	subgroups_per_simd
-arm	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/18-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=6239.772	bracket_union_ms=6175.323	cross_pipeline_overlap_fraction=0.0070	overlap_threshold=0.0500	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=26
+arm	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/18-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=6239.772	bracket_union_ms=6175.323	cross_pipeline_overlap_fraction=0.0070	overlap_threshold=0.0500	pipeline_ownership=conclusive	family_ownership=conclusive	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=26
 family	Q4_K	1	162.000	3289.449	3225.840	44.335	0.5272	0.5170
 family	Q6_K	1	25.000	2310.078	2307.476	2.602	0.3702	0.3698
 member	Q4_K	mul_mat_vec_q4_k_f32_f32	162.000	121232.0	3289.449	3225.840	44.335	64	0	4
 member	Q6_K	mul_mat_vec_q6_k_f32_f32	25.000	83840.0	2310.078	2307.476	2.602	64	512	4
-arm	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/19-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=6276.186	bracket_union_ms=6211.485	cross_pipeline_overlap_fraction=0.0070	overlap_threshold=0.0500	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=26
+arm	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/19-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=6276.186	bracket_union_ms=6211.485	cross_pipeline_overlap_fraction=0.0070	overlap_threshold=0.0500	pipeline_ownership=conclusive	family_ownership=conclusive	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=26
 family	Q4_K	1	162.000	3301.578	3237.611	44.614	0.5260	0.5159
 family	Q6_K	1	25.000	2324.843	2322.241	2.602	0.3704	0.3700
 member	Q4_K	mul_mat_vec_q4_k_f32_f32	162.000	121232.0	3301.578	3237.611	44.614	64	0	4
 member	Q6_K	mul_mat_vec_q6_k_f32_f32	25.000	83840.0	2324.843	2322.241	2.602	64	512	4
-arm	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/22-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=6259.743	bracket_union_ms=6195.168	cross_pipeline_overlap_fraction=0.0070	overlap_threshold=0.0500	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=26
+arm	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/22-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=6259.743	bracket_union_ms=6195.168	cross_pipeline_overlap_fraction=0.0070	overlap_threshold=0.0500	pipeline_ownership=conclusive	family_ownership=conclusive	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=26
 family	Q4_K	1	162.000	3294.593	3230.834	44.421	0.5263	0.5161
 family	Q6_K	1	25.000	2318.246	2315.623	2.623	0.3703	0.3699
 member	Q4_K	mul_mat_vec_q4_k_f32_f32	162.000	121232.0	3294.593	3230.834	44.421	64	0	4
 member	Q6_K	mul_mat_vec_q6_k_f32_f32	25.000	83840.0	2318.246	2315.623	2.623	64	512	4
-arm	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/23-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=6239.709	bracket_union_ms=6175.386	cross_pipeline_overlap_fraction=0.0070	overlap_threshold=0.0500	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=26
+arm	evidence/raven2-vulkan-kernel-census/20260902T2124Z/arms/23-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=6239.709	bracket_union_ms=6175.386	cross_pipeline_overlap_fraction=0.0070	overlap_threshold=0.0500	pipeline_ownership=conclusive	family_ownership=conclusive	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=26
 family	Q4_K	1	162.000	3289.354	3225.873	44.169	0.5272	0.5170
 family	Q6_K	1	25.000	2310.310	2307.712	2.598	0.3703	0.3698
 member	Q4_K	mul_mat_vec_q4_k_f32_f32	162.000	121232.0	3289.354	3225.873	44.169	64	0	4
 member	Q6_K	mul_mat_vec_q6_k_f32_f32	25.000	83840.0	2310.310	2307.712	2.598	64	512	4
-arm	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/arms/18-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=17546.886	bracket_union_ms=17364.312	cross_pipeline_overlap_fraction=0.0073	overlap_threshold=0.0500	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=25
+arm	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/arms/18-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=17546.886	bracket_union_ms=17364.312	cross_pipeline_overlap_fraction=0.0073	overlap_threshold=0.0500	pipeline_ownership=conclusive	family_ownership=conclusive	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=25
 family	Q4_K	1	216.000	10885.061	10712.008	118.590	0.6203	0.6105
 family	Q6_K	1	33.000	5147.344	5136.636	10.708	0.2933	0.2927
 member	Q4_K	mul_mat_vec_q4_k_f32_f32	216.000	247168.0	10885.061	10712.008	118.590	48	0	5
 member	Q6_K	mul_mat_vec_q6_k_f32_f32	33.000	97920.0	5147.344	5136.636	10.708	64	512	4
-arm	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/arms/19-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=17444.259	bracket_union_ms=17262.126	cross_pipeline_overlap_fraction=0.0073	overlap_threshold=0.0500	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=25
+arm	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/arms/19-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=17444.259	bracket_union_ms=17262.126	cross_pipeline_overlap_fraction=0.0073	overlap_threshold=0.0500	pipeline_ownership=conclusive	family_ownership=conclusive	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=25
 family	Q4_K	1	216.000	10852.504	10679.847	118.208	0.6221	0.6122
 family	Q6_K	1	33.000	5100.273	5089.683	10.590	0.2924	0.2918
 member	Q4_K	mul_mat_vec_q4_k_f32_f32	216.000	247168.0	10852.504	10679.847	118.208	48	0	5
 member	Q6_K	mul_mat_vec_q6_k_f32_f32	33.000	97920.0	5100.273	5089.683	10.590	64	512	4
-arm	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/arms/23-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=17548.335	bracket_union_ms=17366.202	cross_pipeline_overlap_fraction=0.0073	overlap_threshold=0.0500	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=25
+arm	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/4b-attribution-20260905/calibration/arms/23-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=17548.335	bracket_union_ms=17366.202	cross_pipeline_overlap_fraction=0.0073	overlap_threshold=0.0500	pipeline_ownership=conclusive	family_ownership=conclusive	family_prefix=mul_mat_vec	pipelines_selected=2	pipelines_total=25
 family	Q4_K	1	216.000	10886.710	10713.614	118.513	0.6204	0.6105
 family	Q6_K	1	33.000	5146.880	5136.180	10.700	0.2933	0.2927
 member	Q4_K	mul_mat_vec_q4_k_f32_f32	216.000	247168.0	10886.710	10713.614	118.513	48	0	5
 member	Q6_K	mul_mat_vec_q6_k_f32_f32	33.000	97920.0	5146.880	5136.180	10.700	64	512	4
-arm	evidence/q8-attribution/device-20260905/calibration/arms/18-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=3071.502	bracket_union_ms=3033.198	cross_pipeline_overlap_fraction=0.0104	overlap_threshold=0.0500	family_prefix=mul_mat_vec	pipelines_selected=1	pipelines_total=25
+arm	evidence/q8-attribution/device-20260905/calibration/arms/18-I1/pipeline-ledger-decode.tsv	decode	graphs=63	raw_bracket_sum_ms=3071.502	bracket_union_ms=3033.198	cross_pipeline_overlap_fraction=0.0104	overlap_threshold=0.0500	pipeline_ownership=conclusive	family_ownership=conclusive	family_prefix=mul_mat_vec	pipelines_selected=1	pipelines_total=25
 family	Q8_0	1	187.000	2441.184	2417.500	18.927	0.7948	0.7871
 member	Q8_0	mul_mat_vec_q8_0_f32_f32	187.000	324128.0	2441.184	2417.500	18.927	40	0	6

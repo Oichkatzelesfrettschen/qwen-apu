@@ -28,14 +28,21 @@ each pipeline name's own type tokens state, quantized format before float, so
 pipeline reads `other` with its members enumerated.
 
 An arm is accepted where its ledger carries exactly one well-formed `graphs`
-row reading `ownership=conclusive` whose `cross_pipeline_overlap_fraction`
-stays inside the row's own `overlap_threshold`. The cross-pipeline half rather
+row stating a valid whole-overlap ownership verdict whose
+`cross_pipeline_overlap_fraction` stays inside the row's own `overlap_threshold`. The cross-pipeline half rather
 than the whole overlap is the gate, because same-pipeline overlap between two
 dispatches of one shader stays inside the family a merge forms while overlap
 against a foreign pipeline is time the instrument attributes to neither. Every
-other ledger is refused whole. Numeric fields must be finite and nonnegative,
+other ledger is refused whole. The output preserves `pipeline_ownership` and
+states `family_ownership` separately; a whole-overlap inconclusive row can
+satisfy family admission when only same-pipeline overlap exceeds the threshold.
+Unsupported IQ, MXFP and NVFP source types stay enumerated in `other`, including
+when a later activation operand names Q8 or F16. Numeric fields must be finite and nonnegative,
 fractions lie in [0, 1], graph counts are canonical positive integers, and
-interval lower/union/upper bounds must agree within ledger rounding. Local
+interval lower/union/upper bounds must agree within ledger rounding. Each
+pipeline union partitions into exclusive and ambiguous time, and pipeline raw
+totals must match the complete graph denominator in both directions. A truncated
+pipeline population therefore refuses before family shares are emitted. Local
 ownership admission does not establish a compatible global instrument
 calibration. The retained
 `q4k-scale-decode/4b-attribution-20260905/calibration/arms/22-I1` ledger is
