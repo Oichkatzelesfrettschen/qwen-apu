@@ -43,6 +43,7 @@ set -eu
 #   QWEN_IMAGE_TAESD_PATH         the Tiny AutoEncoder the sd-cli template names
 #   QWEN_SERVER_PORT              router port, default 8080
 #   QWEN_WEB_BROKER_PORT          broker port, default 8571
+#   QWEN_ADMISSION_BROWSER_REVIEW_TIMEOUT seconds to await the review arm, default 420
 #   QWEN_ADMISSION_RESTORE        0 leaves the appliance down after the run
 
 if [ "$#" -ne 1 ]; then
@@ -1016,6 +1017,7 @@ browser_attempts=${QWEN_ADMISSION_BROWSER_ATTEMPTS:-2}
 browser_load_timeout=${QWEN_ADMISSION_BROWSER_LOAD_TIMEOUT:-180}
 browser_dialog_timeout=${QWEN_ADMISSION_BROWSER_DIALOG_TIMEOUT:-600}
 browser_turn_timeout=${QWEN_ADMISSION_BROWSER_TURN_TIMEOUT:-900}
+browser_review_timeout=${QWEN_ADMISSION_BROWSER_REVIEW_TIMEOUT:-420}
 browser_accepted_attempt=0
 browser_attempt_excerpts=''
 rm -f -- "$browser_report"
@@ -1045,6 +1047,7 @@ if command -v chromium >/dev/null 2>&1; then
                 --load-timeout "$browser_load_timeout" \
                 --dialog-timeout "$browser_dialog_timeout" \
                 --turn-timeout "$browser_turn_timeout" \
+                --review-timeout "$browser_review_timeout" \
                 ${browser_review_flag:+"$browser_review_flag"} \
                 --prompt "$browser_prompt" >"$attempt_report" 2>"$attempt_err"; then
             attempt_tool_call_proposed=yes

@@ -205,6 +205,7 @@
       <button class="act" id="conversation-new">new conversation</button>
       <button class="act" id="conversation-delete-all">delete all saved</button>
     </div>
+    <p class="meta" id="conversation-storage-status"></p>
     <div id="conversation-list"></div>
   </aside>
   <div id="chat-column">
@@ -3814,7 +3815,7 @@ async function send() {
     ? `${prompt}\n\n${imageAttachments.map(attachment =>
         `[image attachment omitted from saved conversation: ${attachment.name}, ${attachment.mime}]`).join('\n')}`
     : content;
-  rememberUserMessage(durableContent, shown);
+  rememberUserMessage(durableContent, shown, imageAttachments);
   // Saved here rather than after the completion, so an HTTP error, a dropped
   // connection, or the page closing during a long generation leaves the
   // prompt in the store it belongs to instead of only in memory.
@@ -4196,6 +4197,18 @@ let conversationStoreRead = null;
 let conversationMutationTail = Promise.resolve();
 let conversationDeletionEpoch = 0;
 
+function renderConversationStorageStatus(store) {
+  const status = $('#conversation-storage-status');
+  if (store.name === 'memory') {
+    status.className = 'meta bad';
+    status.textContent =
+      'Conversation history is temporary and will disappear when this tab closes.';
+    return;
+  }
+  status.className = 'meta';
+  status.textContent = 'Conversation history is saved in this browser.';
+}
+
 function queueConversationMutation(operation, deletionEpoch = conversationDeletionEpoch) {
   /* Serialize persistent mutations so delete-all has one ordered boundary.
      Incrementing conversationDeletionEpoch invalidates every older mutation;
@@ -4212,7 +4225,10 @@ function queueConversationMutation(operation, deletionEpoch = conversationDeleti
 
 function conversationStore() {
   if (!conversationStoreRead) conversationStoreRead = resolveConversationStore();
-  return conversationStoreRead;
+  return conversationStoreRead.then(store => {
+    renderConversationStorageStatus(store);
+    return store;
+  });
 }
 
 async function readConversationRecord(id) {
@@ -4227,8 +4243,14 @@ function rememberSelectedConversation(id) {
   writeBrowserStorage('localStorage', CONVERSATION_SELECTED_KEY, id || null);
 }
 
-function rememberUserMessage(content, shown) {
+function rememberUserMessage(content, shown, omittedAttachments = []) {
   const entry = { role: 'user', content, shown };
+  if (omittedAttachments.length) {
+    entry.omitted_attachments = omittedAttachments.map(attachment => ({
+      name: attachment.name,
+      mime: attachment.mime
+    }));
+  }
   conversationMessages.push(entry);
   if (!conversationTitle) {
     const heading = (shown || content || '').trim().replace(/\s+/g, ' ');
@@ -4502,6 +4524,25 @@ function renderRestoredAssistantTurn(entry, sharedRoot) {
   return view.root;
 }
 
+function restoredUserText(entry) {
+  /* Saved image bytes never enter a conversation record. New records carry a
+     typed description of each omission, while older records retain the
+     omission marker in content. The restored transcript makes both cases
+     visible and names the action needed before the image can be used again. */
+  const shown = entry.shown ?? entry.content;
+  const structuredOmissions = Array.isArray(entry.omitted_attachments)
+    ? entry.omitted_attachments.filter(attachment =>
+      attachment && typeof attachment.name === 'string')
+    : [];
+  const legacyOmission = typeof entry.content === 'string' &&
+    entry.content.includes('[image attachment omitted from saved conversation:');
+  if (!structuredOmissions.length && !legacyOmission) return shown;
+  const names = structuredOmissions.map(attachment => attachment.name).join(', ');
+  const subject = names ? ' (' + names + ')' : '';
+  return shown + '\n[image pixels' + subject +
+    ' were omitted from the saved conversation; reattach the image before continuing this request]';
+}
+
 function restoreTranscript() {
   /* Rebuild `history` and the log from the record. A tool message restores into
      `history` and renders nothing, which is what the live path shows: the log
@@ -4516,7 +4557,7 @@ function restoreTranscript() {
     if (!entry || typeof entry.role !== 'string') continue;
     if (entry.role === 'user') {
       history.push({ role: 'user', content: entry.content });
-      turn('you', 'me').body.textContent = entry.shown ?? entry.content;
+      turn('you', 'me').body.textContent = restoredUserText(entry);
       continuationRoot = null;
       continue;
     }

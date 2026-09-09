@@ -260,6 +260,10 @@ globalThis.webuiConversationTest = {
   async storeName() {
     return (await conversationStore()).name;
   },
+  storageStatus() {
+    const status = $('#conversation-storage-status');
+    return { className: status.className, text: status.textContent };
+  },
   featureRosterOnce,
   clickSetKey(value) {
     $('#api-key').value = value;
@@ -339,6 +343,9 @@ globalThis.webuiConversationTest = {
   },
   async list() {
     return (await conversationStore()).list();
+  },
+  async writeRecord(record) {
+    return (await conversationStore()).write(record);
   },
   read(id) {
     return readConversationRecord(id);
@@ -557,6 +564,8 @@ first.document.querySelector('#artifact-origin').value = ARTIFACT_ORIGIN;
 
 assert.equal(await first.api.storeName(), 'indexeddb',
   'the page did not select IndexedDB where the browser offers it');
+assert.equal(first.api.storageStatus().text,
+  'Conversation history is saved in this browser.');
 
 const savedId = await first.api.runFixtureTurn(fixture);
 await flushPromises();
@@ -737,6 +746,32 @@ const serializedMultimodalRecord = JSON.stringify(multimodalRecord);
 assert.ok(serializedMultimodalRecord.includes('image attachment omitted from saved conversation'));
 assert.ok(!serializedMultimodalRecord.includes('iVBORw0KGgo='),
   'saved history retained image bytes');
+assert.equal(JSON.stringify(multimodalRecord.messages.find(message => message.role === 'user')
+  .omitted_attachments), JSON.stringify([{ name: 'fixture.png', mime: 'image/png' }]));
+await first.api.startNewConversation();
+await first.api.switchConversation(multimodalRecord.id);
+await flushPromises();
+assert.ok(first.api.transcript().some(text =>
+  text.includes('image pixels (fixture.png) were omitted') &&
+  text.includes('reattach the image')),
+'restored multimodal turn hid the omitted-pixels reattachment warning');
+
+const legacyImageRecord = {
+  id: 'legacy-image-record',
+  title: 'legacy image',
+  updated: Date.now() + 1,
+  messages: [{
+    role: 'user',
+    shown: 'legacy prompt\n[legacy.png]',
+    content: 'legacy prompt\n\n[image attachment omitted from saved conversation: legacy.png, image/png]'
+  }]
+};
+await first.api.writeRecord(legacyImageRecord);
+await first.api.switchConversation(legacyImageRecord.id);
+await flushPromises();
+assert.ok(first.api.transcript().some(text =>
+  text.includes('image pixels were omitted') && text.includes('reattach the image')),
+'legacy omission marker restored without a visible reattachment warning');
 const messagesBeforeStaleAdmission = first.api.state().messages.length;
 first.api.setRequestModel('image-capable');
 first.api.setAttachments([{
@@ -1508,6 +1543,9 @@ const cascadeId = await cascadePage.api.runFixtureTurn(fixture);
 await flushPromises();
 assert.equal(await cascadePage.api.storeName(), 'memory',
   'a call that failed on two stores did not reach the third');
+assert.ok(cascadePage.api.storageStatus().text.includes(
+  'temporary and will disappear when this tab closes'),
+'the in-tab store was presented as durable conversation history');
 const cascadeList = await cascadePage.api.list();
 assert.equal(cascadeList.length, 1,
   'the record was lost after two stores refused it in the same call');

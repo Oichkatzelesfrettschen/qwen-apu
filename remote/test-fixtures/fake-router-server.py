@@ -397,6 +397,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # page loads before a human types one into its own field.
             self.serve_page()
             return
+        if parsed.path == "/roster.json":
+            # The real --path handler serves every file staged beside the page.
+            # The fallback page reads this generated authority before it
+            # decides whether an artifact has a registered review model.
+            self.serve_static_file("roster.json", "application/json")
+            return
         if parsed.path == "/health":
             self.send_json(200, {"status": "ok"})
             return
@@ -438,7 +444,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_error_object(404, f"no route: {parsed.path}", "not_found_error")
 
     def serve_page(self):
-        path = os.path.join(self.settings["static"], "index.html")
+        self.serve_static_file("index.html", "text/html; charset=utf-8")
+
+    def serve_static_file(self, filename, content_type):
+        path = os.path.join(self.settings["static"], filename)
         try:
             with open(path, "rb") as handle:
                 body = handle.read()
@@ -446,7 +455,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error_object(404, "no page is served", "not_found_error")
             return
         self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
