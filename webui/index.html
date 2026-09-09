@@ -3033,11 +3033,12 @@ async function streamCompletion(messages, view, webPermission, imagePermission) 
       if (delta.reasoning_content) {
         if (first === null) first = performance.now();
         streamChunks++; reasoning += delta.reasoning_content; view.thinkBody.textContent = reasoning;
-        if (!view.thinkShown) { view.turn.root.insertBefore(view.think, view.turn.body); view.thinkShown = true; }
+        if (!view.sourceEvidence && !view.thinkShown) { view.turn.root.insertBefore(view.think, view.turn.body); view.thinkShown = true; }
       }
       if (delta.content) {
         if (first === null) first = performance.now();
-        streamChunks++; answer += delta.content; view.turn.body.textContent = answer;
+        streamChunks++; answer += delta.content;
+        if (!view.sourceEvidence && !view.deferAnswer) view.turn.body.textContent = answer;
       }
       logEl.scrollTop = logEl.scrollHeight;
     }
@@ -3103,22 +3104,18 @@ function openTurnView(sharedRoot) {
   return { turn: t, think, thinkBody, thinkShown: false, meta };
 }
 
+function missingSourceNotice() {
+  return 'Source retrieval is incomplete. No source-grounded answer was produced. ' +
+    'Any successful tool results remain in this conversation. Retry or choose another source. ' +
+    'For a separate answer from general model knowledge, turn Web off and ask again.';
+}
+
+function webToolFailure(status, text) {
+  return { outcome: 'failure', status, evidence: {kind: 'none', usable: false}, text };
+}
+
 async function executeWebTool(toolName, params, model, resultHandleTurn = null,
                               turnGeneration = conversationGeneration) {
-  /* Run one tool through llama-server's executor and return the text it gives.
-
-     The top-level `model` key is what the router reads to select the child,
-     as it does for every model-scoped POST, and the child's executor reads
-     `tool`, `params`, and `stream` alone, so the key routes the call and
-     stays out of the tool's arguments.
-
-     `POST /tools` invokes the named tool with the `params` object taken
-     verbatim from the request body (server-tools.cpp:2076-2081) and answers
-     with `plain_text_response` for a result and `error` for a refusal, because
-     `mcp_result_to_response` (server-mcp.cpp:196-212) maps an MCP `isError`
-     result onto the error key at HTTP 200. A refusal is therefore read from
-     the body rather than from the status, which is the shape a spent grant and
-     an argument outside its authorization both arrive in. */
   let response;
   try {
     response = await fetch('./tools', {
@@ -3126,31 +3123,38 @@ async function executeWebTool(toolName, params, model, resultHandleTurn = null,
       headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ model, tool: toolName, params, stream: false })
     });
-  } catch (error) {
-    return `The ${toolName} call did not reach the server: ${error.message || error}`;
+  } catch {
+    return webToolFailure('transport_error', 'The tool could not reach the server.');
   }
-  let payload = null;
-  try { payload = await response.json(); } catch { payload = null; }
-  if (payload && typeof payload.error === 'string') {
-    return truncateToolResult(`The ${toolName} call was refused: ${payload.error}`);
+  let payload;
+  try { payload = await response.json(); } catch {
+    return webToolFailure('malformed_response', 'The tool returned an unreadable response.');
   }
-  if (!response.ok) {
-    return `The ${toolName} call returned HTTP ${response.status} and no result.`;
+  let result;
+  try {
+    result = JSON.parse(typeof payload.error === 'string'
+      ? payload.error : payload.plain_text_response);
+  } catch {
+    return webToolFailure('untyped_response', 'The tool returned no usable execution record.');
   }
-  if (!payload || typeof payload.plain_text_response !== 'string') {
-    return `The ${toolName} call returned HTTP ${response.status} with a body ` +
-           'that carries no result text.';
+  if (result?.schema !== 'qwen.web-tool-outcome' || result.version !== 1 ||
+      !['success', 'failure'].includes(result.outcome) ||
+      typeof result.status !== 'string' || typeof result.text !== 'string' ||
+      typeof result.evidence?.usable !== 'boolean' ||
+      !['none', 'search_snippets', 'fetched_page'].includes(result.evidence.kind)) {
+    return webToolFailure('malformed_response', 'The tool returned an invalid execution record.');
   }
-  let resultText = payload.plain_text_response;
+  if (!response.ok || typeof payload.error === 'string' || result.outcome !== 'success') {
+    return {...result, outcome: 'failure', evidence: {kind: 'none', usable: false}};
+  }
   if (toolName === WEB_SEARCH_TOOL_NAME) {
     try {
-      resultText = modelVisibleSearchResult(
-        resultText, resultHandleTurn, model, turnGeneration);
-    } catch (error) {
-      return `The ${toolName} result was refused by the page: ${error.message || error}`;
+      result.text = modelVisibleSearchResult(result.text, resultHandleTurn, model, turnGeneration);
+    } catch {
+      return webToolFailure('invalid_result_handle', 'The search result could not be admitted.');
     }
   }
-  return truncateToolResult(resultText);
+  return {...result, text: truncateToolResult(result.text)};
 }
 
 function searchRequestParams(fields, authorization) {
@@ -3255,12 +3259,11 @@ function parseCompletedImageResult(text) {
   return { sha256: parsed.sha256, provenanceUrl: parsed.provenance_url };
 }
 
-function buildImageToolResultSummary(result) {
-  // The tool message the model reads back carries the sha256 and the
-  // provenance URL alone -- never the image bytes and never the grant, which
-  // is spent inside the request this summary follows and stays out of
-  // `history` the same way the search grant does.
-  return `Image generated: sha256 ${result.sha256}, provenance ${result.provenanceUrl}.`;
+function buildImageToolResultSummary(artifactReference) {
+  /* The model receives only a conversation-local reference to the verified
+     card. The card owns every route and action; model-authored Markdown can
+     therefore describe an image but cannot become an artifact control. */
+  return `Image artifact ${artifactReference} is available in this conversation.`;
 }
 
 // The artifact listener answers a completed generation from disk, and the turn
@@ -3269,7 +3272,23 @@ function buildImageToolResultSummary(result) {
 // rather than holding the send button for the generation timeout.
 const ARTIFACT_FETCH_TIMEOUT_MS = 60000;
 
-async function loadArtifactBlobUrl(sha256, callerSignal) {
+const ARTIFACT_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+
+async function responseBytes(response, subject) {
+  if (!response.ok) {
+    throw new Error(`the ${subject} fetch returned HTTP ${response.status}`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+function verifiedDigest(bytes, expected, subject) {
+  const observed = bytesToHex(sha256Bytes(bytes));
+  if (observed !== expected) {
+    throw new Error(`the ${subject} bytes hash to ${observed}, not ${expected}`);
+  }
+}
+
+async function loadArtifactBlobUrl(result, callerSignal) {
   /* Fetch the artifact PNG with the same credential header the page sends
      for chat -- an <img src> cannot carry that header, and the hash never
      substitutes for it in a query parameter -- and hand back a local blob
@@ -3281,6 +3300,9 @@ async function loadArtifactBlobUrl(sha256, callerSignal) {
      reads the record's identity and composes the image route itself. The
      origin is the artifact listener's, because that service owns the routes
      and the router proxies none of them. */
+  if (!result || !ARTIFACT_DIGEST_PATTERN.test(result.sha256 || '')) {
+    throw new Error('the artifact sha256 must be 64 lowercase hexadecimal characters');
+  }
   const origin = artifactOrigin();
   const controller = new AbortController();
   let timedOut = false;
@@ -3294,12 +3316,11 @@ async function loadArtifactBlobUrl(sha256, callerSignal) {
     controller.abort();
   }, ARTIFACT_FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(`${origin}/artifacts/${sha256}.png`,
+    const response = await fetch(`${origin}/artifacts/${result.sha256}.png`,
       { mode: 'cors', headers: authHeaders(), signal: controller.signal });
-    if (!response.ok) {
-      throw new Error(`the artifact fetch returned HTTP ${response.status}`);
-    }
-    const blob = await response.blob();
+    const bytes = await responseBytes(response, 'artifact');
+    verifiedDigest(bytes, result.sha256, 'artifact');
+    const blob = new Blob([bytes], { type: 'image/png' });
     return URL.createObjectURL(blob);
   } catch (error) {
     if (error.name === 'AbortError') {
@@ -3322,7 +3343,7 @@ async function renderImageArtifactCard(container, fields, result, lineage, signa
      throw what the fetch refused. The turn ends on the artifact rather than
      ahead of it: a card whose image never arrives would otherwise leave the
      model told the image is present while the page shows an empty frame. */
-  const blobUrl = await loadArtifactBlobUrl(result.sha256, signal);
+  const blobUrl = await loadArtifactBlobUrl(result, signal);
   const card = document.createElement('figure');
   card.className = 'image-artifact';
   const img = document.createElement('img');
@@ -3370,6 +3391,23 @@ async function renderImageArtifactCard(container, fields, result, lineage, signa
   // reading them out of a store. The returned record is the exact array entry
   // this card owns, so removing the card can splice that one entry back out.
   const artifactRecord = rememberArtifact(originEntry, originGeneration, fields, result);
+  if (!artifactRecord) {
+    URL.revokeObjectURL(blobUrl);
+    throw new Error('the artifact belongs to a conversation that is no longer active');
+  }
+  const openLink = document.createElement('a');
+  openLink.className = 'act image-artifact-open';
+  openLink.textContent = 'open';
+  openLink.href = blobUrl;
+  openLink.target = '_blank';
+  openLink.rel = 'noopener';
+  card.append(openLink);
+  const downloadLink = document.createElement('a');
+  downloadLink.className = 'act image-artifact-download';
+  downloadLink.textContent = 'download';
+  downloadLink.href = blobUrl;
+  downloadLink.download = `${artifactRecord.reference}.png`;
+  card.append(downloadLink);
   const removeButton = document.createElement('button');
   removeButton.className = 'act';
   removeButton.textContent = 'remove image';
@@ -3392,6 +3430,7 @@ async function renderImageArtifactCard(container, fields, result, lineage, signa
   img.src = blobUrl;
   container.append(card);
   void saveConversation();
+  return artifactRecord;
 }
 
 async function postCancelBestEffort(cancelToolName, model) {
@@ -3483,8 +3522,9 @@ async function executeImageGeneration(stateEl, artifactContainer, toolName, fiel
       renderImageState(stateEl, `Image failed: ${reason}`, true);
       return { ok: false, text: `The image did not complete: ${reason}` };
     }
+    let artifactRecord;
     try {
-      await renderImageArtifactCard(
+      artifactRecord = await renderImageArtifactCard(
         artifactContainer, fields, result, lineage, cancellationController.signal);
     } catch (error) {
       // The service holds the artifact and the page failed to read it, so the
@@ -3505,7 +3545,7 @@ async function executeImageGeneration(stateEl, artifactContainer, toolName, fiel
       return { ok: false, text: `The image did not complete: ${reason}` };
     }
     renderImageState(stateEl, 'Image complete');
-    return { ok: true, text: buildImageToolResultSummary(result) };
+    return { ok: true, text: buildImageToolResultSummary(artifactRecord.reference) };
   } finally {
     clearTimeout(timeoutId);
     cancelButton.remove();
@@ -3540,6 +3580,19 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
      A refusal answers the call with a tool message so the model reads that the
      search did not run. */
   let refused = false;
+  let webFailed = false;
+  const answerTool = (callId, toolName, content, generation) => {
+    if (WEB_TOOL_NAMES.includes(toolName)) {
+      const result = typeof content === 'object' && content !== null
+        ? content : webToolFailure('page_refused', String(content));
+      webFailed ||= result.outcome !== 'success' || !result.evidence.usable;
+      if (result.outcome === 'success' && result.evidence.usable &&
+          result.evidence.kind === 'fetched_page') (view.sourceEvidence ||= {fetched: false}).fetched = true;
+      answerCall(callId, toolName, JSON.stringify(result), generation);
+    } else {
+      answerCall(callId, toolName, content, generation);
+    }
+  };
   for (let index = 0; index < calls.length; index++) {
     const toolName = calls[index].name;
     const callId = callIds[index];
@@ -3547,7 +3600,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       // The permission snapshot governs both advertisement and execution. The
       // visible toggle already names the next turn.
       refused = true;
-      answerCall(callId, toolName,
+      answerTool(callId, toolName,
         `The web surface is off for this turn; ${toolName} did not run.`, turnGeneration);
       continue;
     }
@@ -3558,7 +3611,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       // a grant, a provider budget, and a fetch allowance for a reply nobody
       // reads. The model reads the same refusal shape a denial produces.
       refused = true;
-      answerCall(callId, toolName,
+      answerTool(callId, toolName,
         `The round budget is exhausted; ${toolName} did not run.`, turnGeneration);
       continue;
     }
@@ -3567,7 +3620,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       // fetch allowance, search allowance, approval, or provider budget can
       // move. Both web tools use the same proposal-model snapshot.
       refused = true;
-      answerCall(callId, toolName,
+      answerTool(callId, toolName,
         `The ${toolName} call did not run: it was proposed by model ${proposalModel}, ` +
         `the current model is ${requestModel}.`, turnGeneration);
       continue;
@@ -3576,26 +3629,26 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
     if (toolName === IMAGE_TOOL_NAME) {
       if (!imagePermission) {
         refused = true;
-        answerCall(callId, toolName,
+        answerTool(callId, toolName,
           `The image surface is off for this turn; ${toolName} did not run.`, turnGeneration);
         continue;
       }
       if (roundBudgetExhausted) {
         refused = true;
-        answerCall(callId, toolName,
+        answerTool(callId, toolName,
           `The round budget is exhausted; ${toolName} did not run.`, turnGeneration);
         continue;
       }
       if (requestModel !== proposalModel) {
         refused = true;
-        answerCall(callId, toolName,
+        answerTool(callId, toolName,
           `The ${toolName} call did not run: it was proposed by model ${proposalModel}, ` +
           `the current model is ${requestModel}.`, turnGeneration);
         continue;
       }
       if (imageBudget.remaining <= 0) {
         refused = true;
-        answerCall(callId, toolName,
+        answerTool(callId, toolName,
           `The per-turn budget of ${IMAGE_GENERATE_BUDGET_PER_TURN} image generations is spent; ` +
           'this image did not run.', turnGeneration);
         continue;
@@ -3609,7 +3662,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
         imageFields = applyImageSchemaBounds(proposedImageFields(calls[index].args), imageBounds);
       } catch (error) {
         refused = true;
-        answerCall(callId, toolName, `The image did not run: ${error.message || error}`, turnGeneration);
+        answerTool(callId, toolName, `The image did not run: ${error.message || error}`, turnGeneration);
         continue;
       }
       imageBudget.remaining--;
@@ -3621,13 +3674,13 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
         // dialog nothing will close.
         refused = true;
         renderImageState(openImageState(view), `Image failed: ${imageOutcome.reason}`, true);
-        answerCall(callId, toolName,
+        answerTool(callId, toolName,
           `The image did not run: ${imageOutcome.reason}.`, turnGeneration);
         continue;
       }
       if (imageOutcome.decision === 'once' && requestModel !== proposalModel) {
         refused = true;
-        answerCall(callId, toolName,
+        answerTool(callId, toolName,
           `The image did not run: it was proposed by model ${proposalModel}, ` +
           `the current model is ${requestModel}.`, turnGeneration);
         continue;
@@ -3640,10 +3693,10 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
           { state: { correctionsUsed: 0 }, model: proposalModel, cancelToolName: imageCancelToolName,
             bounds: imageBounds });
         if (!execution.ok) refused = true;
-        answerCall(callId, toolName, execution.text, turnGeneration);
+        answerTool(callId, toolName, execution.text, turnGeneration);
       } else {
         refused = true;
-        answerCall(callId, toolName, imageOutcome.reason
+        answerTool(callId, toolName, imageOutcome.reason
           ? `The image did not run: ${imageOutcome.reason}.`
           : 'The user refused this image generation. It did not run.', turnGeneration);
       }
@@ -3653,7 +3706,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
     if (toolName === WEB_FETCH_TOOL_NAME) {
       if (fetchBudget.remaining <= 0) {
         refused = true;
-        answerCall(callId, toolName,
+        answerTool(callId, toolName,
           `The per-turn budget of ${WEB_FETCH_BUDGET_PER_TURN} fetches is spent; ` +
           'this fetch did not run.', turnGeneration);
         continue;
@@ -3664,7 +3717,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
           calls[index].args, resultHandleTurn, proposalModel, turnGeneration);
       } catch (error) {
         refused = true;
-        answerCall(callId, toolName, `The fetch did not run: ${error.message || error}`, turnGeneration);
+        answerTool(callId, toolName, `The fetch did not run: ${error.message || error}`, turnGeneration);
         continue;
       }
       if (requestModel !== proposalModel) {
@@ -3675,13 +3728,13 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
         // and a changed picker is named here rather than surfaced as an
         // opaque signature failure.
         refused = true;
-        answerCall(callId, toolName,
+        answerTool(callId, toolName,
           `The fetch did not run: it was proposed by model ${proposalModel}, ` +
           `the current model is ${requestModel}.`, turnGeneration);
         continue;
       }
       fetchBudget.remaining--;
-      answerCall(callId, toolName, await executeWebTool(
+      answerTool(callId, toolName, await executeWebTool(
         toolName, params, proposalModel, resultHandleTurn, turnGeneration), turnGeneration);
       continue;
     }
@@ -3691,7 +3744,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       // for, and answers every other call with a tool message rather than
       // posting a name it made no boundary for.
       refused = true;
-      answerCall(callId, toolName,
+      answerTool(callId, toolName,
         `The served path executes no tool named ${toolName} in this turn.`, turnGeneration);
       continue;
     }
@@ -3699,7 +3752,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       // The cap bounds approval-and-execution rather than proposals, so a
       // call refused here opened no dialog and spent no grant.
       refused = true;
-      answerCall(callId, toolName,
+      answerTool(callId, toolName,
         `The per-turn budget of ${WEB_SEARCH_BUDGET_PER_TURN} search approvals is spent; ` +
         'this search did not run.', turnGeneration);
       continue;
@@ -3709,7 +3762,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       fields = proposedSearchFields(calls[index].args);
     } catch (error) {
       refused = true;
-      answerCall(callId, toolName, `The search did not run: ${error.message || error}`, turnGeneration);
+      answerTool(callId, toolName, `The search did not run: ${error.message || error}`, turnGeneration);
       continue;
     }
     searchBudget.remaining--;
@@ -3721,28 +3774,29 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       // continuation the turn then refuses. The grant is left unspent; it
       // expires on the broker's own clock.
       refused = true;
-      answerCall(callId, toolName,
+      answerTool(callId, toolName,
         `The search did not run: it was proposed by model ${proposalModel}, ` +
         `the current model is ${requestModel}.`, turnGeneration);
       continue;
     }
     if (outcome.decision === 'once') {
-      answerCall(callId, toolName, await executeWebTool(
+      answerTool(callId, toolName, await executeWebTool(
         toolName, searchRequestParams(fields, outcome.authorization), proposalModel,
         resultHandleTurn, turnGeneration), turnGeneration);
     } else {
       refused = true;
-      answerCall(callId, toolName, outcome.reason
+      answerTool(callId, toolName, outcome.reason
         ? `The search did not run: ${outcome.reason}.`
         : 'The user refused this web search. It did not run.', turnGeneration);
     }
   }
-  if (refused) {
+  if (refused && !webFailed) {
     const note = document.createElement('div');
     note.className = 'meta bad';
     note.textContent = 'a proposed call went unrun; the model continues without it';
     view.turn.root.append(note);
   }
+  return {webFailed};
 }
 
 async function send() {
@@ -3910,10 +3964,13 @@ async function send() {
   // Every round of this turn renders into one turn block, so a tool result's
   // artifact card and the answer the next round writes about it stay together.
   let turnRoot = null;
+  const sourceEvidence = webPermission ? {fetched: false} : null;
   try {
     for (let round = 0; round < CONTINUATION_CAP; round++) {
       const view = openTurnView(turnRoot);
       turnRoot = view.turn.root;
+      view.sourceEvidence = sourceEvidence;
+      view.deferAnswer = imagePermission;
       // buildRequestBody reads `requestModel` at request time, so this
       // snapshot names the model that proposed whatever tool_calls the
       // stream returns; the approval and the executor both compare the
@@ -3933,7 +3990,13 @@ async function send() {
       // this page no longer holds, so it stops rather than appending to a
       // fresh one.
       if (turnGeneration !== conversationGeneration) return;
-      const msg = { role: 'assistant', content: outcome.answer };
+      const sourceMissing = webPermission && !outcome.calls.length && !sourceEvidence.fetched;
+      const answer = sourceMissing ? missingSourceNotice()
+        : imagePermission && !outcome.calls.length
+          ? 'Use the image card for Open, Download, and Review. Model-written links below are unverified.\n\n' + outcome.answer
+          : outcome.answer;
+      if (webPermission || imagePermission) view.turn.body.textContent = outcome.calls.length ? '' : answer;
+      const msg = { role: 'assistant', content: outcome.calls.length && webPermission ? '' : answer };
       let callIds = [];
       if (outcome.calls.length) {
         callIds = outcome.calls.map(() => `call_${toolCallSequence++}`);
@@ -3943,7 +4006,12 @@ async function send() {
         }));
       }
       history.push(msg);
-      rememberAssistantMessage(msg, outcome.model, outcome.reasoning);
+      const savedAssistant = rememberAssistantMessage(msg, outcome.model,
+        webPermission ? '' : outcome.reasoning);
+      if (webPermission) savedAssistant.tool_diagnostic = {
+        answer: outcome.answer, reasoning: outcome.reasoning,
+        source_obtained: sourceEvidence.fetched, completion: sourceMissing ? 'incomplete' : 'pending'
+      };
       if (!outcome.calls.length) {
         void saveConversation();
         return;
@@ -3958,11 +4026,20 @@ async function send() {
       // no second GET /tools.
       const { cancelToolName: imageCancelToolName, bounds: imageBounds } =
         await resolveImageTools(requestModel, modelStateGeneration);
-      await runProposedTools(
+      const toolOutcome = await runProposedTools(
         outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
         searchBudget, turnGeneration, proposalModel, webPermission,
         imagePermission, imageBudget, imageCancelToolName, imageBounds, resultHandleTurn);
       if (turnGeneration !== conversationGeneration) return;
+      if (toolOutcome.webFailed) {
+        const notice = missingSourceNotice();
+        const noticeView = openTurnView(turnRoot);
+        noticeView.turn.body.textContent = notice;
+        history.push({role: 'assistant', content: notice});
+        rememberAssistantMessage({content: notice}, 'application', '');
+        void saveConversation();
+        return;
+      }
       void saveConversation();
       if (requestModel !== proposalModel) {
         // The picker stays enabled while a tool request is in flight, so
@@ -4359,6 +4436,18 @@ function rememberToolMessage(callId, toolName, content) {
   });
 }
 
+function nextArtifactReference() {
+  let highest = 0;
+  for (const message of conversationMessages) {
+    for (const artifact of (message && message.artifacts) || []) {
+      const match = typeof artifact.reference === 'string' &&
+        artifact.reference.match(/^image-([1-9][0-9]*)$/);
+      if (match) highest = Math.max(highest, Number(match[1]));
+    }
+  }
+  return `image-${highest + 1}`;
+}
+
 function rememberArtifact(entry, entryGeneration, fields, result) {
   /* Record the two identifying fields the tool result carries and the geometry
      the approval bound, under the message entry the caller names -- the
@@ -4372,6 +4461,7 @@ function rememberArtifact(entry, entryGeneration, fields, result) {
   if (!entry || entryGeneration !== conversationGeneration) return null;
   if (!Array.isArray(entry.artifacts)) entry.artifacts = [];
   const record = {
+    reference: nextArtifactReference(),
     sha256: result.sha256,
     provenanceUrl: result.provenanceUrl,
     prompt: fields.prompt,
@@ -4507,7 +4597,7 @@ function restoredCallSequence(messages) {
   return highest + 1;
 }
 
-function renderRestoredArtifactCard(container, artifact) {
+function renderRestoredArtifactCard(container, artifact, entry) {
   /* Rebuild one artifact card from its digest. The card takes its place in the
      turn while this call runs, so a restore that reads several artifacts over
      the network keeps each one between the round that generated it and the
@@ -4542,7 +4632,7 @@ function renderRestoredArtifactCard(container, artifact) {
   void (async () => {
     let blobUrl = null;
     try {
-      blobUrl = await loadArtifactBlobUrl(artifact.sha256, controller.signal);
+      blobUrl = await loadArtifactBlobUrl(artifact, controller.signal);
     } catch (error) {
       restoredArtifactControllers.delete(controller);
       if (restoreGeneration !== conversationGeneration) return;
@@ -4563,6 +4653,36 @@ function renderRestoredArtifactCard(container, artifact) {
     image.alt = artifact.prompt || '';
     image.src = blobUrl;
     card.insertBefore(image, caption);
+    const openLink = document.createElement('a');
+    openLink.className = 'act image-artifact-open';
+    openLink.textContent = 'open';
+    openLink.href = blobUrl;
+    openLink.target = '_blank';
+    openLink.rel = 'noopener';
+    card.append(openLink);
+    const downloadLink = document.createElement('a');
+    downloadLink.className = 'act image-artifact-download';
+    downloadLink.textContent = 'download';
+    downloadLink.href = blobUrl;
+    downloadLink.download = `${artifact.reference}.png`;
+    card.append(downloadLink);
+    const reviewButton = document.createElement('button');
+    reviewButton.className = 'act image-review-button';
+    reviewButton.textContent = 'review';
+    const reviewModel = registeredReviewModel(artifact.profile);
+    reviewButton.hidden = !reviewModel;
+    reviewButton.onclick = () => { void runImageReview(card, artifact, {
+      sha256: artifact.sha256,
+      state: { correctionsUsed: 0 },
+      model: entry && entry.model,
+      cancelToolName: null,
+      bounds: null,
+      reviewModel,
+      entry,
+      entryGeneration: restoreGeneration,
+      container
+    }); };
+    card.append(reviewButton);
   })();
   return card;
 }
@@ -4590,7 +4710,8 @@ function renderRestoredAssistantTurn(entry, sharedRoot) {
     view.root.append(proposal);
   }
   for (const artifact of entry.artifacts || []) {
-    renderRestoredArtifactCard(view.root, artifact);
+    if (!artifact.reference) artifact.reference = nextArtifactReference();
+    renderRestoredArtifactCard(view.root, artifact, entry);
   }
   return view.root;
 }

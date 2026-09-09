@@ -102,6 +102,14 @@ function takeRequest(predicate, description) {
 }
 
 function jsonResponse(payload, status = 200) {
+  if (typeof payload.plain_text_response === 'string') {
+    const text = payload.plain_text_response;
+    payload = {...payload, plain_text_response: JSON.stringify({
+      schema: 'qwen.web-tool-outcome', version: 1, outcome: 'success', status: 'success',
+      evidence: {kind: text.startsWith('BEGIN UNTRUSTED') ? 'fetched_page' : 'search_snippets',
+        scope: 'result_set', usable: true, sources: []}, text
+    })};
+  }
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -124,6 +132,36 @@ assert.ok(inlineScript, 'fallback Web UI has no inline script');
 
 const testInterface = `
 globalThis.webuiModelStateTest = {
+  async sourceScenario(status) {
+    const originalStream = streamCompletion;
+    const originalExecute = executeWebTool;
+    const originalFetchParams = proposedFetchParams;
+    const originalImageTools = resolveImageTools;
+    let completions = 0;
+    const initial = history.length;
+    attachments = [];
+    $('#input').value = 'Read the requested page';
+    $('#web-tools').checked = true;
+    $('#image-tools').checked = false;
+    streamCompletion = async () => ({
+      answer: 'According to the page, fabricated answer.', reasoning: '', model: requestModel,
+      calls: ++completions === 1 ? [{name: WEB_FETCH_TOOL_NAME, args: '{}'}] : []
+    });
+    proposedFetchParams = () => ({});
+    resolveImageTools = async () => ({cancelToolName: null, bounds: null});
+    executeWebTool = async () => status === 'success'
+      ? {outcome: 'success', status, evidence: {kind: 'fetched_page', usable: true}, text: 'page'}
+      : webToolFailure(status, 'Source unavailable');
+    try {
+      await send();
+      return {completions, messages: history.slice(initial).map(message => ({...message}))};
+    } finally {
+      streamCompletion = originalStream;
+      executeWebTool = originalExecute;
+      proposedFetchParams = originalFetchParams;
+      resolveImageTools = originalImageTools;
+    }
+  },
   selectRequestModel,
   composeUserContent,
   selectedModelAcceptsImages,
@@ -593,7 +631,7 @@ const searchPost = takeRequest(
   request => request.url === './tools' && request.options.method === 'POST',
   'search execution');
 searchPost.resolve(jsonResponse({ plain_text_response: searchResult }));
-const visibleSearchResult = await searchExecution;
+const visibleSearchResult = (await searchExecution).text;
 assert.ok(!visibleSearchResult.includes(signedResultId),
   'the signed result id reached model-visible search text');
 assert.ok(visibleSearchResult.includes('URL: https://example.org/raven2'),
@@ -716,5 +754,20 @@ assert.equal(missingRandomness.attachmentCount, 1,
   'result-handle randomness failure consumed the unsent attachment');
 assert.ok(storageWriteAttempts > 0);
 assert.equal(pendingRequests.length, 0);
+
+for (const status of ['provider_http_error', 'timeout', 'provider_content_error',
+  'expired_result', 'authorization_denied']) {
+  const result = await testApi.sourceScenario(status);
+  assert.equal(result.completions, 1, 'failed source triggered another model completion');
+  assert.ok(result.messages.at(-1).content.includes('No source-grounded answer'));
+  assert.ok(!result.messages.some(message => message.role === 'assistant' &&
+    message.content.includes('According to the page')));
+  const call = result.messages.find(message => message.tool_calls)?.tool_calls[0];
+  assert.ok(call && result.messages.some(message => message.tool_call_id === call.id),
+    'failed turn left an unresolved tool call');
+}
+const retry = await testApi.sourceScenario('success');
+assert.equal(retry.completions, 2, 'valid later retry did not complete');
+assert.ok(retry.messages.at(-1).content.includes('According to the page'));
 
 console.log('fallback_webui_model_state=accepted');

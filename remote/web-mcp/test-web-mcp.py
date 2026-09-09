@@ -603,7 +603,11 @@ class WebMcpServerTest(unittest.TestCase):
 
     @staticmethod
     def result_text(response):
-        return response["result"]["content"][0]["text"]
+        return json.loads(response["result"]["content"][0]["text"])["text"]
+
+    @staticmethod
+    def outcome(response):
+        return json.loads(response["result"]["content"][0]["text"])
 
     def search(self, session, **arguments):
         arguments.setdefault("query", "raven2 vulkan decode")
@@ -631,6 +635,39 @@ class WebMcpServerTest(unittest.TestCase):
         session = self.open_session()
         names = [tool["name"] for tool in session.request("tools/list")["result"]["tools"]]
         self.assertEqual(names, ["search_exa", "fetch_exa"])
+
+    def test_search_result_carries_a_versioned_snippet_outcome(self):
+        response = self.search(self.open_session(), max_results=1)
+        outcome = self.outcome(response)
+        self.assertEqual(outcome["schema"], "qwen.web-tool-outcome")
+        self.assertEqual(outcome["version"], 1)
+        self.assertEqual((outcome["outcome"], outcome["status"]), ("success", "success"))
+        self.assertEqual(
+            (outcome["evidence"]["kind"], outcome["evidence"]["scope"]),
+            ("search_snippets", "result_set"),
+        )
+        self.assertTrue(outcome["evidence"]["usable"])
+        self.assertRegex(outcome["text"], r"(?m)^Result ID: [A-Za-z0-9_.-]+$")
+        self.assertEqual(outcome["evidence"]["sources"][0]["origin"], "https://example.org")
+        self.assertEqual(response["result"]["structuredContent"], outcome)
+
+    def test_fetch_result_is_distinct_from_search_snippets(self):
+        session = self.open_session()
+        result_id = self.first_result_id(self.result_text(self.search(session, max_results=1)))
+        outcome = self.outcome(session.call_tool("fetch_exa", {"result_id": result_id}))
+        self.assertEqual(outcome["evidence"]["kind"], "fetched_page")
+        self.assertEqual(outcome["evidence"]["scope"], "document_window")
+        self.assertEqual(outcome["evidence"]["sources"][0]["origin"], "https://example.org")
+
+    def test_failure_result_preserves_the_audit_status_and_error_text(self):
+        response = self.open_session().call_tool("fetch_exa", {"result_id": "not.atoken"})
+        outcome = self.outcome(response)
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual((outcome["outcome"], outcome["status"]), ("failure", "authorization_denied"))
+        self.assertEqual(outcome["error"], outcome["text"])
+        self.assertEqual(outcome["evidence"], {
+            "kind": "none", "scope": "none", "usable": False, "sources": []
+        })
 
     def test_unknown_method_answers_with_a_jsonrpc_error(self):
         session = self.open_session()
