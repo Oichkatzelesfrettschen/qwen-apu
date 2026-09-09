@@ -362,6 +362,16 @@ def outcome_document(outcome, status, kind, scope, usable, text, sources=()):
 
 
 def tool_result(identifier, document, is_error):
+    # Image tools share the transport helper and already supply encoded text.
+    if isinstance(document, str):
+        return {
+            "jsonrpc": "2.0",
+            "id": identifier,
+            "result": {
+                "content": [{"type": "text", "text": document}],
+                "isError": is_error,
+            },
+        }
     encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return {
         "jsonrpc": "2.0",
