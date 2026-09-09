@@ -887,6 +887,10 @@ def test_full_authorization():
     session = None
     try:
         session = PageSession(origin)
+        session.evaluate(
+            "history.push("
+            "{role: 'user', content: 'Read the requested Wikipedia page'},"
+            "{role: 'assistant', content: missingSourceNotice()}); true")
         session.send("draw a fox")
         session.wait_for(
             "document.querySelector('#image-approval').open", 30,
@@ -958,6 +962,24 @@ def test_full_authorization():
             failures.append("the " + IMAGE_TOOL_NAME + " call named no profile_id: " + repr(params.get("profile_id")))
         if "profile" in params:
             failures.append("the " + IMAGE_TOOL_NAME + " call carries a profile key the tool refuses by name")
+
+    chat_requests = []
+    for request in report.get("requests", []):
+        if not request.get("url", "").endswith("/v1/chat/completions"):
+            continue
+        try:
+            chat_requests.append(json.loads(request.get("body") or "{}"))
+        except json.JSONDecodeError:
+            failures.append("the browser emitted a malformed chat request body")
+    if not chat_requests:
+        failures.append("the browser sent no chat request for the image-enabled profile")
+    elif chat_requests[0].get("tool_choice") != "required":
+        failures.append("the image-only turn did not require its sole admitted tool")
+    elif [message.get("role") for message in chat_requests[0].get("messages", [])[:3]] != [
+            "user", "assistant", "user"]:
+        failures.append("the image request did not preserve the prior incomplete web turn")
+    if len(chat_requests) > 1 and "tool_choice" in chat_requests[1]:
+        failures.append("the post-image continuation still required another tool call")
 
     if "Bearer " + API_KEY not in artifact_headers:
         failures.append("the artifact fetch never carried the page's credential header")

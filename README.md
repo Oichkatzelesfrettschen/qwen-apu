@@ -11,6 +11,7 @@ Internet connection; installed language and image models run locally.
 
 **Start here:** [User guide](docs/USER-GUIDE.md) ·
 [Installation](docs/INSTALL.md) · [Operator reference](WEBUI.md)
+· [Models and tools](docs/MODELS-AND-TOOLS.md)
 
 ![Chat page with model picker, tool toggles, saved conversations, and attachment control](docs/images/chat-overview.png)
 
@@ -127,6 +128,7 @@ claim those changes have shipped.
 ## For maintainers
 
 - [User guide](docs/USER-GUIDE.md): everyday workflows and troubleshooting.
+- [Models and tools](docs/MODELS-AND-TOOLS.md): installed weights, live roster, validation, and guarded capabilities.
 - [Installation requirements](docs/INSTALL.md): dependencies and provisioning.
 - [Web UI operations](WEBUI.md): serving and deployment controls.
 - [Technical background](docs/TECHNICAL-BACKGROUND.md): retained historical tables and analysis.

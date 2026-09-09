@@ -2950,7 +2950,8 @@ $('#input').addEventListener('keydown', e => {
 });
 $('#send').onclick = send;
 
-async function buildRequestBody(messages, webPermission, imagePermission) {
+async function buildRequestBody(messages, webPermission, imagePermission,
+                                requireImageTool = false) {
   // The server applies --n-predict only where a request's own max_tokens is
   // absent (server-context.cpp reads task.params.n_predict verbatim
   // otherwise), so an explicit request value is what actually bounds output
@@ -2983,11 +2984,23 @@ async function buildRequestBody(messages, webPermission, imagePermission) {
     const { definition } = await resolveImageTools(requestModel, modelStateGeneration);
     if (definition) tools.push(definition);
   }
-  if (tools.length) body.tools = tools;
+  if (tools.length) {
+    body.tools = tools;
+    // Selecting Image for an image-only turn is an explicit request to run
+    // the sole admitted generator. Requiring one call prevents earlier
+    // conversation text from steering the model into describing parameters
+    // as prose. A Web+Image turn keeps automatic selection because requiring
+    // a tool on every continuation would prevent the final sourced answer.
+    if (requireImageTool && imagePermission && !webPermission && tools.length === 1 &&
+        tools[0]?.function?.name === IMAGE_TOOL_NAME) {
+      body.tool_choice = 'required';
+    }
+  }
   return body;
 }
 
-async function streamCompletion(messages, view, webPermission, imagePermission) {
+async function streamCompletion(messages, view, webPermission, imagePermission,
+                                requireImageTool = false) {
   const t0 = performance.now();
   let first = null, streamChunks = 0, completionTokens = null;
   let serverTimings = null, answer = '', reasoning = '', finish = null;
@@ -2999,7 +3012,8 @@ async function streamCompletion(messages, view, webPermission, imagePermission) 
   const toolCalls = {};
   const resp = await fetch('./v1/chat/completions', {
     method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(await buildRequestBody(messages, webPermission, imagePermission))
+    body: JSON.stringify(await buildRequestBody(
+      messages, webPermission, imagePermission, requireImageTool))
   });
   if (!resp.ok) {
     const detail = await resp.text();
@@ -3979,7 +3993,9 @@ async function send() {
       const proposalModel = requestModel;
       let outcome;
       try {
-        outcome = await streamCompletion(history, view, webPermission, imagePermission);
+        outcome = await streamCompletion(
+          history, view, webPermission, imagePermission,
+          round === 0 && imagePermission && !webPermission);
       } catch (err) {
         view.meta.className = 'meta bad';
         view.meta.textContent = String(err.message || err);
