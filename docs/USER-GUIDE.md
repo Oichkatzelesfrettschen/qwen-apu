@@ -2,6 +2,8 @@
 
 This guide covers daily use of an installed qwen-apu appliance. Provisioning,
 model installation, and deployment assembly belong in [INSTALL.md](INSTALL.md).
+The [models and tools inventory](MODELS-AND-TOOLS.md) identifies every
+installed model, served section, quantization, and guarded capability.
 
 ![Chat page and its everyday controls](images/chat-overview.png)
 

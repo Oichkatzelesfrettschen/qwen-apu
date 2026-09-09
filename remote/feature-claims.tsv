@@ -141,7 +141,7 @@ web-balanced	web-search	unsupported	evidence/web-provider-contract.md	execution_
 web-compact	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a validator-gated row under QWEN_WEB_AUTHORIZER_READY arms the lane
 web-fast-vl	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a validator-gated row under QWEN_WEB_AUTHORIZER_READY arms the lane
 web-lookup	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a ui-mediated row emits a section the page retrieves through
-web-open	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a validator-gated row under QWEN_WEB_AUTHORIZER_READY arms the lane
+web-open	web-search	candidate	evidence/conversational-suite/20260905T2324Z/README.md	validator-gated search and fetch execute through the approval broker; failed required retrieval remains an explicit incomplete result
 web-reader	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a ui-mediated row emits a section the page retrieves through
 web-sovereign	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; the row names the qwen-yacy category of the local SearXNG instance
 web-vision	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a ui-mediated row emits a section the page retrieves through
