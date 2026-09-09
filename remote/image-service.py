@@ -2385,7 +2385,11 @@ ARTIFACT_CONNECTION_LIMIT_RESPONSE = (
 
 
 class ArtifactServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    allow_reuse_address = False
+    # Reuse a listener after its completed HTTP children close. The kernel
+    # still owns a transient connection tuple during TCP teardown, while a
+    # second live listener remains refused by bind(2). A non-reuse listener
+    # leaves exclusive TIME_WAIT tuples that must expire before replacement.
+    allow_reuse_address = True
     daemon_threads = True
     block_on_close = False
 

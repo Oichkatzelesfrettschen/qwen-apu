@@ -10,6 +10,7 @@ device and without a downloaded checkpoint.
 """
 
 import argparse
+import errno
 import hashlib
 import http.client
 import json
@@ -1653,6 +1654,97 @@ class ImageServiceTest(unittest.TestCase):
         self.assertEqual(payload["state"], "idle")
         self.assertFalse(payload["lease_held"])
         self.assertEqual(payload["pid"], session.pid)
+
+    def test_artifact_listener_restarts_after_http_close_but_not_while_live(self):
+        """Listener reuse handles closed HTTP children and rejects a live bind."""
+        self.assert_artifact_listener_restart(service_module.ArtifactServer, False)
+
+    def test_artifact_listener_legacy_time_wait_requires_expiry(self):
+        """Address reuse cannot retroactively change a legacy accepted socket."""
+        legacy_server = type("LegacyArtifactServer", (service_module.ArtifactServer,),
+                             {"allow_reuse_address": False})
+        self.assert_artifact_listener_restart(legacy_server, True)
+
+    def assert_artifact_listener_restart(self, first_server_class, legacy):
+        ports_path = os.path.join(self.temporary.name, "ports.txt")
+        lease_helper = os.path.join(SERVICE_DIRECTORY, "test-port-lease.sh")
+        holder_pid = subprocess.check_output(
+            [lease_helper, "claim", "1", ports_path], text=True, timeout=10,
+        ).strip()
+        self.addCleanup(subprocess.run, [lease_helper, "release", holder_pid],
+                        check=True, timeout=10)
+        with open(ports_path, encoding="ascii") as ports_handle:
+            leased_port = int(ports_handle.read().strip())
+        settings = type("ArtifactSettings", (), {
+            "origins": (),
+            "admitted_hosts": ("127.0.0.1",),
+            "api_key": API_KEY,
+            "open_lan": False,
+            "artifact_limiter": service_module.FixedWindowLimiter(60, 30),
+        })()
+        service = type("ArtifactService", (), {
+            "artifact_directory": self.temporary.name,
+            "handle_status": lambda self: {"state": "idle", "lease_held": False},
+        })()
+        first = first_server_class(("127.0.0.1", leased_port), settings, service)
+        address = first.server_address
+        thread = threading.Thread(target=first.serve_forever)
+        thread.start()
+        try:
+            with socket.create_connection(address, timeout=5) as connection:
+                connection.sendall(
+                    (
+                        "GET /health HTTP/1.1\r\n"
+                        f"Host: {address[0]}:{address[1]}\r\n"
+                        f"Authorization: Bearer {API_KEY}\r\n"
+                        "Connection: close\r\n\r\n"
+                    ).encode("ascii")
+                )
+                response_bytes = bytearray()
+                while True:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        break
+                    response_bytes.extend(chunk)
+                self.assertTrue(response_bytes.startswith(b"HTTP/1.1 200"))
+        finally:
+            first.shutdown()
+            first.server_close()
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive(), "listener thread did not stop")
+        deadline = time.monotonic() + 2
+        time_wait_rows = []
+        local_port = f"{address[1]:04X}"
+        while time.monotonic() < deadline:
+            with open("/proc/net/tcp", encoding="ascii") as proc_file:
+                rows = proc_file.readlines()[1:]
+            time_wait_rows = []
+            for row in rows:
+                fields = row.split()
+                if len(fields) < 4:
+                    continue
+                local_endpoint = fields[1]
+                state = fields[3]
+                if local_endpoint.rsplit(":", 1)[-1] == local_port and state == "06":
+                    time_wait_rows.append(row.strip())
+            if time_wait_rows:
+                break
+            time.sleep(0.01)
+        self.assertTrue(time_wait_rows, "listener port lacked a TIME_WAIT row")
+        if legacy:
+            with self.assertRaises(OSError) as error:
+                service_module.ArtifactServer(address, settings, service)
+            self.assertEqual(error.exception.errno, errno.EADDRINUSE)
+            return
+        second = service_module.ArtifactServer(address, settings, service)
+        try:
+            with self.assertRaises(OSError) as error:
+                service_module.ArtifactServer(address, settings, service)
+            self.assertEqual(error.exception.errno, errno.EADDRINUSE)
+        finally:
+            second.server_close()
+        recovered = service_module.ArtifactServer(address, settings, service)
+        recovered.server_close()
 
     def test_shutdown_proves_no_child_no_part_and_a_free_lease(self):
         """SIGTERM during a job leaves no runtime, no .part.png, and no lease."""
