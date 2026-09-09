@@ -1657,6 +1657,24 @@ class ImageServiceTest(unittest.TestCase):
 
     def test_artifact_listener_restarts_after_http_close_but_not_while_live(self):
         """Listener reuse handles closed HTTP children and rejects a live bind."""
+        self.assert_artifact_listener_restart(service_module.ArtifactServer, False)
+
+    def test_artifact_listener_legacy_time_wait_requires_expiry(self):
+        """Address reuse cannot retroactively change a legacy accepted socket."""
+        legacy_server = type("LegacyArtifactServer", (service_module.ArtifactServer,),
+                             {"allow_reuse_address": False})
+        self.assert_artifact_listener_restart(legacy_server, True)
+
+    def assert_artifact_listener_restart(self, first_server_class, legacy):
+        ports_path = os.path.join(self.temporary.name, "ports.txt")
+        lease_helper = os.path.join(SERVICE_DIRECTORY, "test-port-lease.sh")
+        holder_pid = subprocess.check_output(
+            [lease_helper, "claim", "1", ports_path], text=True, timeout=10,
+        ).strip()
+        self.addCleanup(subprocess.run, [lease_helper, "release", holder_pid],
+                        check=True, timeout=10)
+        with open(ports_path, encoding="ascii") as ports_handle:
+            leased_port = int(ports_handle.read().strip())
         settings = type("ArtifactSettings", (), {
             "origins": (),
             "admitted_hosts": ("127.0.0.1",),
@@ -1668,7 +1686,7 @@ class ImageServiceTest(unittest.TestCase):
             "artifact_directory": self.temporary.name,
             "handle_status": lambda self: {"state": "idle", "lease_held": False},
         })()
-        first = service_module.ArtifactServer(("127.0.0.1", 0), settings, service)
+        first = first_server_class(("127.0.0.1", leased_port), settings, service)
         address = first.server_address
         thread = threading.Thread(target=first.serve_forever)
         thread.start()
@@ -1713,6 +1731,11 @@ class ImageServiceTest(unittest.TestCase):
                 break
             time.sleep(0.01)
         self.assertTrue(time_wait_rows, "listener port lacked a TIME_WAIT row")
+        if legacy:
+            with self.assertRaises(OSError) as error:
+                service_module.ArtifactServer(address, settings, service)
+            self.assertEqual(error.exception.errno, errno.EADDRINUSE)
+            return
         second = service_module.ArtifactServer(address, settings, service)
         try:
             with self.assertRaises(OSError) as error:
