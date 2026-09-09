@@ -1168,12 +1168,10 @@ if command -v chromium >/dev/null 2>&1; then
                 record browser_artifact_fetched refused "requests=$browser_artifact_requests src=${browser_image_source:-none} $(jq -r '[.imageCards[].caption] | first // empty' "$browser_report" | head -c 200)"
                 ;;
         esac
-        # The retained tool message names the digest and the provenance route
-        # and carries neither the grant nor the image bytes.
+        # The model receives a short reference; the card owns artifact routes.
         tool_message=$(jq -r '[.history[] | select(.role == "tool")] | first | .content // empty' "$browser_report")
-        if printf '%s' "$tool_message" | grep -q "sha256 " && \
-           printf '%s' "$tool_message" | grep -q 'provenance /artifacts/' && \
-           ! printf '%s' "$tool_message" | grep -q 'authorization'; then
+        if printf '%s\n' "$tool_message" | grep -Eq \
+            '^Image artifact image-[1-9][0-9]* is available in this conversation\.$'; then
             record browser_transcript_carries_identity_alone accepted "$(printf '%s' "$tool_message" | head -c 160)"
         else
             record browser_transcript_carries_identity_alone refused "$(printf '%s' "$tool_message" | head -c 200)"
