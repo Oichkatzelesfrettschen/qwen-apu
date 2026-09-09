@@ -31,7 +31,8 @@ check_result() {
 check_result runtime-layout 'make bootstrap' \
     "$script_directory/runtime-root.sh" verify-layout
 check_result laptop-requirements 'remote/check-install-requirements.sh laptop' \
-    "$script_directory/check-install-requirements.sh" laptop
+    "$script_directory/check-install-requirements.sh" laptop \
+    "$script_directory/../docs/install-requirements.tsv" 'runtime-root,launch-chain'
 deployment_report=''
 activation_lock=$qwen_home_deployments/.activate.lock
 if [ -f "$activation_lock" ] && deployment_report=$(
