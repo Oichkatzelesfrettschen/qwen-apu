@@ -977,10 +977,10 @@ def test_full_authorization():
                          .format(len(tool_messages)))
     else:
         content = tool_messages[0].get("content", "")
-        if ARTIFACT_SHA256 not in content:
-            failures.append("the retained tool message does not name the sha256")
-        if PROVENANCE_PATH not in content:
-            failures.append("the retained tool message does not name the provenance URL")
+        if content != "Image artifact image-1 is available in this conversation.":
+            failures.append("the retained tool message does not carry the conversation artifact reference")
+        if ARTIFACT_SHA256 in content or PROVENANCE_PATH in content:
+            failures.append("the retained tool message exposes artifact routing identity")
         if GRANT_TOKEN in content:
             failures.append("the retained tool message carries the spent grant")
         if base64.b64encode(ONE_PIXEL_PNG).decode("ascii")[:16] in content:
