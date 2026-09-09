@@ -159,10 +159,10 @@ grep -F 'void postCancelBestEffort(cancelToolName, model);' "$fallback_ui" >/dev
 # the `.json` record and its artifact_url names the `.png`, both from the same
 # digest, so a page that fetched the provenance route would read the record
 # where it wanted the image.
-grep -F 'async function loadArtifactBlobUrl(sha256, callerSignal) {' "$fallback_ui" >/dev/null
+grep -F 'async function loadArtifactBlobUrl(result, callerSignal) {' "$fallback_ui" >/dev/null
 grep -F '  const origin = artifactOrigin();' "$fallback_ui" >/dev/null
 grep -F '`${origin}/artifacts/${sha256}.png`' "$fallback_ui" >/dev/null
-grep -F 'loadArtifactBlobUrl(result.sha256, signal)' "$fallback_ui" >/dev/null
+grep -F 'loadArtifactBlobUrl(result, signal)' "$fallback_ui" >/dev/null
 grep -F "mode: 'cors', headers: authHeaders(), signal: controller.signal });" \
     "$fallback_ui" >/dev/null
 
@@ -175,7 +175,7 @@ grep -F 'callerSignal.addEventListener' "$fallback_ui" >/dev/null
 grep -F "callerSignal.removeEventListener('abort', abortFromCaller);" "$fallback_ui" >/dev/null
 grep -F 'async function renderImageArtifactCard(container, fields, result, lineage, signal) {' \
     "$fallback_ui" >/dev/null
-grep -F '  const blobUrl = await loadArtifactBlobUrl(result.sha256, signal);' \
+grep -F '  const blobUrl = await loadArtifactBlobUrl(result, signal);' \
     "$fallback_ui" >/dev/null
 grep -F '        artifactContainer, fields, result, lineage, cancellationController.signal);' \
     "$fallback_ui" >/dev/null
@@ -249,6 +249,7 @@ grep -F 'pageHost = (window.location.hostname' "$fallback_ui" >/dev/null
 grep -F '  return trustedArtifactOrigin(configured);' "$fallback_ui" >/dev/null
 grep -F "throw new Error('no artifact listener origin is configured for this page');" \
     "$fallback_ui" >/dev/null
+grep -F 'verifiedDigest(bytes, result.sha256, '\''artifact'\'');' "$fallback_ui" >/dev/null
 grep -F 'return URL.createObjectURL(blob);' "$fallback_ui" >/dev/null
 grep -F 'if (blobUrl) URL.revokeObjectURL(blobUrl);' "$fallback_ui" >/dev/null
 grep -F 'function renderImageArtifactCard(container, fields, result, lineage, signal) {' \
@@ -265,10 +266,10 @@ if grep -E "loadArtifactBlobUrl\([^)]*\)" "$fallback_ui" | grep -qi 'sha256='; t
     exit 1
 fi
 
-# The retained transcript message names the sha256 and the provenance URL
-# alone, never the image bytes and never the grant.
-grep -F 'function buildImageToolResultSummary(result) {' "$fallback_ui" >/dev/null
-grep -F 'Image generated: sha256 ${result.sha256}, provenance ${result.provenanceUrl}.' \
+# The retained transcript message names the conversation-local card reference;
+# the verified card alone owns the digest and action routes.
+grep -F 'function buildImageToolResultSummary(artifactReference) {' "$fallback_ui" >/dev/null
+grep -F 'Image artifact ${artifactReference} is available in this conversation.' \
     "$fallback_ui" >/dev/null
 
 # One image generation is authorized per turn, mirroring the one-search
@@ -524,12 +525,10 @@ for (const badStatus of ["accepted", "refused", "cancelled", "failed"]) {
     if (!threw) throw new Error("a non-completed status reached parseCompletedImageResult unrefused: " + badStatus);
 }
 
-// buildImageToolResultSummary names sha256 and the provenance URL and
-// nothing else -- checked structurally since the function itself is the
-// single call site that builds the retained transcript message.
-const summary = buildImageToolResultSummary({ sha256: "b".repeat(64), provenanceUrl: "/artifacts/bbb.png" });
-if (!summary.includes("b".repeat(64)) || !summary.includes("/artifacts/bbb.png")) {
-    throw new Error("buildImageToolResultSummary dropped the sha256 or the provenance URL");
+// buildImageToolResultSummary exposes only the conversation-local card name.
+const summary = buildImageToolResultSummary("image-2");
+if (!summary.includes("image-2") || summary.includes("sha256") || summary.includes("/artifacts/")) {
+    throw new Error("buildImageToolResultSummary exposed artifact internals");
 }
 
 // imageGrantFields hashes each prompt rather than carrying it in the clear.

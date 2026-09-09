@@ -42,7 +42,7 @@ import urllib.parse
 import urllib.request
 
 SERVER_NAME = "web"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
@@ -80,6 +80,11 @@ JSON_DEPTH_CAP = 32
 OVERSIZED_LINE = object()
 RESULT_CLAIM_CONTEXT = "result-id"
 AUTHORIZATION_CLAIM_CONTEXT = "search-authorization"
+OUTCOME_SCHEMA = "qwen.web-tool-outcome"
+OUTCOME_VERSION = 1
+OUTCOME_VALUES = ("success", "failure")
+EVIDENCE_KINDS = ("search_snippets", "fetched_page", "none")
+EVIDENCE_SCOPES = ("result_set", "document_window", "none")
 
 SEPARATOR_PATTERN = re.compile(r"^-{3,}$")
 GRANT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
@@ -152,6 +157,7 @@ ExtractedContent = collections.namedtuple(
     "ExtractedContent",
     "text provider_may_have_more provider_status content_id",
 )
+ToolOutput = collections.namedtuple("ToolOutput", "text sources")
 
 
 class ToolError(Exception):
@@ -169,7 +175,6 @@ class ToolError(Exception):
     """
 
     status = "invalid_argument"
-
 
 class InvalidArgument(ToolError):
     """An argument, a configuration value, or a key file refuses the call."""
@@ -322,12 +327,52 @@ def jsonrpc_error(identifier, code, message):
     }
 
 
-def tool_result(identifier, text, is_error):
+def source_identity(url):
+    """Return a non-capability identity for one validated canonical URL."""
+    canonical = canonical_url(url)
+    parts = urllib.parse.urlsplit(canonical)
+    return {
+        "origin": f"{parts.scheme}://{parts.netloc}",
+        "url_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+
+
+def outcome_document(outcome, status, kind, scope, usable, text, sources=()):
+    """Build the finite, versioned result carried through the text bridge."""
+    if outcome not in OUTCOME_VALUES or status not in AUDIT_STATUSES:
+        raise ValueError("outcome carries a value outside its fixed vocabulary")
+    if kind not in EVIDENCE_KINDS or scope not in EVIDENCE_SCOPES:
+        raise ValueError("evidence carries a value outside its fixed vocabulary")
+    document = {
+        "schema": OUTCOME_SCHEMA,
+        "version": OUTCOME_VERSION,
+        "outcome": outcome,
+        "status": status,
+        "evidence": {
+            "kind": kind,
+            "scope": scope,
+            "usable": bool(usable),
+            "sources": list(sources),
+        },
+        "text": text,
+    }
+    if outcome == "failure":
+        document["error"] = text
+    return document
+
+
+def tool_result(identifier, document, is_error):
+    encoded = json.dumps(document, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return {
         "jsonrpc": "2.0",
         "id": identifier,
         "result": {
-            "content": [{"type": "text", "text": text}],
+            # llama-server's /tools bridge preserves text even where an MCP
+            # client's structuredContent field is absent, so the text itself
+            # carries the complete envelope. structuredContent mirrors those
+            # bytes for clients that retain the native field.
+            "content": [{"type": "text", "text": encoded}],
+            "structuredContent": document,
             "isError": is_error,
         },
     }
@@ -2958,7 +3003,10 @@ def call_search(settings, arguments):
         )
         audit["returned_characters"] = len(rendered)
         audit["status"] = "success"
-        return rendered
+        return ToolOutput(
+            rendered,
+            tuple(source_identity(url) for url, _provider_identifier in issued),
+        )
     except ToolError as error:
         audit["status"] = error.status
         raise
@@ -3109,8 +3157,11 @@ def call_fetch(settings, arguments):
         audit["result_count"] = 1
         audit["returned_characters"] = len(window)
         audit["status"] = "success"
-        return wrap_untrusted(
-            url, utc_timestamp(retrieved_at), window, start_index, truncated
+        return ToolOutput(
+            wrap_untrusted(
+                url, utc_timestamp(retrieved_at), window, start_index, truncated
+            ),
+            (source_identity(url),),
         )
     except ToolError as error:
         audit["status"] = error.status
@@ -3533,21 +3584,52 @@ def handle_request(settings, message):
         if unknown:
             return tool_result(
                 identifier,
-                "the call carries an argument the tool does not read: "
-                + ", ".join(unknown),
+                outcome_document(
+                    "failure",
+                    "invalid_argument",
+                    "none",
+                    "none",
+                    False,
+                    "the call carries an argument the tool does not read: "
+                    + ", ".join(unknown),
+                ),
                 True,
             )
         try:
-            text = handler(settings, arguments)
+            output = handler(settings, arguments)
         except ToolError as error:
-            return tool_result(identifier, str(error), True)
+            return tool_result(
+                identifier,
+                outcome_document(
+                    "failure",
+                    error.status,
+                    "none",
+                    "none",
+                    False,
+                    str(error),
+                ),
+                True,
+            )
         except Exception as error:
             sys.stderr.write(sanitized_traceback(error) + "\n")
             sys.stderr.flush()
             return jsonrpc_error(
                 identifier, -32603, "internal error during tool execution"
             )
-        return tool_result(identifier, text, False)
+        search = params.get("name") == "search_exa"
+        return tool_result(
+            identifier,
+            outcome_document(
+                "success",
+                "success",
+                "search_snippets" if search else "fetched_page",
+                "result_set" if search else "document_window",
+                output.text != "No results." if search else True,
+                output.text,
+                sources=output.sources,
+            ),
+            False,
+        )
     return jsonrpc_error(identifier, -32601, f"unknown method: {method}")
 
 

@@ -23,7 +23,7 @@ const FIXTURE_API_KEY = 'fixture-api-key-2f0f41';
 const FIXTURE_SESSION_SECRET = 'fixture-session-secret-91abcd';
 const FIXTURE_GRANT = 'fixture-grant-token-77cdef';
 const FIXTURE_SHA256 =
-  '9f2c4b7a1d3e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8';
+  '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08';
 const ARTIFACT_ORIGIN = 'http://127.0.0.1:9711';
 
 class FakeElement {
@@ -418,6 +418,7 @@ function newPage({ indexedDatabase, localStorage, sessionStorage, hash = '' }) {
   const location = { href: `http://127.0.0.1:8080/${hash}`, hash, hostname: '127.0.0.1', origin: 'http://127.0.0.1:8080' };
   const context = {
     AbortController,
+    Blob,
     URL: TestUrl,
     TextDecoder,
     performance,
@@ -638,7 +639,8 @@ const artifactRequest = takeRequest(first.pendingRequests,
 assert.equal(artifactRequest.options.headers.Authorization, `Bearer ${FIXTURE_API_KEY}`,
   'the restored artifact read carried no bearer');
 artifactRequest.resolve({
-  ok: true, status: 200, async blob() { return { size: 4 }; }
+  ok: true, status: 200,
+  async arrayBuffer() { return new TextEncoder().encode('test').buffer; }
 });
 await flushPromises();
 
@@ -1795,7 +1797,10 @@ artifactPage.document.querySelector('#artifact-origin').value = ARTIFACT_ORIGIN;
 artifactPage.api.setRequestModel('image-capable');
 
 function artifactBlobResponse() {
-  return { ok: true, status: 200, async blob() { return { size: 4 }; } };
+  return {
+    ok: true, status: 200,
+    async arrayBuffer() { return new TextEncoder().encode('test').buffer; }
+  };
 }
 
 const firstEntry = artifactPage.api.rememberAssistantTurn('the first answer');
@@ -1808,7 +1813,7 @@ const firstFields = {
   prompt: 'a first image', seed: 111, width: 512, height: 512, steps: 4,
   profile: 'sdxs-512-arm-a'
 };
-const firstResult = { sha256: 'a'.repeat(64), provenanceUrl: '/artifacts/aaa.json' };
+const firstResult = { sha256: FIXTURE_SHA256, provenanceUrl: '/artifacts/aaa.json' };
 const firstCardPromise = artifactPage.api.renderArtifactCard(firstFields, firstResult, firstLineage);
 takeRequest(artifactPage.pendingRequests,
   request => String(request.url) === `${ARTIFACT_ORIGIN}/artifacts/${firstResult.sha256}.png`,
@@ -1825,7 +1830,7 @@ assert.notEqual(secondEntry, firstEntry);
 // artifact must still land on firstEntry rather than the entry
 // activeAssistantEntry now names.
 const correctedFields = { ...firstFields, prompt: 'a corrected image' };
-const correctedResult = { sha256: 'b'.repeat(64), provenanceUrl: '/artifacts/bbb.json' };
+const correctedResult = { sha256: FIXTURE_SHA256, provenanceUrl: '/artifacts/bbb.json' };
 const correctionCardPromise = artifactPage.api.renderArtifactCard(
   correctedFields, correctedResult, firstLineage);
 takeRequest(artifactPage.pendingRequests,
@@ -1977,7 +1982,10 @@ await flushPromises();
 // The fetch settling after the reset -- whether the abort already rejected it
 // or a slower fake resolves it regardless -- must not register a blob URL a
 // live card no longer owns.
-pendingArtifactFetch.resolve({ ok: true, status: 200, async blob() { return { size: 4 }; } });
+pendingArtifactFetch.resolve({
+  ok: true, status: 200,
+  async arrayBuffer() { return new TextEncoder().encode('test').buffer; }
+});
 await flushPromises();
 assert.equal(restoreRacePage.api.restoredBlobUrls(), 0,
   'a restore fetch that outran its own reset still registered a blob URL');

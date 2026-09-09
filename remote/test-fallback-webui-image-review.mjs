@@ -21,6 +21,9 @@ import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import vm from 'node:vm';
 
+const FIXTURE_PNG_SHA256 =
+  '3c6ed5fc41c950bf0db531eb22f945467fb8d999f80d82ba27dcc9fd90add54d';
+
 class FakeElement {
   constructor() {
     this.checked = false;
@@ -147,7 +150,6 @@ function pngResponse(status = 200) {
   return {
     ok: status >= 200 && status < 300,
     status,
-    async blob() { return { size: bytes.length }; },
     async arrayBuffer() { return bytes.buffer; },
   };
 }
@@ -166,6 +168,7 @@ assert.ok(inlineScript, 'fallback Web UI has no inline script');
 const testInterface = `
 globalThis.imageReviewTest = {
   renderImageArtifactCard,
+  loadArtifactBlobUrl,
   runImageReview,
   buildReviewRequestBody,
   buildReviewVerdictSchema,
@@ -180,6 +183,9 @@ globalThis.imageReviewTest = {
   historyLength() { return history.length; },
   setBrokerOriginField(value) { $('#broker-origin').value = value; },
   setArtifactOriginField(value) { $('#artifact-origin').value = value; },
+  beginAssistantEntry() {
+    return rememberAssistantMessage({ role: 'assistant', content: '' }, 'vision-model', '');
+  },
   addServedModel(modelId) {
     const option = document.createElement('option');
     option.value = modelId;
@@ -209,6 +215,7 @@ function makeContext(hostname = '127.0.0.1', port = '8571', extraHref, artifactM
     URL,
     TextEncoder,
     AbortController,
+    Blob,
     setTimeout,
     clearTimeout,
     setImmediate,
@@ -274,8 +281,9 @@ async function bootSingleModel(modelId, modalities, reviewModel = modelId) {
 {
   const context = await bootSingleModel('text-only-model', { vision: false }, null);
   const api = context.imageReviewTest;
+  api.beginAssistantEntry();
   const container = new FakeElement();
-  const sha = 'a'.repeat(64);
+  const sha = FIXTURE_PNG_SHA256;
   const fields = { prompt: 'a red bicycle', negative_prompt: '', profile: 'p', width: 512, height: 512, steps: 20, seed: 111, seedGenerated: false };
   const result = { sha256: sha, provenanceUrl: `http://127.0.0.1:8572/artifacts/${sha}.json` };
   api.setArtifactOriginField('http://127.0.0.1:8572');
@@ -296,15 +304,38 @@ async function bootSingleModel(modelId, modalities, reviewModel = modelId) {
     card.children.find(child => (child.textContent || '').includes('sha256'));
   assert.ok(caption.textContent.includes('seed 111'),
     'the card carries the approved seed in its caption');
+  const openLink = card.querySelector('.image-artifact-open');
+  const downloadLink = card.querySelector('.image-artifact-download');
+  assert.equal(openLink.href, 'blob:fake', 'Open does not own the verified blob URL');
+  assert.equal(downloadLink.href, 'blob:fake', 'Download does not own the verified blob URL');
+  assert.equal(downloadLink.download, 'image-1.png',
+    'Download does not use the conversation-local artifact reference');
+}
+
+{
+  const context = makeContext();
+  drainBoot();
+  const api = context.imageReviewTest;
+  api.setArtifactOriginField('http://127.0.0.1:8572');
+  const wrongDigest = 'a'.repeat(64);
+  const readPromise = api.loadArtifactBlobUrl(
+    { sha256: wrongDigest, provenanceUrl: '/artifacts/provenance.json' });
+  const artifactRead = takeRequest(
+    request => request.url === `http://127.0.0.1:8572/artifacts/${wrongDigest}.png`,
+    'wrong-digest artifact read');
+  artifactRead.resolve(pngResponse(200));
+  await assert.rejects(readPromise, /artifact bytes hash to .* not a{64}/,
+    'artifact bytes that disagree with the result digest reached a blob URL');
 }
 
 {
   const context = await bootSingleModel('vision-model', { vision: true });
   const api = context.imageReviewTest;
+  api.beginAssistantEntry();
   api.addServedModel('text-model-a');
   api.addServedModel('text-model-b');
   const container = new FakeElement();
-  const sha = 'b'.repeat(64);
+  const sha = FIXTURE_PNG_SHA256;
   const fields = { prompt: 'a red bicycle', negative_prompt: '', profile: 'p', width: 512, height: 512, steps: 20, seed: 222, seedGenerated: false };
   const result = { sha256: sha, provenanceUrl: `http://127.0.0.1:8572/artifacts/${sha}.json` };
   api.setArtifactOriginField('http://127.0.0.1:8572');
@@ -342,6 +373,7 @@ console.log('reviewer_selection_without_eager_load=accepted');
   const context = makeContext();
   drainBoot();
   const api = context.imageReviewTest;
+  api.beginAssistantEntry();
   const passed = [{ name: 'prompt_subject', passed: true, observation: 'ok' }];
   const failed = [{ name: 'prompt_subject', passed: false, observation: 'wrong subject' }];
 
@@ -474,11 +506,12 @@ console.log('composed_prompt_bounds=accepted');
 {
   const context = await bootSingleModel('vision-model', { vision: true });
   const api = context.imageReviewTest;
+  api.beginAssistantEntry();
   api.setBrokerOriginField('http://127.0.0.1:8571');
   api.setArtifactOriginField('http://127.0.0.1:8572');
 
   const seed = 4242;
-  const sha1 = 'c'.repeat(64);
+  const sha1 = FIXTURE_PNG_SHA256;
   const container = new FakeElement();
   const fields = { prompt: 'a bicycle on a lawn', negative_prompt: '', profile: 'p', width: 512, height: 512, steps: 20, seed, seedGenerated: false };
   const result1 = { sha256: sha1, provenanceUrl: `http://127.0.0.1:8572/artifacts/${sha1}.json` };
@@ -612,7 +645,7 @@ console.log('composed_prompt_bounds=accepted');
     return container.children[container.children.length - 1];
   }
 
-  const sha2 = 'd'.repeat(64);
+  const sha2 = FIXTURE_PNG_SHA256;
   const card2 = await runAdmittedReview(card1, fields, lineage1, sha2);
   assert.equal(sharedState.correctionsUsed, 1,
     'one admitted, approved correction spends the first of the two-correction cap');
@@ -626,7 +659,7 @@ console.log('composed_prompt_bounds=accepted');
   // renderImageArtifactCard, whose own cardLineage.state carries that same
   // object forward rather than starting a fresh counter at zero.
   const correctedFields = { ...fields, prompt: `${fields.prompt} on a green lawn` };
-  const sha3 = 'e'.repeat(64);
+  const sha3 = FIXTURE_PNG_SHA256;
   const card3 = await runAdmittedReview(card2, correctedFields, cardLineage(sha2), sha3);
   assert.equal(sharedState.correctionsUsed, 2,
     'the correction\'s own review inherits the shared counter and spends the second slot');

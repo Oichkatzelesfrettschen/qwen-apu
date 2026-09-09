@@ -348,6 +348,12 @@ LAN endpoint grants every client on the network the server process's
 file-reading capability. The startup summary lists real network interfaces;
 libvirt and Docker bridge addresses are labeled as such.
 
+With Web enabled, the chat page requires fetched source text before displaying
+a final answer. A failed retrieval ends with an explicit incomplete notice;
+retry the request or turn Web off to ask separately from general model knowledge.
+Generated images have application-owned Open, Download, and Review controls.
+Use those controls; URLs written by the model are unverified commentary.
+
 `remote/qwen-lan-launch.sh` is the LAN bring-up in one command, under one of
 two named security profiles. `lan-authenticated` is the default and the
 one-command fallback: it reads the address from the default route, binds

@@ -83,17 +83,23 @@ if grep -F 'requestMessages' "$fallback_ui" >/dev/null; then
     exit 1
 fi
 
-# llama-server answers an MCP refusal with `error` at HTTP 200 and a result
-# with `plain_text_response`, so all three outcomes are read from the body and
-# a refusal names what refused it.
-grep -F "if (payload && typeof payload.error === 'string') {" "$fallback_ui" >/dev/null
-grep -F "return truncateToolResult(\`The \${toolName} call was refused: \${payload.error}\`);" \
+# llama-server can carry the MCP text envelope in either response field. The
+# executor parses that envelope, validates its finite structural fields, and
+# returns a failure object whose unusable evidence stops the web continuation.
+grep -F "result = JSON.parse(typeof payload.error === 'string'" "$fallback_ui" >/dev/null
+grep -F ": payload.plain_text_response);" "$fallback_ui" >/dev/null
+grep -F "result?.schema !== 'qwen.web-tool-outcome' || result.version !== 1" \
     "$fallback_ui" >/dev/null
-grep -F 'The ${toolName} call returned HTTP ${response.status} and no result.' \
+grep -F "!['success', 'failure'].includes(result.outcome)" "$fallback_ui" >/dev/null
+grep -F "typeof result.evidence?.usable !== 'boolean'" "$fallback_ui" >/dev/null
+grep -F "result.outcome !== 'success'" "$fallback_ui" >/dev/null
+grep -F "return {...result, outcome: 'failure', evidence: {kind: 'none', usable: false}};" \
     "$fallback_ui" >/dev/null
-grep -F "typeof payload.plain_text_response !== 'string'" "$fallback_ui" >/dev/null
-grep -F 'let resultText = payload.plain_text_response;' "$fallback_ui" >/dev/null
-grep -F 'return truncateToolResult(resultText);' "$fallback_ui" >/dev/null
+grep -F "webFailed ||= result.outcome !== 'success' || !result.evidence.usable;" \
+    "$fallback_ui" >/dev/null
+grep -F 'return {webFailed};' "$fallback_ui" >/dev/null
+grep -F 'if (toolOutcome.webFailed) {' "$fallback_ui" >/dev/null
+grep -F 'return;' "$fallback_ui" >/dev/null
 grep -F 'const TOOL_RESULT_CHARACTER_CAP = 8000;' "$fallback_ui" >/dev/null
 
 # The model reads a random short handle while the exact signed Result ID stays
