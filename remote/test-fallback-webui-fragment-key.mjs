@@ -99,6 +99,7 @@ async function loadPage({ hash, remembered, sessionRemembered, responses }) {
     return { ok: true, status: 200, async json() { return {}; } };
   }
   const context = vm.createContext({
+    AbortController,
     console,
     document,
     fetch: fetchMock,

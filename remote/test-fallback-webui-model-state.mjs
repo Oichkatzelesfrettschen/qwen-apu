@@ -79,7 +79,19 @@ const deniedStorage = {
 const pendingRequests = [];
 function deferredFetch(url, options = {}) {
   return new Promise((resolve, reject) => {
-    pendingRequests.push({ url, options, resolve, reject });
+    const request = { url, options, resolve, reject };
+    pendingRequests.push(request);
+    if (options.signal) {
+      const onAbort = () => {
+        const requestIndex = pendingRequests.indexOf(request);
+        if (requestIndex !== -1) pendingRequests.splice(requestIndex, 1);
+        const abortError = new Error('The operation was aborted.');
+        abortError.name = 'AbortError';
+        reject(abortError);
+      };
+      if (options.signal.aborted) onAbort();
+      else options.signal.addEventListener('abort', onAbort, { once: true });
+    }
   });
 }
 
@@ -116,9 +128,11 @@ globalThis.webuiModelStateTest = {
   composeUserContent,
   selectedModelAcceptsImages,
   selectedModelAcceptsImagesNow() {
-    return selectedModelAcceptsImages(requestModel, conversationGeneration);
+    return selectedModelAcceptsImages(
+      requestModel, conversationGeneration, modelStateGeneration);
   },
   attachFiles,
+  send,
   startNewConversation,
   setAttachments(nextAttachments) {
     attachments = nextAttachments;
@@ -132,8 +146,18 @@ globalThis.webuiModelStateTest = {
       attachments: attachments.map(attachment => ({ ...attachment })),
       contextText: $('#ctx').textContent,
       attachmentText: $('#attached').children.map(child => child.textContent),
+      busy,
+      sendDisabled: $('#send').disabled,
+      input: $('#input').value,
     };
   },
+  transcript() {
+    const readText = element => element.children.length
+      ? element.children.map(readText).join(' ')
+      : element.textContent;
+    return $('#log').children.map(readText);
+  },
+  setInput(text) { $('#input').value = text; },
   async runStaleProposalCheck(proposalModel) {
     const fetchBudget = { remaining: WEB_FETCH_BUDGET_PER_TURN };
     const searchBudget = { remaining: WEB_SEARCH_BUDGET_PER_TURN };
@@ -223,11 +247,13 @@ globalThis.webuiModelStateTest = {
 `;
 
 const pendingFileReaders = [];
+const alerts = [];
 class DeferredFileReader {
   readAsDataURL() { pendingFileReaders.push(this); }
 }
 
 const browserContext = vm.createContext({
+  AbortController,
   console,
   document,
   fetch: deferredFetch,
@@ -241,7 +267,7 @@ const browserContext = vm.createContext({
     },
   },
   window: {
-    alert() {},
+    alert(message) { alerts.push(message); },
     localStorage: deniedStorage,
     sessionStorage: deniedStorage,
   },
@@ -403,18 +429,92 @@ const removalTokenize = takeRequest(
     JSON.parse(request.options.body).model === modelA,
   'removed attachment tokenization');
 testApi.setAttachments([]);
-removalProps.resolve(jsonResponse({ n_ctx: 24576 }));
+const visionAdmission = testApi.selectedModelAcceptsImagesNow();
+assert.equal(pendingRequests.filter(
+  request => request.url === './props?model=model-A').length, 0,
+'image admission issued a second properties request for the current selection');
+removalProps.resolve(jsonResponse({ n_ctx: 24576, modalities: { vision: false } }));
 removalTokenize.resolve(jsonResponse({ tokens: [1, 2] }));
 await flushPromises();
 assert.deepEqual(testApi.state().attachments, []);
-const visionAdmission = testApi.selectedModelAcceptsImagesNow();
-await flushPromises();
-const nonVisionProps = takeRequest(
+assert.equal((await visionAdmission).state, 'unsupported',
+  'a successful text-only properties response admitted image content');
+
+testApi.selectRequestModel(modelA);
+const malformedAdmission = testApi.selectedModelAcceptsImagesNow();
+const malformedAdmissionProps = takeRequest(
   request => request.url === './props?model=model-A',
-  'explicit vision admission');
-nonVisionProps.resolve(jsonResponse({ modalities: { vision: false } }));
-assert.equal(await visionAdmission, false, 'a text-only model admitted image content');
+  'malformed capability properties');
+malformedAdmissionProps.resolve({
+  ok: true,
+  status: 200,
+  async json() { throw new SyntaxError('malformed JSON'); }
+});
+const malformedCapability = await malformedAdmission;
+assert.equal(malformedCapability.state, 'unavailable');
+assert.ok(malformedCapability.detail.includes('invalid JSON'));
+
+testApi.selectRequestModel(modelA);
+const transportAdmission = testApi.selectedModelAcceptsImagesNow();
+const transportAdmissionProps = takeRequest(
+  request => request.url === './props?model=model-A',
+  'failed capability transport');
+transportAdmissionProps.reject(new TypeError('connection closed'));
+const transportCapability = await transportAdmission;
+assert.equal(transportCapability.state, 'unavailable');
+assert.ok(transportCapability.detail.includes('connection closed'));
+
+const fileReadersBeforeUnavailable = pendingFileReaders.length;
+testApi.selectRequestModel(modelA);
+const unavailableAttachment = testApi.attachFiles([{
+  name: 'unavailable.png', type: 'image/png'
+}]);
+await flushPromises();
+const unavailableProps = takeRequest(
+  request => request.url === './props?model=model-A',
+  'unavailable model properties');
+assert.equal(pendingRequests.filter(
+  request => request.url === './props?model=model-A').length, 0,
+'attachment admission issued a second current-generation properties request');
+unavailableProps.resolve(jsonResponse({ error: 'model load failed' }, 500));
+await unavailableAttachment;
+assert.equal(pendingFileReaders.length, fileReadersBeforeUnavailable,
+  'an unavailable capability response reached FileReader');
+assert.ok(alerts.at(-1).includes('model properties returned HTTP 500'));
+assert.ok(!alerts.at(-1).includes('does not report vision capability'),
+  'HTTP 500 was presented as explicit unsupported capability');
+assert.equal(pendingRequests.filter(
+  request => request.url === './props?model=model-A').length, 0,
+'an unavailable properties result started an automatic retry');
+const explicitRetry = testApi.selectedModelAcceptsImagesNow();
+const explicitRetryProps = takeRequest(
+  request => request.url === './props?model=model-A',
+  'explicit capability retry');
+explicitRetryProps.resolve(jsonResponse({ n_ctx: 24576, modalities: { vision: true } }));
+assert.equal((await explicitRetry).state, 'supported',
+  'an explicit retry reused the unavailable properties result');
+
+testApi.selectRequestModel(modelA);
+const abortedAttachment = testApi.attachFiles([{
+  name: 'aborted.png', type: 'image/png'
+}]);
+await flushPromises();
+const abortedProps = takeRequest(
+  request => request.url === './props?model=model-A',
+  'properties request aborted by a model change');
+testApi.selectRequestModel(modelB);
+assert.equal(abortedProps.options.signal.aborted, true,
+  'a model change left the prior properties request active');
+const replacementProps = takeRequest(
+  request => request.url === './props?model=model%20B%2F8k',
+  'replacement model properties');
+replacementProps.resolve(jsonResponse({ n_ctx: 8192 }));
+await abortedAttachment;
+assert.equal(pendingFileReaders.length, fileReadersBeforeUnavailable,
+  'a stale capability result reached FileReader');
+
 let laterFileRead = false;
+testApi.selectRequestModel(modelA);
 const staleAttachment = testApi.attachFiles([{
   name: 'stale.png', type: 'image/png'
 }, {
@@ -424,12 +524,13 @@ const staleAttachment = testApi.attachFiles([{
 await flushPromises();
 const attachmentProps = takeRequest(
   request => request.url === './props?model=model-A', 'attachment vision admission');
-attachmentProps.resolve(jsonResponse({ modalities: { vision: true } }));
+attachmentProps.resolve(jsonResponse({ n_ctx: 24576, modalities: { vision: true } }));
 await flushPromises();
-assert.equal(pendingFileReaders.length, 1, 'the admitted image did not reach FileReader');
+assert.equal(pendingFileReaders.length, fileReadersBeforeUnavailable + 1,
+  'the admitted image did not reach FileReader');
 testApi.startNewConversation();
-pendingFileReaders[0].result = 'data:image/png;base64,c3RhbGU=';
-pendingFileReaders[0].onload();
+pendingFileReaders.at(-1).result = 'data:image/png;base64,c3RhbGU=';
+pendingFileReaders.at(-1).onload();
 await flushPromises();
 assert.equal(laterFileRead, false,
   'a stale selection began reading its next file in the new conversation');
@@ -561,9 +662,35 @@ switchedProps.resolve(jsonResponse({ n_ctx: 8192 }));
 await flushPromises();
 
 testApi.selectRequestModel(modelA);
+const unavailableSendProps = takeRequest(
+  request => request.url === './props?model=model-A',
+  'unavailable properties for image send');
+testApi.setAttachments([{
+  name: 'retry.png', kind: 'image', mime: 'image/png',
+  dataUrl: 'data:image/png;base64,cmV0cnk=', tokens: null, tokenModel: modelA
+}]);
+testApi.setInput('preserve this prompt');
+const unavailableSend = testApi.send();
+unavailableSendProps.resolve(jsonResponse({ error: 'model load failed' }, 500));
+await unavailableSend;
+assert.equal(testApi.state().busy, false,
+  'an unavailable image capability stranded busy ownership');
+assert.equal(testApi.state().sendDisabled, false,
+  'an unavailable image capability stranded the Send button');
+assert.equal(testApi.state().input, 'preserve this prompt',
+  'an unavailable image capability consumed the unsent prompt');
+assert.equal(testApi.state().attachments.length, 1,
+  'an unavailable image capability consumed the unsent attachment');
+assert.ok(testApi.transcript().at(-1).includes('model properties returned HTTP 500'));
+assert.ok(!testApi.transcript().at(-1).includes('does not report vision capability'),
+  'an unavailable image capability was presented as unsupported');
+
+testApi.setAttachments([]);
+testApi.setInput('');
+testApi.selectRequestModel(modelA);
 const cancelProps = takeRequest(
   request => request.url === './props?model=model-A', 'cancel model properties');
-cancelProps.resolve(jsonResponse({ n_ctx: 24576 }));
+cancelProps.resolve(jsonResponse({ n_ctx: 24576, modalities: { vision: true } }));
 await flushPromises();
 const cancelledTurn = testApi.beginResultHandleTurn(modelA);
 const cancelledResult = testApi.modelVisibleSearchResult(
@@ -574,11 +701,6 @@ assert.ok((await testApi.runFetch(cancelledHandle, cancelledTurn, modelA))[0].co
   'unknown or expired'), 'a cancelled conversation handle was accepted');
 assert.equal(postCount(), 0, 'a cancelled conversation handle reached POST /tools');
 const missingRandomnessPromise = testApi.sendWithMissingResultHandleRandomness();
-await flushPromises();
-const missingRandomnessProps = takeRequest(
-  request => request.url === './props?model=model-A',
-  'vision admission before result-handle randomness failure');
-missingRandomnessProps.resolve(jsonResponse({ modalities: { vision: true } }));
 const missingRandomness = await missingRandomnessPromise;
 assert.equal(missingRandomness.busy, false,
   'result-handle randomness failure stranded busy ownership');

@@ -357,6 +357,10 @@ globalThis.webuiConversationTest = {
     requestModel = id;
     $('#input').value = '';
   },
+  selectModel(id) {
+    selectRequestModel(id);
+    $('#input').value = '';
+  },
   setAttachments(value) { attachments = value; renderAttached(); },
   attachmentCount() { return attachments.length; },
   setInput(text) { $('#input').value = text; },
@@ -528,7 +532,7 @@ async function answerBoot(page) {
   await flushPromises();
   const props = takeRequest(page.pendingRequests,
     request => String(request.url).startsWith('./props?model='), 'model properties');
-  props.resolve(jsonResponse({ n_ctx: 4096 }));
+  props.resolve(jsonResponse({ n_ctx: 4096, modalities: { vision: true } }));
   await flushPromises();
 }
 
@@ -558,7 +562,7 @@ bootModelRoster.resolve(jsonResponse({ data: [{ id: 'image-capable' }] }));
 await flushPromises();
 const bootProps = takeRequest(first.pendingRequests,
   request => String(request.url).startsWith('./props?model='), 'model properties');
-bootProps.resolve(jsonResponse({ n_ctx: 4096 }));
+bootProps.resolve(jsonResponse({ n_ctx: 4096, modalities: { vision: true } }));
 await flushPromises();
 first.document.querySelector('#artifact-origin').value = ARTIFACT_ORIGIN;
 
@@ -724,11 +728,6 @@ first.api.setAttachments([{
 first.api.setInput('identify the object');
 const multimodalSend = first.api.send();
 await flushPromises();
-const visionProps = takeRequest(first.pendingRequests,
-  request => String(request.url).startsWith('./props?model=image-capable'),
-  'vision admission for image send');
-visionProps.resolve(jsonResponse({ modalities: { vision: true } }));
-await flushPromises();
 const multimodalCompletion = takeRequest(first.pendingRequests,
   request => request.url === './v1/chat/completions', 'multimodal completion');
 const multimodalBody = JSON.parse(multimodalCompletion.options.body);
@@ -773,7 +772,7 @@ assert.ok(first.api.transcript().some(text =>
   text.includes('image pixels were omitted') && text.includes('reattach the image')),
 'legacy omission marker restored without a visible reattachment warning');
 const messagesBeforeStaleAdmission = first.api.state().messages.length;
-first.api.setRequestModel('image-capable');
+first.api.selectModel('image-capable');
 first.api.setAttachments([{
   name: 'stale.png', kind: 'image', mime: 'image/png',
   dataUrl: 'data:image/png;base64,c3RhbGU=', tokens: null, tokenModel: 'image-capable'
@@ -785,8 +784,13 @@ await flushPromises();
 const staleVisionProps = takeRequest(first.pendingRequests,
   request => String(request.url).startsWith('./props?model=image-capable'),
   'stale vision admission');
-first.api.setRequestModel('text-only');
-staleVisionProps.resolve(jsonResponse({ modalities: { vision: true } }));
+first.api.selectModel('text-only');
+assert.equal(staleVisionProps.options.signal.aborted, true,
+  'a model change left stale image capability work active');
+const replacementProps = takeRequest(first.pendingRequests,
+  request => String(request.url).startsWith('./props?model=text-only'),
+  'replacement model properties');
+replacementProps.resolve(jsonResponse({ n_ctx: 4096, modalities: { vision: false } }));
 await Promise.all([staleImageSend, duplicateImageSend]);
 assert.equal(first.api.state().messages.length, messagesBeforeStaleAdmission,
   'a stale vision response appended a user turn');

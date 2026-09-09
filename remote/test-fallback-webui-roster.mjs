@@ -120,6 +120,7 @@ function newPage() {
   elements.clear();
   pendingRequests.length = 0;
   const browserContext = vm.createContext({
+    AbortController,
     console,
     document,
     fetch: deferredFetch,

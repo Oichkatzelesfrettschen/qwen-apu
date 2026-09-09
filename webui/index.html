@@ -325,6 +325,11 @@ let imageSendBusySequence = 0;
 let imageSendBusyOwner = 0;
 let requestModel = null;
 let modelStateGeneration = 0;
+// Context display and image admission consume one properties response for a
+// selection. A new selection aborts the browser request and makes any result
+// from the prior generation stale; backend cancellation remains outside the
+// browser's ownership proof.
+let modelPropertiesRequest = null;
 // Every tool message names the call it answers by id, so an id stays unique
 // across the whole conversation rather than within one round: a per-round
 // counter starting at 0 collides across turns and pairs a result with the
@@ -483,22 +488,68 @@ function modelStateMatches(selectedModel, generation) {
   return requestModel === selectedModel && modelStateGeneration === generation;
 }
 
-async function refreshModelContext(selectedModel, generation) {
-  try {
-    const modelUrl = `./props?model=${encodeURIComponent(selectedModel)}`;
-    const propsResponse = await fetch(modelUrl, { headers: authHeaders() });
-    if (!modelStateMatches(selectedModel, generation)) return;
-    if (propsResponse.ok) {
-      const props = await propsResponse.json();
-      if (!modelStateMatches(selectedModel, generation)) return;
-      const reportedContext =
-        props.default_generation_settings?.n_ctx ?? props.n_ctx ?? null;
-      if (Number.isFinite(reportedContext) && reportedContext > 0) {
-        nctx = reportedContext;
-        nctxModel = selectedModel;
+function abortModelPropertiesRequest() {
+  if (modelPropertiesRequest) modelPropertiesRequest.controller.abort();
+  modelPropertiesRequest = null;
+}
+
+function modelPropertiesForSelection(selectedModel, generation) {
+  if (!modelStateMatches(selectedModel, generation)) {
+    return Promise.resolve({ state: 'stale' });
+  }
+  if (modelPropertiesRequest && modelPropertiesRequest.model === selectedModel &&
+      modelPropertiesRequest.generation === generation) {
+    return modelPropertiesRequest.promise;
+  }
+  const controller = new AbortController();
+  const request = { model: selectedModel, generation, controller, promise: null };
+  const unavailable = detail => {
+    if (modelPropertiesRequest === request) modelPropertiesRequest = null;
+    return { state: 'unavailable', detail };
+  };
+  modelPropertiesRequest = request;
+  request.promise = (async () => {
+    let response;
+    try {
+      response = await fetch(`./props?model=${encodeURIComponent(selectedModel)}`,
+        { headers: authHeaders(), signal: controller.signal });
+    } catch (error) {
+      if (controller.signal.aborted || !modelStateMatches(selectedModel, generation)) {
+        return { state: 'stale' };
       }
+      return unavailable(`model properties request failed: ${error.message || error}`);
     }
-  } catch { /* the selected model remains routable without context metadata */ }
+    if (!modelStateMatches(selectedModel, generation)) return { state: 'stale' };
+    if (!response.ok) {
+      return unavailable(`model properties returned HTTP ${response.status}`);
+    }
+    let props;
+    try {
+      props = await response.json();
+    } catch (error) {
+      if (!modelStateMatches(selectedModel, generation)) return { state: 'stale' };
+      return unavailable(`model properties returned invalid JSON: ${error.message || error}`);
+    }
+    if (!modelStateMatches(selectedModel, generation)) return { state: 'stale' };
+    if (!props || typeof props !== 'object' || Array.isArray(props)) {
+      return unavailable('model properties returned no object');
+    }
+    return { state: 'available', props };
+  })();
+  return request.promise;
+}
+
+async function refreshModelContext(selectedModel, generation) {
+  const result = await modelPropertiesForSelection(selectedModel, generation);
+  if (!modelStateMatches(selectedModel, generation)) return;
+  if (result.state === 'available') {
+    const reportedContext =
+      result.props.default_generation_settings?.n_ctx ?? result.props.n_ctx ?? null;
+    if (Number.isFinite(reportedContext) && reportedContext > 0) {
+      nctx = reportedContext;
+      nctxModel = selectedModel;
+    }
+  }
   if (!modelStateMatches(selectedModel, generation)) return;
   $('#ctx').textContent = nctxModel === selectedModel
     ? nctx.toLocaleString() + ' token context'
@@ -688,6 +739,7 @@ function renderSupportMatrix(modelIds) {
 // ==== end feature roster ====================================================
 
 function selectRequestModel(selectedModel, persist = true) {
+  abortModelPropertiesRequest();
   const generation = ++modelStateGeneration;
   clearWebResultHandles();
   requestModel = selectedModel;
@@ -2578,6 +2630,7 @@ async function boot() {
   // The router creates no qwen-apu compatibility alias. Its roster is the
   // authority for request ids, so the fallback page selects only a model that
   // the listener reports instead of assuming the single-model alias exists.
+  abortModelPropertiesRequest();
   const generation = ++modelStateGeneration;
   const modelPicker = $('#model-picker');
   requestModel = null;
@@ -2765,19 +2818,22 @@ function renderAttached() {
   }
 }
 
-async function selectedModelAcceptsImages(expectedModel, expectedGeneration) {
-  if (!expectedModel || requestModel !== expectedModel ||
-      conversationGeneration !== expectedGeneration) return false;
-  try {
-    const response = await fetch(`./props?model=${encodeURIComponent(expectedModel)}`,
-      { headers: authHeaders() });
-    if (!response.ok) return false;
-    const props = await response.json();
-    return requestModel === expectedModel && conversationGeneration === expectedGeneration &&
-      props && props.modalities && props.modalities.vision === true;
-  } catch {
-    return false;
+async function selectedModelAcceptsImages(
+  expectedModel, expectedConversationGeneration, expectedModelGeneration
+) {
+  if (!expectedModel || !modelStateMatches(expectedModel, expectedModelGeneration) ||
+      conversationGeneration !== expectedConversationGeneration) {
+    return { state: 'stale' };
   }
+  const result = await modelPropertiesForSelection(expectedModel, expectedModelGeneration);
+  if (!modelStateMatches(expectedModel, expectedModelGeneration) ||
+      conversationGeneration !== expectedConversationGeneration || result.state === 'stale') {
+    return { state: 'stale' };
+  }
+  if (result.state === 'unavailable') return result;
+  return result.props && result.props.modalities && result.props.modalities.vision === true
+    ? { state: 'supported' }
+    : { state: 'unsupported' };
 }
 
 function imageFileDataUrl(file) {
@@ -2820,11 +2876,15 @@ async function attachFiles(files) {
     if (!selectionIsCurrent()) break;
     try {
       if (typeof file.type === 'string' && file.type.startsWith('image/')) {
-        if (!await selectedModelAcceptsImages(attachmentModel, attachmentGeneration)) {
-          if (!selectionIsCurrent()) break;
+        const capability = await selectedModelAcceptsImages(
+          attachmentModel, attachmentGeneration, attachmentModelGeneration);
+        if (capability.state === 'stale' || !selectionIsCurrent()) break;
+        if (capability.state === 'unsupported') {
           throw new Error(`model ${requestModel || '(none)'} does not report vision capability`);
         }
-        if (!selectionIsCurrent()) break;
+        if (capability.state === 'unavailable') {
+          throw new Error(`could not verify model vision capability: ${capability.detail}`);
+        }
         const dataUrl = await imageFileDataUrl(file);
         if (!selectionIsCurrent()) break;
         attachments.push({ name: file.name, kind: 'image', mime: file.type, dataUrl,
@@ -3703,6 +3763,7 @@ async function send() {
   const { prompt, images: imageAttachments, content } = composeUserContent(text, attachments);
   const turnModel = requestModel;
   const turnAdmissionGeneration = conversationGeneration;
+  const turnModelGeneration = modelStateGeneration;
   const imageBusyToken = imageAttachments.length ? ++imageSendBusySequence : 0;
   const releaseImageBusy = () => {
     if (imageBusyToken && imageSendBusyOwner === imageBusyToken) {
@@ -3716,14 +3777,24 @@ async function send() {
     busy = true;
     $('#send').disabled = true;
   }
-  if (imageAttachments.length &&
-      !await selectedModelAcceptsImages(turnModel, turnAdmissionGeneration)) {
-    releaseImageBusy();
-    const note = turn('image', '');
-    note.body.className = 'body meta bad';
-    note.body.textContent = `Model ${requestModel} does not report vision capability. ` +
-      'Select a vision model and retry the image turn.';
-    return;
+  if (imageAttachments.length) {
+    const capability = await selectedModelAcceptsImages(
+      turnModel, turnAdmissionGeneration, turnModelGeneration);
+    if (capability.state === 'stale') {
+      releaseImageBusy();
+      return;
+    }
+    if (capability.state === 'unsupported' || capability.state === 'unavailable') {
+      releaseImageBusy();
+      const note = turn('image', '');
+      note.body.className = 'body meta bad';
+      note.body.textContent = capability.state === 'unsupported'
+        ? `Model ${turnModel} does not report vision capability. ` +
+          'Select a vision model and retry the image turn.'
+        : `Could not verify model ${turnModel} vision capability: ${capability.detail}. ` +
+          'The prompt and attachments remain ready to retry.';
+      return;
+    }
   }
   // A LAN prompt bound is enforced here rather than left to the server: the
   // server refuses an over-large prompt only once its token count meets the
