@@ -198,6 +198,17 @@ def image_tool_listing():
     }]
 
 
+def fixture_feature_roster(vision_model):
+    """Bind the static image pairing to the same reviewer the router exposes."""
+    return {
+        "schema": "qwen-feature-roster/1",
+        "models": [],
+        "features": [],
+        "image_profiles": ([{"id": SERVED_IMAGE_PROFILE, "review_model": vision_model}]
+                           if vision_model else []),
+    }
+
+
 def make_handler(state, proposal=None, grant_status=200, grant_error=None,
                  vision_model=None, review_replies=None,
                  artifact_meta_origin=None, delay_artifact_response=False,
@@ -208,7 +219,7 @@ def make_handler(state, proposal=None, grant_status=200, grant_error=None,
     `grant_status` with `grant_error` is what the broker answers, so an arm
     states the one condition it exercises and shares every other route.
     `vision_model` adds a second roster row whose `GET /props` reports a vision
-    modality, which is what makes the page offer a review at all, and
+    modality and whose static feature roster registers the image pairing, and
     `review_replies` is the sequence of assistant messages the router answers
     each review request with, the last one repeating. `artifact_meta_origin`
     injects the served page's artifact-origin meta source for its focused
@@ -288,6 +299,9 @@ def make_handler(state, proposal=None, grant_status=200, grant_error=None,
                 self.send_header("Content-Length", str(len(fallback_html)))
                 self.end_headers()
                 self.wfile.write(fallback_html)
+                return
+            if parsed_path == "/roster.json":
+                self._send_json(200, fixture_feature_roster(vision_model))
                 return
             if parsed_path != ARTIFACT_PATH and not self._authorized():
                 # The artifact route below keeps its own check and its own
@@ -1627,6 +1641,9 @@ def make_paired_roster_handler():
                 self.send_header("Content-Length", str(len(fallback_html)))
                 self.end_headers()
                 self.wfile.write(fallback_html)
+                return
+            if parsed_path == "/roster.json":
+                self._send_json(200, fixture_feature_roster(PAIRED_REVIEW_MODEL))
                 return
             if parsed_path == "/v1/models":
                 self._send_json(200, {"data": [

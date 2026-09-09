@@ -584,20 +584,20 @@ grep -F 'if (lineage.state.correctionsUsed >= IMAGE_CORRECTION_CAP) {' \
 grep -F 'lineage.state.correctionsUsed = correctionNumber;' "$fallback_ui" >/dev/null
 grep -F 'const imageOutcome = await approveImageGeneration(bounded, lineage.model, note);' \
     "$fallback_ui" >/dev/null
-# The roster decides whether a review is offered at all: GET /props reports the
-# vision modality per model, and a text-only roster leaves the button hidden.
-grep -F 'async function resolveVisionModel(generation, signal) {' "$fallback_ui" >/dev/null
-grep -F 'if (props && props.modalities && props.modalities.vision === true) {' \
+# The image-profile roster selects one served reviewer without a model-loading
+# request. The explicit click confirms that reviewer's live vision capability
+# before the artifact and completion requests begin.
+grep -F 'function registeredReviewModel(imageProfileId) {' "$fallback_ui" >/dev/null
+grep -F 'async function confirmVisionReviewModel(reviewModel, generation, signal) {' \
     "$fallback_ui" >/dev/null
-grep -F 'function forgetVisionModel() {' "$fallback_ui" >/dev/null
+grep -F 'lineage.reviewModel, reviewModelGeneration, controller.signal);' \
+    "$fallback_ui" >/dev/null
+grep -F 'props && props.modalities && props.modalities.vision === true' \
+    "$fallback_ui" >/dev/null
 grep -F 'const dataUri = await artifactDataUri(lineage.sha256, controller.signal);' \
     "$fallback_ui" >/dev/null
 grep -F 'headers: authHeaders(), signal });' "$fallback_ui" >/dev/null
-if [ "$(grep -c 'forgetVisionModel();' "$fallback_ui")" -lt 2 ]; then
-    printf 'fallback Web UI does not clear the vision-model cache on every roster read\n' >&2
-    exit 1
-fi
 grep -F "reviewButton.className = 'act image-review-button';" "$fallback_ui" >/dev/null
-grep -F '  reviewButton.hidden = true;' "$fallback_ui" >/dev/null
+grep -F 'reviewButton.hidden = !cardLineage.reviewModel;' "$fallback_ui" >/dev/null
 
 printf 'fallback_webui_image_authorization=accepted\n'

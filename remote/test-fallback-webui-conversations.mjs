@@ -58,7 +58,7 @@ class FakeElement {
     if (value === '') this.children = [];
   }
 
-  // resolveVisionModel() reads $('#model-picker').options the way a real
+  // Reviewer selection reads $('#model-picker').options the way a real
   // HTMLOptionsCollection mirrors the <option> children boot() appended.
   get options() {
     return this.children;
@@ -260,6 +260,10 @@ globalThis.webuiConversationTest = {
   async storeName() {
     return (await conversationStore()).name;
   },
+  storageStatus() {
+    const status = $('#conversation-storage-status');
+    return { className: status.className, text: status.textContent };
+  },
   featureRosterOnce,
   clickSetKey(value) {
     $('#api-key').value = value;
@@ -340,6 +344,9 @@ globalThis.webuiConversationTest = {
   async list() {
     return (await conversationStore()).list();
   },
+  async writeRecord(record) {
+    return (await conversationStore()).write(record);
+  },
   read(id) {
     return readConversationRecord(id);
   },
@@ -348,6 +355,10 @@ globalThis.webuiConversationTest = {
   restoredBlobUrls() { return restoredArtifactBlobUrls.size; },
   setRequestModel(id) {
     requestModel = id;
+    $('#input').value = '';
+  },
+  selectModel(id) {
+    selectRequestModel(id);
     $('#input').value = '';
   },
   setAttachments(value) { attachments = value; renderAttached(); },
@@ -521,7 +532,7 @@ async function answerBoot(page) {
   await flushPromises();
   const props = takeRequest(page.pendingRequests,
     request => String(request.url).startsWith('./props?model='), 'model properties');
-  props.resolve(jsonResponse({ n_ctx: 4096 }));
+  props.resolve(jsonResponse({ n_ctx: 4096, modalities: { vision: true } }));
   await flushPromises();
 }
 
@@ -551,12 +562,14 @@ bootModelRoster.resolve(jsonResponse({ data: [{ id: 'image-capable' }] }));
 await flushPromises();
 const bootProps = takeRequest(first.pendingRequests,
   request => String(request.url).startsWith('./props?model='), 'model properties');
-bootProps.resolve(jsonResponse({ n_ctx: 4096 }));
+bootProps.resolve(jsonResponse({ n_ctx: 4096, modalities: { vision: true } }));
 await flushPromises();
 first.document.querySelector('#artifact-origin').value = ARTIFACT_ORIGIN;
 
 assert.equal(await first.api.storeName(), 'indexeddb',
   'the page did not select IndexedDB where the browser offers it');
+assert.equal(first.api.storageStatus().text,
+  'Conversation history is saved in this browser.');
 
 const savedId = await first.api.runFixtureTurn(fixture);
 await flushPromises();
@@ -715,11 +728,6 @@ first.api.setAttachments([{
 first.api.setInput('identify the object');
 const multimodalSend = first.api.send();
 await flushPromises();
-const visionProps = takeRequest(first.pendingRequests,
-  request => String(request.url).startsWith('./props?model=image-capable'),
-  'vision admission for image send');
-visionProps.resolve(jsonResponse({ modalities: { vision: true } }));
-await flushPromises();
 const multimodalCompletion = takeRequest(first.pendingRequests,
   request => request.url === './v1/chat/completions', 'multimodal completion');
 const multimodalBody = JSON.parse(multimodalCompletion.options.body);
@@ -737,8 +745,34 @@ const serializedMultimodalRecord = JSON.stringify(multimodalRecord);
 assert.ok(serializedMultimodalRecord.includes('image attachment omitted from saved conversation'));
 assert.ok(!serializedMultimodalRecord.includes('iVBORw0KGgo='),
   'saved history retained image bytes');
+assert.equal(JSON.stringify(multimodalRecord.messages.find(message => message.role === 'user')
+  .omitted_attachments), JSON.stringify([{ name: 'fixture.png', mime: 'image/png' }]));
+await first.api.startNewConversation();
+await first.api.switchConversation(multimodalRecord.id);
+await flushPromises();
+assert.ok(first.api.transcript().some(text =>
+  text.includes('image pixels (fixture.png) were omitted') &&
+  text.includes('reattach the image')),
+'restored multimodal turn hid the omitted-pixels reattachment warning');
+
+const legacyImageRecord = {
+  id: 'legacy-image-record',
+  title: 'legacy image',
+  updated: Date.now() + 1,
+  messages: [{
+    role: 'user',
+    shown: 'legacy prompt\n[legacy.png]',
+    content: 'legacy prompt\n\n[image attachment omitted from saved conversation: legacy.png, image/png]'
+  }]
+};
+await first.api.writeRecord(legacyImageRecord);
+await first.api.switchConversation(legacyImageRecord.id);
+await flushPromises();
+assert.ok(first.api.transcript().some(text =>
+  text.includes('image pixels were omitted') && text.includes('reattach the image')),
+'legacy omission marker restored without a visible reattachment warning');
 const messagesBeforeStaleAdmission = first.api.state().messages.length;
-first.api.setRequestModel('image-capable');
+first.api.selectModel('image-capable');
 first.api.setAttachments([{
   name: 'stale.png', kind: 'image', mime: 'image/png',
   dataUrl: 'data:image/png;base64,c3RhbGU=', tokens: null, tokenModel: 'image-capable'
@@ -750,8 +784,13 @@ await flushPromises();
 const staleVisionProps = takeRequest(first.pendingRequests,
   request => String(request.url).startsWith('./props?model=image-capable'),
   'stale vision admission');
-first.api.setRequestModel('text-only');
-staleVisionProps.resolve(jsonResponse({ modalities: { vision: true } }));
+first.api.selectModel('text-only');
+assert.equal(staleVisionProps.options.signal.aborted, true,
+  'a model change left stale image capability work active');
+const replacementProps = takeRequest(first.pendingRequests,
+  request => String(request.url).startsWith('./props?model=text-only'),
+  'replacement model properties');
+replacementProps.resolve(jsonResponse({ n_ctx: 4096, modalities: { vision: false } }));
 await Promise.all([staleImageSend, duplicateImageSend]);
 assert.equal(first.api.state().messages.length, messagesBeforeStaleAdmission,
   'a stale vision response appended a user turn');
@@ -1508,6 +1547,9 @@ const cascadeId = await cascadePage.api.runFixtureTurn(fixture);
 await flushPromises();
 assert.equal(await cascadePage.api.storeName(), 'memory',
   'a call that failed on two stores did not reach the third');
+assert.ok(cascadePage.api.storageStatus().text.includes(
+  'temporary and will disappear when this tab closes'),
+'the in-tab store was presented as durable conversation history');
 const cascadeList = await cascadePage.api.list();
 assert.equal(cascadeList.length, 1,
   'the record was lost after two stores refused it in the same call');

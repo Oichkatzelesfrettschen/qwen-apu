@@ -205,6 +205,7 @@
       <button class="act" id="conversation-new">new conversation</button>
       <button class="act" id="conversation-delete-all">delete all saved</button>
     </div>
+    <p class="meta" id="conversation-storage-status"></p>
     <div id="conversation-list"></div>
   </aside>
   <div id="chat-column">
@@ -324,11 +325,20 @@ let imageSendBusySequence = 0;
 let imageSendBusyOwner = 0;
 let requestModel = null;
 let modelStateGeneration = 0;
+// Context display and image admission consume one properties response for a
+// selection. A new selection aborts the browser request and makes any result
+// from the prior generation stale; backend cancellation remains outside the
+// browser's ownership proof.
+let modelPropertiesRequest = null;
 // Every tool message names the call it answers by id, so an id stays unique
 // across the whole conversation rather than within one round: a per-round
 // counter starting at 0 collides across turns and pairs a result with the
 // earlier call sharing its id.
 let toolCallSequence = 0;
+// Search result identifiers are signed capabilities whose exact bytes stay in
+// this page. One accepted user turn owns one random handle table, and every
+// boundary that can replace its model or transcript revokes the table.
+let webResultHandleRegistry = null;
 
 function readBrowserStorage(storageName, key) {
   try { return window[storageName].getItem(key); } catch { return null; }
@@ -478,22 +488,68 @@ function modelStateMatches(selectedModel, generation) {
   return requestModel === selectedModel && modelStateGeneration === generation;
 }
 
-async function refreshModelContext(selectedModel, generation) {
-  try {
-    const modelUrl = `./props?model=${encodeURIComponent(selectedModel)}`;
-    const propsResponse = await fetch(modelUrl, { headers: authHeaders() });
-    if (!modelStateMatches(selectedModel, generation)) return;
-    if (propsResponse.ok) {
-      const props = await propsResponse.json();
-      if (!modelStateMatches(selectedModel, generation)) return;
-      const reportedContext =
-        props.default_generation_settings?.n_ctx ?? props.n_ctx ?? null;
-      if (Number.isFinite(reportedContext) && reportedContext > 0) {
-        nctx = reportedContext;
-        nctxModel = selectedModel;
+function abortModelPropertiesRequest() {
+  if (modelPropertiesRequest) modelPropertiesRequest.controller.abort();
+  modelPropertiesRequest = null;
+}
+
+function modelPropertiesForSelection(selectedModel, generation) {
+  if (!modelStateMatches(selectedModel, generation)) {
+    return Promise.resolve({ state: 'stale' });
+  }
+  if (modelPropertiesRequest && modelPropertiesRequest.model === selectedModel &&
+      modelPropertiesRequest.generation === generation) {
+    return modelPropertiesRequest.promise;
+  }
+  const controller = new AbortController();
+  const request = { model: selectedModel, generation, controller, promise: null };
+  const unavailable = detail => {
+    if (modelPropertiesRequest === request) modelPropertiesRequest = null;
+    return { state: 'unavailable', detail };
+  };
+  modelPropertiesRequest = request;
+  request.promise = (async () => {
+    let response;
+    try {
+      response = await fetch(`./props?model=${encodeURIComponent(selectedModel)}`,
+        { headers: authHeaders(), signal: controller.signal });
+    } catch (error) {
+      if (controller.signal.aborted || !modelStateMatches(selectedModel, generation)) {
+        return { state: 'stale' };
       }
+      return unavailable(`model properties request failed: ${error.message || error}`);
     }
-  } catch { /* the selected model remains routable without context metadata */ }
+    if (!modelStateMatches(selectedModel, generation)) return { state: 'stale' };
+    if (!response.ok) {
+      return unavailable(`model properties returned HTTP ${response.status}`);
+    }
+    let props;
+    try {
+      props = await response.json();
+    } catch (error) {
+      if (!modelStateMatches(selectedModel, generation)) return { state: 'stale' };
+      return unavailable(`model properties returned invalid JSON: ${error.message || error}`);
+    }
+    if (!modelStateMatches(selectedModel, generation)) return { state: 'stale' };
+    if (!props || typeof props !== 'object' || Array.isArray(props)) {
+      return unavailable('model properties returned no object');
+    }
+    return { state: 'available', props };
+  })();
+  return request.promise;
+}
+
+async function refreshModelContext(selectedModel, generation) {
+  const result = await modelPropertiesForSelection(selectedModel, generation);
+  if (!modelStateMatches(selectedModel, generation)) return;
+  if (result.state === 'available') {
+    const reportedContext =
+      result.props.default_generation_settings?.n_ctx ?? result.props.n_ctx ?? null;
+    if (Number.isFinite(reportedContext) && reportedContext > 0) {
+      nctx = reportedContext;
+      nctxModel = selectedModel;
+    }
+  }
   if (!modelStateMatches(selectedModel, generation)) return;
   $('#ctx').textContent = nctxModel === selectedModel
     ? nctx.toLocaleString() + ' token context'
@@ -683,14 +739,15 @@ function renderSupportMatrix(modelIds) {
 // ==== end feature roster ====================================================
 
 function selectRequestModel(selectedModel, persist = true) {
+  abortModelPropertiesRequest();
   const generation = ++modelStateGeneration;
+  clearWebResultHandles();
   requestModel = selectedModel;
   renderTierBadge(selectedModel);
   nctx = null;
   nctxModel = null;
   forgetWebTools();
   forgetImageTools();
-  forgetVisionModel();
   attachments.forEach(attachment => {
     attachment.tokens = null;
     attachment.tokenModel = null;
@@ -731,6 +788,79 @@ const DEMO_TOOL = [{
 const WEB_SEARCH_TOOL_NAME = 'web_search_exa';
 const WEB_FETCH_TOOL_NAME = 'web_fetch_exa';
 const WEB_TOOL_NAMES = [WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME];
+const WEB_RESULT_HANDLE_PATTERN = /^r_[0-9a-f]{24}$/;
+
+function clearWebResultHandles() {
+  webResultHandleRegistry = null;
+}
+
+function randomWebResultHandle() {
+  if (typeof crypto === 'undefined' || !crypto ||
+      typeof crypto.getRandomValues !== 'function') {
+    throw new Error('the browser exposes no cryptographic random source for result handles');
+  }
+  const words = crypto.getRandomValues(new Uint32Array(3));
+  return 'r_' + Array.from(words, word => word.toString(16).padStart(8, '0')).join('');
+}
+
+function beginWebResultHandleTurn(model, generation) {
+  clearWebResultHandles();
+  const turnNonce = randomWebResultHandle();
+  webResultHandleRegistry = {
+    turnNonce,
+    model,
+    generation,
+    handles: new Map(),
+    originals: new Map()
+  };
+  return turnNonce;
+}
+
+function matchingWebResultRegistry(turnNonce, model, generation) {
+  const registry = webResultHandleRegistry;
+  return registry && registry.turnNonce === turnNonce && registry.model === model &&
+    registry.generation === generation && conversationGeneration === generation
+    ? registry : null;
+}
+
+function handleForWebResult(registry, resultId) {
+  const existing = registry.originals.get(resultId);
+  if (existing) return existing;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const handle = randomWebResultHandle();
+    if (registry.handles.has(handle)) continue;
+    registry.handles.set(handle, resultId);
+    registry.originals.set(resultId, handle);
+    return handle;
+  }
+  throw new Error('the browser could not allocate a unique result handle');
+}
+
+function modelVisibleSearchResult(text, turnNonce, model, generation) {
+  /* Replace only Result ID fields in complete blocks emitted by
+     render_search_results. Highlight text follows Highlights:, so an
+     attacker-authored line that resembles a Result ID never matches this
+     prefix and reaches no capability table. */
+  const registry = matchingWebResultRegistry(turnNonce, model, generation);
+  if (!registry) {
+    throw new Error('the result handle turn is stale for this model');
+  }
+  const resultField = /(^|\n---\n)(Title: [^\n]*\nURL: [^\n]*\nPublished: [^\n]*\nAuthor: [^\n]*\nResult ID: )([^\n]+)(\nTrust: untrusted-web-result\n(?:Sources: [^\n]*\n)?Highlights:)/g;
+  const visible = text.replace(resultField, (whole, separator, prefix, resultId, suffix) =>
+    separator + prefix + handleForWebResult(registry, resultId) + suffix);
+  if (/(^|\n)Result ID: [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\n|$)/.test(visible)) {
+    throw new Error('the search result carries a signed identifier outside its result field');
+  }
+  return visible;
+}
+
+function resolveWebResultHandle(handle, turnNonce, model, generation) {
+  const registry = matchingWebResultRegistry(turnNonce, model, generation);
+  if (!registry || !WEB_RESULT_HANDLE_PATTERN.test(handle) || !registry.handles.has(handle)) {
+    throw new Error('result_id is unknown or expired for this turn and model');
+  }
+  return registry.handles.get(handle);
+}
 
 // The composed list belongs to one model selection the way the context length
 // does: a router roster change replaces both, so the cache carries the model
@@ -1975,51 +2105,41 @@ const REVIEW_CONSTRAINT_KEYS = ['name', 'passed', 'observation'];
 const REVIEW_OBSERVATION_MAX_CHARS = 300;
 const REVIEW_PROMPT_DELTA_MAX_CHARS = 200;
 
-let visionModelCached = null;
-let visionModelGeneration = -1;
-
-function forgetVisionModel() {
-  visionModelCached = null;
-  visionModelGeneration = -1;
+function registeredReviewModel(imageProfileId) {
+  /* Return the reviewer assigned to one image profile where /v1/models also
+     names it. The feature roster selects the pairing, and the live picker
+     remains the authority for model ids the router can serve. */
+  const imageProfiles = featureRoster && Array.isArray(featureRoster.image_profiles)
+    ? featureRoster.image_profiles : [];
+  const profile = imageProfiles.find(row => row && row.id === imageProfileId);
+  const reviewModel = profile && typeof profile.review_model === 'string'
+    ? profile.review_model : '';
+  if (!reviewModel || reviewModel === '-') return null;
+  const served = [...$('#model-picker').options]
+    .some(option => option.value === reviewModel);
+  return served ? reviewModel : null;
 }
 
-async function resolveVisionModel(generation, signal) {
-  /* Return the first roster id whose props report a vision modality, or null.
-
-     `GET /props?model=<id>` carries `modalities.vision` per served row, which
-     is the same field remote/compare-model-candidate.sh reads, so the page
-     asks the server which of its models can read an image rather than matching
-     a name. The read happens when a card exists to review, which keeps these
-     requests out of every turn that generates nothing. */
-  if (visionModelGeneration === generation) return visionModelCached;
-  const rosterIds = [...$('#model-picker').options].map(option => option.value);
-  const found = [];
-  for (const modelId of rosterIds) {
-    try {
-      const response = await fetch(`./props?model=${encodeURIComponent(modelId)}`,
-        { headers: authHeaders(), signal });
-      if (!response.ok) continue;
-      const props = await response.json();
-      if (props && props.modalities && props.modalities.vision === true) {
-        const option = [...$('#model-picker').options]
-          .find(candidate => candidate.value === modelId);
-        found.push({
-          modelId,
-          reviewOnly: option && option.dataset.toolOffering === 'false'
-        });
-      }
-    } catch (error) {
-      // An abort ends the whole review rather than the one props read, so the
-      // caller reports the deadline instead of an empty roster.
-      if (error.name === 'AbortError') throw error;
-      /* a row whose props do not answer offers no review */
-    }
+async function confirmVisionReviewModel(reviewModel, generation, signal) {
+  /* Confirm the registered reviewer through one live props read after the
+     review click. A generation change or a model absent from /v1/models
+     refuses the review before its artifact or completion request begins. */
+  if (!reviewModel || generation !== modelStateGeneration ||
+      ![...$('#model-picker').options].some(option => option.value === reviewModel)) {
+    return null;
   }
-  if (generation === modelStateGeneration) {
-    visionModelCached = (found.find(candidate => candidate.reviewOnly) || found[0] || {}).modelId || null;
-    visionModelGeneration = generation;
+  const response = await fetch(`./props?model=${encodeURIComponent(reviewModel)}`,
+    { headers: authHeaders(), signal });
+  if (!response.ok) {
+    throw new Error(`the registered review model properties returned HTTP ${response.status}`);
   }
-  return (found.find(candidate => candidate.reviewOnly) || found[0] || {}).modelId || null;
+  const props = await response.json();
+  if (generation !== modelStateGeneration ||
+      ![...$('#model-picker').options].some(option => option.value === reviewModel)) {
+    return null;
+  }
+  return props && props.modalities && props.modalities.vision === true
+    ? reviewModel : null;
 }
 
 function reviewHardConstraints(fields) {
@@ -2415,12 +2535,17 @@ async function runImageReview(card, fields, lineage) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REVIEW_TIMEOUT_MS);
   const reviewGeneration = conversationGeneration;
-  const reviewIsCurrent = () => reviewGeneration === conversationGeneration && card.isConnected;
+  const reviewModelGeneration = modelStateGeneration;
+  const reviewIsCurrent = () => reviewGeneration === conversationGeneration &&
+    reviewModelGeneration === modelStateGeneration && card.isConnected;
   try {
-    const visionModel = await resolveVisionModel(modelStateGeneration, controller.signal);
+    const visionModel = await confirmVisionReviewModel(
+      lineage.reviewModel, reviewModelGeneration, controller.signal);
     if (!reviewIsCurrent()) return;
     if (!visionModel) {
-      appendReviewNote(card, 'The roster reports no vision model, so no review ran.', true);
+      appendReviewNote(card,
+        'The registered review model is unavailable or reports no vision capability, ' +
+        'so no review ran.', true);
       return;
     }
     const constraints = reviewHardConstraints(fields);
@@ -2505,6 +2630,7 @@ async function boot() {
   // The router creates no qwen-apu compatibility alias. Its roster is the
   // authority for request ids, so the fallback page selects only a model that
   // the listener reports instead of assuming the single-model alias exists.
+  abortModelPropertiesRequest();
   const generation = ++modelStateGeneration;
   const modelPicker = $('#model-picker');
   requestModel = null;
@@ -2512,7 +2638,6 @@ async function boot() {
   nctxModel = null;
   forgetWebTools();
   forgetImageTools();
-  forgetVisionModel();
   attachments.forEach(attachment => {
     attachment.tokens = null;
     attachment.tokenModel = null;
@@ -2693,19 +2818,22 @@ function renderAttached() {
   }
 }
 
-async function selectedModelAcceptsImages(expectedModel, expectedGeneration) {
-  if (!expectedModel || requestModel !== expectedModel ||
-      conversationGeneration !== expectedGeneration) return false;
-  try {
-    const response = await fetch(`./props?model=${encodeURIComponent(expectedModel)}`,
-      { headers: authHeaders() });
-    if (!response.ok) return false;
-    const props = await response.json();
-    return requestModel === expectedModel && conversationGeneration === expectedGeneration &&
-      props && props.modalities && props.modalities.vision === true;
-  } catch {
-    return false;
+async function selectedModelAcceptsImages(
+  expectedModel, expectedConversationGeneration, expectedModelGeneration
+) {
+  if (!expectedModel || !modelStateMatches(expectedModel, expectedModelGeneration) ||
+      conversationGeneration !== expectedConversationGeneration) {
+    return { state: 'stale' };
   }
+  const result = await modelPropertiesForSelection(expectedModel, expectedModelGeneration);
+  if (!modelStateMatches(expectedModel, expectedModelGeneration) ||
+      conversationGeneration !== expectedConversationGeneration || result.state === 'stale') {
+    return { state: 'stale' };
+  }
+  if (result.state === 'unavailable') return result;
+  return result.props && result.props.modalities && result.props.modalities.vision === true
+    ? { state: 'supported' }
+    : { state: 'unsupported' };
 }
 
 function imageFileDataUrl(file) {
@@ -2748,11 +2876,15 @@ async function attachFiles(files) {
     if (!selectionIsCurrent()) break;
     try {
       if (typeof file.type === 'string' && file.type.startsWith('image/')) {
-        if (!await selectedModelAcceptsImages(attachmentModel, attachmentGeneration)) {
-          if (!selectionIsCurrent()) break;
+        const capability = await selectedModelAcceptsImages(
+          attachmentModel, attachmentGeneration, attachmentModelGeneration);
+        if (capability.state === 'stale' || !selectionIsCurrent()) break;
+        if (capability.state === 'unsupported') {
           throw new Error(`model ${requestModel || '(none)'} does not report vision capability`);
         }
-        if (!selectionIsCurrent()) break;
+        if (capability.state === 'unavailable') {
+          throw new Error(`could not verify model vision capability: ${capability.detail}`);
+        }
         const dataUrl = await imageFileDataUrl(file);
         if (!selectionIsCurrent()) break;
         attachments.push({ name: file.name, kind: 'image', mime: file.type, dataUrl,
@@ -2971,7 +3103,8 @@ function openTurnView(sharedRoot) {
   return { turn: t, think, thinkBody, thinkShown: false, meta };
 }
 
-async function executeWebTool(toolName, params, model) {
+async function executeWebTool(toolName, params, model, resultHandleTurn = null,
+                              turnGeneration = conversationGeneration) {
   /* Run one tool through llama-server's executor and return the text it gives.
 
      The top-level `model` key is what the router reads to select the child,
@@ -3008,7 +3141,16 @@ async function executeWebTool(toolName, params, model) {
     return `The ${toolName} call returned HTTP ${response.status} with a body ` +
            'that carries no result text.';
   }
-  return truncateToolResult(payload.plain_text_response);
+  let resultText = payload.plain_text_response;
+  if (toolName === WEB_SEARCH_TOOL_NAME) {
+    try {
+      resultText = modelVisibleSearchResult(
+        resultText, resultHandleTurn, model, turnGeneration);
+    } catch (error) {
+      return `The ${toolName} result was refused by the page: ${error.message || error}`;
+    }
+  }
+  return truncateToolResult(resultText);
 }
 
 function searchRequestParams(fields, authorization) {
@@ -3033,18 +3175,22 @@ function searchRequestParams(fields, authorization) {
   return params;
 }
 
-function proposedFetchParams(argumentText) {
+function proposedFetchParams(argumentText, resultHandleTurn, model, turnGeneration) {
   /* Return the three fetch arguments the wrapper reads, from the proposal.
 
-     `fetch_exa` redeems a Result ID the wrapper itself signed and printed in a
-     prior search reply, so the server enforces the reference and the fetch
-     allowance and the browser sends the proposal through. The whitelist keeps
-     a model-authored `authorization` or `runtime` key out of the body. */
+     The model proposes a short handle printed in a prior search reply. The
+     page resolves that handle through the active turn's private table, and
+     `fetch_exa` redeems the exact signed Result ID stored there. The whitelist
+     keeps a model-authored `authorization` or `runtime` key out of the body. */
   const parsed = JSON.parse(argumentText);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('the proposed arguments are not an object');
   }
-  const params = { result_id: typeof parsed.result_id === 'string' ? parsed.result_id : '' };
+  const proposedHandle = typeof parsed.result_id === 'string' ? parsed.result_id : '';
+  const params = {
+    result_id: resolveWebResultHandle(
+      proposedHandle, resultHandleTurn, model, turnGeneration)
+  };
   for (const key of ['start_index', 'max_chars']) {
     // `require_integer` (remote/web-mcp/server.py) reads an absent key as its
     // own default, so an absent field is left out here to take that default.
@@ -3214,6 +3360,7 @@ async function renderImageArtifactCard(container, fields, result, lineage, signa
     model: lineage && lineage.model,
     cancelToolName: lineage && lineage.cancelToolName,
     bounds: lineage && lineage.bounds,
+    reviewModel: registeredReviewModel(fields.profile),
     entry: originEntry,
     entryGeneration: originGeneration,
     container
@@ -3236,15 +3383,12 @@ async function renderImageArtifactCard(container, fields, result, lineage, signa
   const reviewButton = document.createElement('button');
   reviewButton.className = 'act image-review-button';
   reviewButton.textContent = 'review';
-  reviewButton.hidden = true;
+  reviewButton.hidden = !cardLineage.reviewModel;
   reviewButton.onclick = () => { void runImageReview(card, fields, cardLineage); };
   card.append(reviewButton);
-  // The button appears where the roster holds a model that can answer it:
-  // GET /props reports a vision modality per model, and a roster of text rows
-  // leaves the review unoffered rather than failing at the click.
-  void resolveVisionModel(modelStateGeneration).then(visionModel => {
-    if (visionModel) reviewButton.hidden = false;
-  });
+  // Artifact rendering reads the declared pairing alone. The explicit review
+  // click confirms that one model's live vision capability before loading the
+  // image again, so creating a card never changes router residency.
   img.src = blobUrl;
   container.append(card);
   void saveConversation();
@@ -3383,16 +3527,18 @@ function answerCall(callId, toolName, content, turnGeneration) {
 
 async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
                                  searchBudget, turnGeneration, proposalModel,
-                                 webPermission, imagePermission, imageBudget, imageCancelToolName, imageBounds) {
+                                 webPermission, imagePermission, imageBudget, imageCancelToolName, imageBounds,
+                                 resultHandleTurn) {
   /* Execute this round's proposed calls and answer each one.
 
      A proposed `web_search_exa` is shown to a human with the arguments it
      would run under, the broker signs a grant over exactly those fields, and
      the browser posts them to `POST /tools` with the grant inside `params`.
      The grant lives in that one request body: `history` keeps the proposal it
-     was signed over, so the transcript the next round re-sends carries the
-     arguments and no token. A refusal answers the call with a tool message so
-     the model reads that the search did not run. */
+     was signed over, while a search result enters `history` with short handles
+     in place of its signed Result IDs. The transcript carries neither token.
+     A refusal answers the call with a tool message so the model reads that the
+     search did not run. */
   let refused = false;
   for (let index = 0; index < calls.length; index++) {
     const toolName = calls[index].name;
@@ -3514,7 +3660,8 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       }
       let params;
       try {
-        params = proposedFetchParams(calls[index].args);
+        params = proposedFetchParams(
+          calls[index].args, resultHandleTurn, proposalModel, turnGeneration);
       } catch (error) {
         refused = true;
         answerCall(callId, toolName, `The fetch did not run: ${error.message || error}`, turnGeneration);
@@ -3534,7 +3681,8 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
         continue;
       }
       fetchBudget.remaining--;
-      answerCall(callId, toolName, await executeWebTool(toolName, params, proposalModel), turnGeneration);
+      answerCall(callId, toolName, await executeWebTool(
+        toolName, params, proposalModel, resultHandleTurn, turnGeneration), turnGeneration);
       continue;
     }
     if (toolName !== WEB_SEARCH_TOOL_NAME) {
@@ -3580,7 +3728,8 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
     }
     if (outcome.decision === 'once') {
       answerCall(callId, toolName, await executeWebTool(
-        toolName, searchRequestParams(fields, outcome.authorization), proposalModel), turnGeneration);
+        toolName, searchRequestParams(fields, outcome.authorization), proposalModel,
+        resultHandleTurn, turnGeneration), turnGeneration);
     } else {
       refused = true;
       answerCall(callId, toolName, outcome.reason
@@ -3614,6 +3763,7 @@ async function send() {
   const { prompt, images: imageAttachments, content } = composeUserContent(text, attachments);
   const turnModel = requestModel;
   const turnAdmissionGeneration = conversationGeneration;
+  const turnModelGeneration = modelStateGeneration;
   const imageBusyToken = imageAttachments.length ? ++imageSendBusySequence : 0;
   const releaseImageBusy = () => {
     if (imageBusyToken && imageSendBusyOwner === imageBusyToken) {
@@ -3627,14 +3777,24 @@ async function send() {
     busy = true;
     $('#send').disabled = true;
   }
-  if (imageAttachments.length &&
-      !await selectedModelAcceptsImages(turnModel, turnAdmissionGeneration)) {
-    releaseImageBusy();
-    const note = turn('image', '');
-    note.body.className = 'body meta bad';
-    note.body.textContent = `Model ${requestModel} does not report vision capability. ` +
-      'Select a vision model and retry the image turn.';
-    return;
+  if (imageAttachments.length) {
+    const capability = await selectedModelAcceptsImages(
+      turnModel, turnAdmissionGeneration, turnModelGeneration);
+    if (capability.state === 'stale') {
+      releaseImageBusy();
+      return;
+    }
+    if (capability.state === 'unsupported' || capability.state === 'unavailable') {
+      releaseImageBusy();
+      const note = turn('image', '');
+      note.body.className = 'body meta bad';
+      note.body.textContent = capability.state === 'unsupported'
+        ? `Model ${turnModel} does not report vision capability. ` +
+          'Select a vision model and retry the image turn.'
+        : `Could not verify model ${turnModel} vision capability: ${capability.detail}. ` +
+          'The prompt and attachments remain ready to retry.';
+      return;
+    }
   }
   // A LAN prompt bound is enforced here rather than left to the server: the
   // server refuses an over-large prompt only once its token count meets the
@@ -3698,6 +3858,20 @@ async function send() {
   // boundary; the captured value continues to govern every continuation round
   // and tool call produced by the active turn.
   const webPermission = $('#web-tools').checked;
+  let resultHandleTurn = null;
+  if (webPermission) {
+    try {
+      resultHandleTurn = beginWebResultHandleTurn(requestModel, conversationGeneration);
+    } catch (error) {
+      const note = turn('web', '');
+      note.body.className = 'body meta bad';
+      note.body.textContent = `The web turn did not start: ${error.message || error}.`;
+      releaseImageBusy();
+      return;
+    }
+  } else {
+    clearWebResultHandles();
+  }
   $('#web-tools').checked = false;
   // Image generation carries the same per-turn permission snapshot as Web:
   // one user turn owns it, and the visible toggle already names the next.
@@ -3712,7 +3886,7 @@ async function send() {
     ? `${prompt}\n\n${imageAttachments.map(attachment =>
         `[image attachment omitted from saved conversation: ${attachment.name}, ${attachment.mime}]`).join('\n')}`
     : content;
-  rememberUserMessage(durableContent, shown);
+  rememberUserMessage(durableContent, shown, imageAttachments);
   // Saved here rather than after the completion, so an HTTP error, a dropped
   // connection, or the page closing during a long generation leaves the
   // prompt in the store it belongs to instead of only in memory.
@@ -3787,7 +3961,7 @@ async function send() {
       await runProposedTools(
         outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
         searchBudget, turnGeneration, proposalModel, webPermission,
-        imagePermission, imageBudget, imageCancelToolName, imageBounds);
+        imagePermission, imageBudget, imageCancelToolName, imageBounds, resultHandleTurn);
       if (turnGeneration !== conversationGeneration) return;
       void saveConversation();
       if (requestModel !== proposalModel) {
@@ -3823,11 +3997,13 @@ async function send() {
 
    What is written is a projection rather than a live object: role, content, the
    served model id, the tool call ids and arguments the transcript re-sends, and
-   an artifact's digest, provenance route, seed, and geometry. A broker grant, a
-   session secret, the API key, and the bearer travel in request bodies and
-   headers alone and reach no projection here, so the record a later reader
-   restores authorizes nothing. Image bytes stay out too: a restored card
-   refetches the artifact by its digest over the listener's credentialed route.
+   an artifact's digest, provenance route, seed, and geometry. Search content
+   and fetch proposals carry short handles; their signed Result IDs remain in
+   the live turn table. A broker grant, a session secret, the API key, and the
+   bearer travel in request bodies and headers alone and reach no projection
+   here, so the record a later reader restores authorizes nothing. Image bytes
+   stay out too: a restored card refetches the artifact by its digest over the
+   listener's credentialed route.
 
    `history` is rebuilt from the record, so a restored conversation continues
    against the same transcript the server already read. */
@@ -4092,6 +4268,18 @@ let conversationStoreRead = null;
 let conversationMutationTail = Promise.resolve();
 let conversationDeletionEpoch = 0;
 
+function renderConversationStorageStatus(store) {
+  const status = $('#conversation-storage-status');
+  if (store.name === 'memory') {
+    status.className = 'meta bad';
+    status.textContent =
+      'Conversation history is temporary and will disappear when this tab closes.';
+    return;
+  }
+  status.className = 'meta';
+  status.textContent = 'Conversation history is saved in this browser.';
+}
+
 function queueConversationMutation(operation, deletionEpoch = conversationDeletionEpoch) {
   /* Serialize persistent mutations so delete-all has one ordered boundary.
      Incrementing conversationDeletionEpoch invalidates every older mutation;
@@ -4108,7 +4296,10 @@ function queueConversationMutation(operation, deletionEpoch = conversationDeleti
 
 function conversationStore() {
   if (!conversationStoreRead) conversationStoreRead = resolveConversationStore();
-  return conversationStoreRead;
+  return conversationStoreRead.then(store => {
+    renderConversationStorageStatus(store);
+    return store;
+  });
 }
 
 async function readConversationRecord(id) {
@@ -4123,8 +4314,14 @@ function rememberSelectedConversation(id) {
   writeBrowserStorage('localStorage', CONVERSATION_SELECTED_KEY, id || null);
 }
 
-function rememberUserMessage(content, shown) {
+function rememberUserMessage(content, shown, omittedAttachments = []) {
   const entry = { role: 'user', content, shown };
+  if (omittedAttachments.length) {
+    entry.omitted_attachments = omittedAttachments.map(attachment => ({
+      name: attachment.name,
+      mime: attachment.mime
+    }));
+  }
   conversationMessages.push(entry);
   if (!conversationTitle) {
     const heading = (shown || content || '').trim().replace(/\s+/g, ' ');
@@ -4398,6 +4595,25 @@ function renderRestoredAssistantTurn(entry, sharedRoot) {
   return view.root;
 }
 
+function restoredUserText(entry) {
+  /* Saved image bytes never enter a conversation record. New records carry a
+     typed description of each omission, while older records retain the
+     omission marker in content. The restored transcript makes both cases
+     visible and names the action needed before the image can be used again. */
+  const shown = entry.shown ?? entry.content;
+  const structuredOmissions = Array.isArray(entry.omitted_attachments)
+    ? entry.omitted_attachments.filter(attachment =>
+      attachment && typeof attachment.name === 'string')
+    : [];
+  const legacyOmission = typeof entry.content === 'string' &&
+    entry.content.includes('[image attachment omitted from saved conversation:');
+  if (!structuredOmissions.length && !legacyOmission) return shown;
+  const names = structuredOmissions.map(attachment => attachment.name).join(', ');
+  const subject = names ? ' (' + names + ')' : '';
+  return shown + '\n[image pixels' + subject +
+    ' were omitted from the saved conversation; reattach the image before continuing this request]';
+}
+
 function restoreTranscript() {
   /* Rebuild `history` and the log from the record. A tool message restores into
      `history` and renders nothing, which is what the live path shows: the log
@@ -4412,7 +4628,7 @@ function restoreTranscript() {
     if (!entry || typeof entry.role !== 'string') continue;
     if (entry.role === 'user') {
       history.push({ role: 'user', content: entry.content });
-      turn('you', 'me').body.textContent = entry.shown ?? entry.content;
+      turn('you', 'me').body.textContent = restoredUserText(entry);
       continuationRoot = null;
       continue;
     }
@@ -4436,6 +4652,7 @@ function restoreTranscript() {
 
 function resetConversationState() {
   conversationGeneration++;
+  clearWebResultHandles();
   attachments = [];
   renderAttached();
   history = [];

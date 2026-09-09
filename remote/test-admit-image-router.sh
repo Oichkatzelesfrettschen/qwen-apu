@@ -88,9 +88,9 @@ lan_open_broker_port=$(sed -n 8p "$port_lease_ports_file")
 # tree at that one point.
 ln -s "$script_directory/../evidence" "$work/evidence"
 # qwen-image-launch.sh reads webui/index.html's own IMAGE_GENERATION_TIMEOUT_MS
-# beside its directory, and qwen-web-launch.sh serves that page, so the tree is
-# mirrored there too.
-ln -s "$script_directory/../webui" "$work/webui"
+# beside its directory, and qwen-web-launch.sh serves that page. The fixture
+# creates that directory after its registries exist so roster.json can be
+# generated from the same synthetic authorities as the router.
 
 # The harness mirrors remote/ by reference, so every script under test is the
 # checked-in one and only the named stubs differ.
@@ -191,6 +191,47 @@ validated_tuples=$work/validated-tuples.tsv
     printf '# tuple_id\tmodel_id\truntime_mode\tcontext\tbatch\tubatch\tcache_k\tcache_v\tflash_attention\tthreads\tparallel\tprojector_state\tbackend\tstatus\tevidence\tllama_commit\trunner_sha256\tkernel\tmesa\tamdgpu\tmeasured_at\n'
     printf 'image-review-fixture-d4096-b128-ub32-proj\timage-review-fixture\trouter-child\t4096\t128\t32\tq8_0\tq4_0\ton\t1\t1\tloaded\tvulkan\tvalidated\tevidence/image-appliance/design.md\t-\t-\t-\t-\t-\t2026-08-29\n'
 } >"$validated_tuples"
+
+# The page reads image review pairing from the static feature roster while the
+# live model list remains the serving authority. Generate the served roster
+# from this fixture's own registries so both authorities name the promoted
+# synthetic reviewer.
+fixture_image_ledger=$work/image-profiles.tsv
+awk -F'\t' -v OFS='\t' '
+    /^#/ { print; next }
+    $1 == "image-sdxs-512-a" {
+        $12 = "validator-gated"
+        $13 = "evidence/image-appliance/design.md"
+        $14 = "image-review-fixture"
+        print
+    }
+' "$script_directory/image-profiles.tsv" >"$fixture_image_ledger"
+fixture_feature_claims=$work/feature-claims.tsv
+{
+    printf '# subject_id\tfeature\tstatus\tevidence\tnote\n'
+    printf 'image-sdxs-512-a\timage-generation\texperimental\t-\tfixture generation path\n'
+    printf 'image-sdxs-512-a\timage-review\texperimental\t-\tfixture reviewer pairing\n'
+} >"$fixture_feature_claims"
+fixture_draft_pairs=$work/draft-pairs.tsv
+fixture_web_profiles=$work/web-profiles.tsv
+fixture_quarantine=$work/quarantine.tsv
+: >"$fixture_draft_pairs"
+: >"$fixture_web_profiles"
+: >"$fixture_quarantine"
+mkdir -p "$work/webui"
+cp -R "$script_directory/../webui/." "$work/webui/"
+QWEN_FEATURE_CLAIMS=$fixture_feature_claims \
+QWEN_MODEL_REGISTRY=$model_registry \
+QWEN_DRAFT_PAIRS=$fixture_draft_pairs \
+QWEN_WEB_PROFILES=$fixture_web_profiles \
+QWEN_IMAGE_PROFILES=$fixture_image_ledger \
+QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
+    "$harness/build-feature-roster.sh" "$work/webui/roster.json" >/dev/null
+jq -e '
+    .image_profiles[] |
+    select(.id == "image-sdxs-512-a") |
+    .review_model == "image-review-fixture"
+' "$work/webui/roster.json" >/dev/null
 
 # The fixture runtime writes a PNG of the requested dimensions from the seed
 # alone, so the artifact digest the service reports is a function of the seed
@@ -438,6 +479,7 @@ env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
     QWEN_RADV_ICD="$fixture_icd" \
     QWEN_SERVER_PORT="$test_server_port" \
     QWEN_WEB_BROKER_PORT="$test_broker_port" \
+    QWEN_ADMISSION_BROWSER_REVIEW_TIMEOUT=5 \
     "$harness/admit-image-router.sh" "$review_output" \
     >"$work/review.stdout" 2>"$work/review.stderr"
 review_status=$?

@@ -148,6 +148,7 @@ async function loadPage({ metaContents = {} } = {}) {
     setItem() { throw new Error('storage denied'); },
   };
   const browserContext = vm.createContext({
+    AbortController,
     console,
     document,
     fetch: deferredFetch,
@@ -178,7 +179,7 @@ async function loadPage({ metaContents = {} } = {}) {
   await flushPromises();
   const propsRequest = takeRequest(
     request => request.url === './props?model=model-A', 'model A properties');
-  propsRequest.resolve(jsonResponse({ n_ctx: 24576 }));
+  propsRequest.resolve(jsonResponse({ n_ctx: 24576, modalities: { vision: true } }));
   await flushPromises();
   return { testApi: browserContext.webuiLanBoundsTest, pendingRequests, takeRequest };
 }
@@ -191,10 +192,6 @@ for (const outcome of ['failure', 'over-limit']) {
   });
   testApi.setImageAttachment();
   const imageSend = testApi.send(`image ${outcome}`);
-  await flushPromises();
-  const visionRequest = takeRequest(
-    request => request.url === './props?model=model-A', 'image vision admission');
-  visionRequest.resolve(jsonResponse({ modalities: { vision: true } }));
   await flushPromises();
   const imageTokenize = takeRequest(
     request => request.url === './tokenize', `image tokenizer ${outcome}`);
@@ -221,10 +218,6 @@ for (const outcome of ['failure', 'over-limit']) {
   });
   testApi.setImageAttachment();
   const staleSend = testApi.send('stale tokenizer');
-  await flushPromises();
-  const visionRequest = takeRequest(
-    request => request.url === './props?model=model-A', 'stale tokenizer vision admission');
-  visionRequest.resolve(jsonResponse({ modalities: { vision: true } }));
   await flushPromises();
   const tokenizeRequest = takeRequest(
     request => request.url === './tokenize', 'stale image tokenizer');
