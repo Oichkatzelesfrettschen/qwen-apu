@@ -11,6 +11,19 @@ and SPEC. An accepted record under that key is reused rather than rerun, so
 something the cell's own verdict depends on moves, over a fixture gate of four
 tiny cells rather than the real gate's dozens of minutes-long ones.
 
+Pull requests whose changed paths stay inside documentation and the fallback
+Web UI use `remote/run-pull-request-gate.py`. Documentation changes run the
+three tree-wide manifest, path, and text policies. Web UI changes add the
+feature-roster check, every fallback-page behavior check, the full localhost
+browser fixture, and linters for changed shell and Python files. Any path
+outside that narrow allowlist delegates to the exhaustive gate. Pushes to
+`main`, nightly schedules, and manual runs also execute the exhaustive gate.
+
+The hosted runner saves accepted bounded-cell records under a unique immutable
+cache key and restores the newest earlier key for the same operating system.
+The record's content digest still decides reuse. A cache hit therefore reduces
+work without letting a record certify different source or tool bytes.
+
 ## What the key binds
 
 - **Every file the cell reads.** `gate_cell_named_paths` walks a `remote/`,

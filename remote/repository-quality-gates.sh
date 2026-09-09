@@ -123,6 +123,9 @@ gate_cell python-syntax files "$python_files" gate_python_syntax_walk
 gate_cell test-repository-gate-cells derive \
     'remote/test-repository-gate-cells.sh remote/gate-cell-key.sh' \
     remote/test-repository-gate-cells.sh
+gate_cell test-run-pull-request-gate derive \
+    'remote/test-run-pull-request-gate.py remote/run-pull-request-gate.py' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-run-pull-request-gate.py'
 gate_cell test-qwen-home derive \
     'remote/test-qwen-home.sh remote/qwen-home.sh remote/qwen_home.py' \
     remote/test-qwen-home.sh
