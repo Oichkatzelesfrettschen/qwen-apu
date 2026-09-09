@@ -92,8 +92,22 @@ grep -F "return truncateToolResult(\`The \${toolName} call was refused: \${paylo
 grep -F 'The ${toolName} call returned HTTP ${response.status} and no result.' \
     "$fallback_ui" >/dev/null
 grep -F "typeof payload.plain_text_response !== 'string'" "$fallback_ui" >/dev/null
-grep -F 'return truncateToolResult(payload.plain_text_response);' "$fallback_ui" >/dev/null
+grep -F 'let resultText = payload.plain_text_response;' "$fallback_ui" >/dev/null
+grep -F 'return truncateToolResult(resultText);' "$fallback_ui" >/dev/null
 grep -F 'const TOOL_RESULT_CHARACTER_CAP = 8000;' "$fallback_ui" >/dev/null
+
+# The model reads a random short handle while the exact signed Result ID stays
+# in one in-memory table bound to the active user turn and proposing model.
+# Fetch resolves only a member of that table before POST /tools; model changes,
+# conversation resets, stale turns, signed tokens, and URLs all fail lookup.
+grep -F 'const WEB_RESULT_HANDLE_PATTERN = /^r_[0-9a-f]{24}$/;' "$fallback_ui" >/dev/null
+grep -F 'const words = crypto.getRandomValues(new Uint32Array(3));' "$fallback_ui" >/dev/null
+grep -F 'let webResultHandleRegistry = null;' "$fallback_ui" >/dev/null
+grep -F 'function modelVisibleSearchResult(text, turnNonce, model, generation) {' \
+    "$fallback_ui" >/dev/null
+grep -F 'function resolveWebResultHandle(handle, turnNonce, model, generation) {' \
+    "$fallback_ui" >/dev/null
+grep -F 'clearWebResultHandles();' "$fallback_ui" >/dev/null
 
 # A truncated tool result still ends its frame: a `.slice()` alone could cut
 # the `END UNTRUSTED WEB CONTENT [nonce]` footer `wrap_untrusted`
@@ -162,11 +176,11 @@ grep -F 'fetchBudget.remaining--;' "$fallback_ui" >/dev/null
 # The MCP child of the profile that ran the search signed the Result ID, so
 # the fetch posts under the proposing model and a picker moved mid-stream
 # refuses by name instead of routing the ID into another child.
-grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params, proposalModel), turnGeneration);' \
+grep -F 'toolName, params, proposalModel, resultHandleTurn, turnGeneration), turnGeneration);' \
     "$fallback_ui" >/dev/null
 grep -F 'The fetch did not run: it was proposed by model ${proposalModel}, ' \
     "$fallback_ui" >/dev/null
-grep -F 'toolName, searchRequestParams(fields, outcome.authorization), proposalModel), turnGeneration);' \
+grep -F 'toolName, searchRequestParams(fields, outcome.authorization), proposalModel,' \
     "$fallback_ui" >/dev/null
 if grep -F 'executeWebTool(toolName, params, requestModel)' "$fallback_ui" >/dev/null; then
     printf 'a fetch still executes under the picker value rather than the proposing model\n' >&2
@@ -187,12 +201,13 @@ grep -F 'const searchBudget = { remaining: WEB_SEARCH_BUDGET_PER_TURN };' "$fall
 grep -F \
     'async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
                                  searchBudget, turnGeneration, proposalModel,
-                                 webPermission, imagePermission, imageBudget, imageCancelToolName) {' \
+                                 webPermission, imagePermission, imageBudget, imageCancelToolName, imageBounds,
+                                 resultHandleTurn) {' \
     "$fallback_ui" >/dev/null
 grep -F \
     'outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
         searchBudget, turnGeneration, proposalModel, webPermission,
-        imagePermission, imageBudget, imageCancelToolName);' \
+        imagePermission, imageBudget, imageCancelToolName, imageBounds, resultHandleTurn);' \
     "$fallback_ui" >/dev/null
 # The decrement precedes the approval dialog: the budget is spent by opening
 # the dialog and executing on approval, not by a later decision inside it.
@@ -535,6 +550,7 @@ const match = source.match(
     /function proposedFetchParams[\s\S]*?\n}\n/
 );
 if (!match) throw new Error("proposedFetchParams was not found in the served file");
+function resolveWebResultHandle(handle) { return handle; }
 eval(match[0]);
 
 const absent = proposedFetchParams(JSON.stringify({ result_id: "r1" }));

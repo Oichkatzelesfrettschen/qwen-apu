@@ -58,7 +58,7 @@ class FakeElement {
     if (value === '') this.children = [];
   }
 
-  // resolveVisionModel() reads $('#model-picker').options the way a real
+  // Reviewer selection reads $('#model-picker').options the way a real
   // HTMLOptionsCollection mirrors the <option> children boot() appended.
   get options() {
     return this.children;

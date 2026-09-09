@@ -180,6 +180,11 @@ globalThis.imageReviewTest = {
   historyLength() { return history.length; },
   setBrokerOriginField(value) { $('#broker-origin').value = value; },
   setArtifactOriginField(value) { $('#artifact-origin').value = value; },
+  addServedModel(modelId) {
+    const option = document.createElement('option');
+    option.value = modelId;
+    $('#model-picker').append(option);
+  },
   clickApproveOnce() { $('#image-approve-once').onclick(); },
 };
 `;
@@ -240,11 +245,18 @@ function drainBoot() {
   }
 }
 
-async function bootSingleModel(modelId, modalities) {
+async function bootSingleModel(modelId, modalities, reviewModel = modelId) {
   const context = makeContext();
   const featureRosterRequest = takeRequest(
     request => request.url === './roster.json', 'feature roster');
-  featureRosterRequest.resolve(jsonResponse({ error: 'not found' }, 404));
+  featureRosterRequest.resolve(jsonResponse({
+    schema: 'qwen-feature-roster/1',
+    models: [{ id: modelId }],
+    features: [],
+    image_profiles: reviewModel
+      ? [{ id: 'p', review_model: reviewModel }]
+      : [],
+  }));
   const rosterRequest = takeRequest(
     request => request.url === './v1/models', 'initial model roster');
   rosterRequest.resolve(jsonResponse({ data: [{ id: modelId }] }));
@@ -257,10 +269,10 @@ async function bootSingleModel(modelId, modalities) {
   return context;
 }
 
-// ==== the Review button appears only where a served row reports vision =====
+// ==== artifact rendering selects the registered reviewer without loading it
 
 {
-  const context = await bootSingleModel('text-only-model', { vision: false });
+  const context = await bootSingleModel('text-only-model', { vision: false }, null);
   const api = context.imageReviewTest;
   const container = new FakeElement();
   const sha = 'a'.repeat(64);
@@ -273,15 +285,13 @@ async function bootSingleModel(modelId, modalities) {
   artifactRead1.resolve(pngResponse(200));
   await flushPromises();
   await renderPromise;
-  const visionPropsRequest = takeRequest(
-    request => request.url === './props?model=text-only-model', 'resolveVisionModel props read');
-  visionPropsRequest.resolve(jsonResponse({ n_ctx: 8192, modalities: { vision: false } }));
-  await flushPromises();
+  assert.equal(pendingRequests.length, 0,
+    'artifact rendering issued a model-loading properties request');
   const card = container.children[0];
   const reviewButton = card.querySelector('.image-review-button');
   assert.ok(reviewButton, 'the card carries a review button element');
   assert.equal(reviewButton.hidden, true,
-    'a roster with no vision-capable row must leave the review button hidden');
+    'an image profile with no registered reviewer must leave the review button hidden');
   const caption = card.children.find(child => child.className === undefined || true) &&
     card.children.find(child => (child.textContent || '').includes('sha256'));
   assert.ok(caption.textContent.includes('seed 111'),
@@ -291,6 +301,8 @@ async function bootSingleModel(modelId, modalities) {
 {
   const context = await bootSingleModel('vision-model', { vision: true });
   const api = context.imageReviewTest;
+  api.addServedModel('text-model-a');
+  api.addServedModel('text-model-b');
   const container = new FakeElement();
   const sha = 'b'.repeat(64);
   const fields = { prompt: 'a red bicycle', negative_prompt: '', profile: 'p', width: 512, height: 512, steps: 20, seed: 222, seedGenerated: false };
@@ -302,17 +314,28 @@ async function bootSingleModel(modelId, modalities) {
   artifactRead2.resolve(pngResponse(200));
   await flushPromises();
   await renderPromise;
-  const visionPropsRequest = takeRequest(
-    request => request.url === './props?model=vision-model', 'resolveVisionModel props read');
-  visionPropsRequest.resolve(jsonResponse({ n_ctx: 8192, modalities: { vision: true } }));
-  await flushPromises();
+  assert.equal(pendingRequests.length, 0,
+    'artifact rendering probed one or more served models');
   const card = container.children[0];
   const reviewButton = card.querySelector('.image-review-button');
   assert.equal(reviewButton.hidden, false,
-    'a roster carrying a vision-capable row must reveal the review button');
+    'a served reviewer registered for the artifact profile must reveal the review button');
+  reviewButton.onclick();
+  await flushPromises();
+  const reviewerProps = takeRequest(
+    request => request.url === './props?model=vision-model',
+    'registered reviewer properties after click');
+  assert.equal(pendingRequests.some(request => request.url.startsWith('./props?model=')), false,
+    'the explicit review click probed a model other than the registered reviewer');
+  reviewerProps.resolve(jsonResponse({ n_ctx: 8192, modalities: { vision: false } }));
+  await flushPromises();
+  assert.equal(pendingRequests.length, 0,
+    'a reviewer whose live props deny vision reached the artifact or completion route');
+  assert.ok(card.children.some(child => (child.textContent || '').includes('no vision capability')),
+    'the card did not report the failed live capability confirmation');
 }
 
-console.log('review_button_visibility=accepted');
+console.log('reviewer_selection_without_eager_load=accepted');
 
 // ==== reviewCorrectionAdmitted: the three-fact conjunction ==================
 {
@@ -465,25 +488,25 @@ console.log('composed_prompt_bounds=accepted');
   artifactReadInitial.resolve(pngResponse(200));
   await flushPromises();
   await renderPromise1;
-  const visionPropsInitial = takeRequest(
-    request => request.url === './props?model=vision-model', 'resolveVisionModel for card 1');
-  visionPropsInitial.resolve(jsonResponse({ n_ctx: 8192, modalities: { vision: true } }));
-  await flushPromises();
+  assert.equal(pendingRequests.length, 0,
+    'card creation loaded the registered reviewer');
   const card1 = container.children[0];
   const sharedState = { correctionsUsed: 0 };
   const cardLineage = sha => ({
     sha256: sha, state: sharedState, model: 'vision-model', cancelToolName: null,
-    bounds: null, entry: null, entryGeneration: 0, container,
+    bounds: null, reviewModel: 'vision-model', entry: null, entryGeneration: 0, container,
   });
   const lineage1 = cardLineage(sha1);
 
   // ---- pass 1: an artifact expired at the listener reads as gone and moves
   //      neither the transcript nor the correction counter.
-  // resolveVisionModel() caches by modelStateGeneration, and card 1's own
-  // creation already resolved the first read for this generation, so this
-  // review reaches the artifact fetch with no further props request.
   const expiredReviewPromise = api.runImageReview(card1, fields, lineage1);
   {
+    await flushPromises();
+    const reviewerProps = takeRequest(
+      request => request.url === './props?model=vision-model',
+      'registered reviewer properties for expired artifact');
+    reviewerProps.resolve(jsonResponse({ n_ctx: 8192, modalities: { vision: true } }));
     await flushPromises();
     const artifactRead = takeRequest(
       request => request.url === `http://127.0.0.1:8572/artifacts/${sha1}.png`,
@@ -503,6 +526,14 @@ console.log('composed_prompt_bounds=accepted');
   async function runAdmittedReview(card, fieldsForReview, lineage, correctionSha) {
     const reviewStart = api.historyLength();
     const reviewPromise = api.runImageReview(card, fieldsForReview, lineage);
+    await flushPromises();
+
+    const reviewerProps = takeRequest(
+      request => request.url === './props?model=vision-model',
+      'registered reviewer properties');
+    assert.equal(pendingRequests.some(request => request.url.startsWith('./props?model=')), false,
+      'review click probed another served model');
+    reviewerProps.resolve(jsonResponse({ n_ctx: 8192, modalities: { vision: true } }));
     await flushPromises();
 
     const artifactRead = takeRequest(
@@ -604,6 +635,11 @@ console.log('composed_prompt_bounds=accepted');
   // dialog: the note names the cap and no broker or generation request runs.
   const requestCountBeforeCap = pendingRequests.length;
   const cappedReviewPromise = api.runImageReview(card3, correctedFields, cardLineage(sha3));
+  await flushPromises();
+  const cappedReviewerProps = takeRequest(
+    request => request.url === './props?model=vision-model',
+    'registered reviewer properties for capped review');
+  cappedReviewerProps.resolve(jsonResponse({ n_ctx: 8192, modalities: { vision: true } }));
   await flushPromises();
   const thirdArtifactRead = takeRequest(
     request => request.url === `http://127.0.0.1:8572/artifacts/${sha3}.png`, 'artifact read for the capped review');
