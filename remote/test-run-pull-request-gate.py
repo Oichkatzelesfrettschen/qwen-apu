@@ -31,7 +31,23 @@ assert (
 )
 assert MODULE.classify_paths(["remote/qwen-launch.sh"]) == "full"
 assert (
-    MODULE.classify_paths([".github/workflows/repository-quality-gates.yml"]) == "full"
+    MODULE.classify_paths([".github/workflows/repository-quality-gates.yml"])
+    == "ci-routing"
+)
+assert (
+    MODULE.classify_paths(
+        [
+            ".github/workflows/repository-quality-gates.yml",
+            "remote/merged-pr-gate-reuse.py",
+        ]
+    )
+    == "ci-routing"
+)
+assert (
+    MODULE.classify_paths(
+        [".github/workflows/repository-quality-gates.yml", "webui/index.html"]
+    )
+    == "full"
 )
 assert MODULE.classify_paths([]) == "full"
 try:
@@ -54,5 +70,8 @@ assert ("remote/test-feature-roster.sh",) in webui_commands
 assert ("python3", "remote/web-mcp/test-fallback-page-image.py") in webui_commands
 assert MODULE.selected_checks(["docs/USER-GUIDE.md"], "documentation") == list(
     MODULE.ALWAYS_CHECKS
+)
+assert ("python3", "remote/test-merged-pr-gate-reuse.py") in MODULE.selected_checks(
+    ["remote/merged-pr-gate-reuse.py"], "ci-routing"
 )
 print("pull_request_gate_routing=accepted")
