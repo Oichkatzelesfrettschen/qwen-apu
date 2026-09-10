@@ -62,7 +62,7 @@ def select_merged_pull_request(value: Json, pushed_sha: str) -> PullRequest | No
     return accepted[0] if len(accepted) == 1 and len(value) == 1 else None
 
 
-def clone_local_succeeded(value: Json) -> bool:
+def exhaustive_clone_local_succeeded(value: Json) -> bool:
     if not isinstance(value, Mapping):
         return False
     jobs = value.get("jobs")
@@ -73,9 +73,24 @@ def clone_local_succeeded(value: Json) -> bool:
         for job in jobs
         if isinstance(job, Mapping) and job.get("name") == "clone-local"
     ]
-    return len(clone_jobs) == 1 and all(
-        job.get("status") == "completed" and job.get("conclusion") == "success"
-        for job in clone_jobs
+    if len(clone_jobs) != 1:
+        return False
+    clone_job = clone_jobs[0]
+    steps = clone_job.get("steps")
+    if not isinstance(steps, list):
+        return False
+    cache_save_steps = [
+        step
+        for step in steps
+        if isinstance(step, Mapping)
+        and step.get("name") == "Save accepted gate cell cache"
+    ]
+    return (
+        clone_job.get("status") == "completed"
+        and clone_job.get("conclusion") == "success"
+        and len(cache_save_steps) == 1
+        and cache_save_steps[0].get("status") == "completed"
+        and cache_save_steps[0].get("conclusion") == "success"
     )
 
 
@@ -145,7 +160,7 @@ def reuse_is_proven(fetch: Fetch, pushed_sha: str) -> bool:
         )
         for run_id in successful_run_ids(runs, pull_request.head_sha):
             jobs = fetch(f"/actions/runs/{run_id}/jobs?per_page=100")
-            if clone_local_succeeded(jobs):
+            if exhaustive_clone_local_succeeded(jobs):
                 return True
     except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError):
         return False

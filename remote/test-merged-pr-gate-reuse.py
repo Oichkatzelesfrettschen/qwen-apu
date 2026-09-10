@@ -69,6 +69,13 @@ def fixture_fetch(path: str) -> object:
                     "name": "clone-local",
                     "status": "completed",
                     "conclusion": "success",
+                    "steps": [
+                        {
+                            "name": "Save accepted gate cell cache",
+                            "status": "completed",
+                            "conclusion": "success",
+                        }
+                    ],
                 }
             ],
         },
@@ -88,24 +95,65 @@ assert (
     )
     == []
 )
-assert MODULE.clone_local_succeeded(
+assert MODULE.exhaustive_clone_local_succeeded(
     {
         "total_count": 1,
         "jobs": [
-            {"name": "clone-local", "status": "completed", "conclusion": "success"}
+            {
+                "name": "clone-local",
+                "status": "completed",
+                "conclusion": "success",
+                "steps": [
+                    {
+                        "name": "Save accepted gate cell cache",
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ],
+            }
         ],
     }
 )
-assert not MODULE.clone_local_succeeded(
+assert not MODULE.exhaustive_clone_local_succeeded(
     {
         "total_count": 1,
         "jobs": [
-            {"name": "clone-local", "status": "completed", "conclusion": "failure"}
+            {
+                "name": "clone-local",
+                "status": "completed",
+                "conclusion": "failure",
+                "steps": [
+                    {
+                        "name": "Save accepted gate cell cache",
+                        "status": "completed",
+                        "conclusion": "success",
+                    }
+                ],
+            }
         ],
     }
 )
-assert not MODULE.clone_local_succeeded({"total_count": 0, "jobs": []})
-assert not MODULE.clone_local_succeeded(
+assert not MODULE.exhaustive_clone_local_succeeded(
+    {
+        "total_count": 1,
+        "jobs": [
+            {
+                "name": "clone-local",
+                "status": "completed",
+                "conclusion": "success",
+                "steps": [
+                    {
+                        "name": "Save accepted gate cell cache",
+                        "status": "completed",
+                        "conclusion": "skipped",
+                    }
+                ],
+            }
+        ],
+    }
+)
+assert not MODULE.exhaustive_clone_local_succeeded({"total_count": 0, "jobs": []})
+assert not MODULE.exhaustive_clone_local_succeeded(
     {"total_count": 2, "jobs": [{"name": "clone-local"}, {"name": "clone-local"}]}
 )
 print("merged_pr_gate_reuse=accepted")

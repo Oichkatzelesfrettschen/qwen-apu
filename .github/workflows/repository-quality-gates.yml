@@ -2,6 +2,11 @@ name: repository quality gates
 
 on:
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
   push:
     branches:
       - main
@@ -58,7 +63,10 @@ jobs:
           gate_status=0
           fast_status=3
           echo 'full_gate_ran=false' >> "$GITHUB_OUTPUT"
-          if test "${{ github.event_name }}" = pull_request; then
+          if test "${{ github.event_name }}" = pull_request &&
+            test "${{ github.event.pull_request.draft }}" = false; then
+            echo 'pull_request_gate=full reason=pull_request_is_merge_ready'
+          elif test "${{ github.event_name }}" = pull_request; then
             git diff --name-only \
               "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
               | sort -u > "$RUNNER_TEMP/qwen-changed-files"
