@@ -21,6 +21,17 @@ repository. `source-artifacts.tsv` binds their SHA-256 identities and the
 public run identity. The evidence publishes no credentials, runner paths from
 outside the already public result, or appliance data.
 
+The first operational correction run, `34450826531`, stopped after 3 minutes
+50 seconds. The stricter scope parser found two existing gate registrations
+that passed a Python executable and script path as separate function arguments.
+The old four-argument function silently discarded each script path; the Q8
+registration therefore ran bare `python3` instead of its fixture. The corrected
+registrations quote the complete commands for `test-q8-four-row-select` and
+`test-ab-shared-series`, and both fixtures pass when invoked directly. The
+failed run reports no terminal cell denominator, so it supports early refusal
+latency and the registration defect but does not establish completed cache
+reuse.
+
 ## Correction
 
 Every bounded cell key already hashes its command, tool identities, mode,

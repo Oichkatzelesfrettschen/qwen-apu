@@ -167,7 +167,7 @@ gate_cell test-build-cache-keys derive \
     remote/test-build-cache-keys.sh
 gate_cell test-q8-four-row-select derive \
     'remote/test-q8-four-row-select.py patches/llama-vulkan-q8-four-row-select.patch' \
-    python3 remote/test-q8-four-row-select.py
+    'python3 remote/test-q8-four-row-select.py'
 
 gate_cell test-build-llama-preset-flags derive \
     'remote/test-build-llama-preset-flags.sh remote/build-candidate-flags.sh remote/build-llama-preset.sh remote/llama-patch-series.tsv' \
@@ -356,7 +356,7 @@ gate_cell sweep-coverage-current derive \
     'python3 remote/classify-sweep-coverage.py --check'
 gate_cell test-ab-shared-series derive \
     'remote/test-ab-shared-series.py remote/census-arm-lib.sh remote/llama-patch-series.tsv' \
-    python3 remote/test-ab-shared-series.py
+    'python3 remote/test-ab-shared-series.py'
 
 gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
     remote/test-run-served-binary-ab.sh
