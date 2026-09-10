@@ -18,7 +18,8 @@ import tempfile
 import time
 from typing import Any
 
-SCHEMA = "qwen-browser-driver-preflight-v1"
+SCHEMA = "qwen-browser-driver-preflight-v2"
+DEPENDENCY_DIGEST_ALGORITHM = "distribution-manifest-path-content-sha256-v1"
 DEPENDENCY_IMPORT = "marionette_driver.marionette"
 DEPENDENCY_DISTRIBUTION = "marionette_driver"
 TERMINATION_GRACE_SECONDS = 10.0
@@ -112,7 +113,13 @@ def module_identity(module_name: str) -> tuple[str, str]:
         raise PreflightRefusal(
             "dependency_identity", "the required browser distribution has no metadata"
         ) from error
-    distribution_files = distribution.files
+    try:
+        distribution_files = distribution.files
+    except OSError as error:
+        raise PreflightRefusal(
+            "dependency_identity",
+            "the required browser distribution manifest is unreadable",
+        ) from error
     if not distribution_files:
         raise PreflightRefusal(
             "dependency_identity",
@@ -132,10 +139,10 @@ def module_identity(module_name: str) -> tuple[str, str]:
             distribution_digest.update(b"\0")
             distribution_digest.update(file_sha256(located_path).encode("ascii"))
             distribution_digest.update(b"\n")
-    except ValueError as error:
+    except (OSError, ValueError) as error:
         raise PreflightRefusal(
             "dependency_identity",
-            "the required browser distribution manifest escapes the declared environment",
+            "the required browser distribution manifest cannot be read inside the declared environment",
         ) from error
     if module_path.resolve() not in located_files:
         raise PreflightRefusal(
@@ -199,12 +206,29 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def process_group_lives(process_group_id: int) -> bool:
-    """Return whether the owned process group retains any member."""
-    try:
-        os.killpg(process_group_id, 0)
-    except ProcessLookupError:
-        return False
-    return True
+    """Return whether the owned process group retains an executable member."""
+    for stat_path in pathlib.Path("/proc").glob("[0-9]*/stat"):
+        try:
+            stat_text = stat_path.read_text(encoding="utf-8")
+            stat_fields = stat_text.rsplit(")", 1)[1].split()
+            state = stat_fields[0]
+            member_process_group = int(stat_fields[2])
+        except (OSError, IndexError, ValueError):
+            continue
+        if member_process_group == process_group_id and state != "Z":
+            return True
+    return False
+
+
+def final_driver_status(
+    observed_status: int, termination_signal: int | None, cleanup: str
+) -> int:
+    """Make an observed runner signal authoritative over a natural exit."""
+    if termination_signal is not None:
+        return 128 + termination_signal
+    if cleanup == "kill_incomplete" and observed_status == 0:
+        return 125
+    return observed_status
 
 
 def wait_for_process_group_exit(
@@ -288,6 +312,7 @@ def main() -> int:
                 "sha256": file_sha256(driver),
             },
             "browser_dependency": {
+                "digest_algorithm": DEPENDENCY_DIGEST_ALGORITHM,
                 "import": DEPENDENCY_IMPORT,
                 "role": "browser_dependency",
                 "sha256": dependency_digest,
@@ -383,15 +408,12 @@ def main() -> int:
     if termination_signal is not None:
         private["termination_signal"] = termination_signal
         public["termination_signal"] = termination_signal
+    driver_status = final_driver_status(driver_status, termination_signal, cleanup)
     private["driver_status"] = driver_status
     private["cleanup"] = cleanup
     private["elapsed_ns"] = time.monotonic_ns() - started_monotonic_ns
     public["driver_status"] = driver_status
     public["cleanup"] = cleanup
-    if cleanup == "kill_incomplete" and driver_status == 0:
-        driver_status = 125
-        private["driver_status"] = driver_status
-        public["driver_status"] = driver_status
     public["driver_execution"] = "completed" if driver_status == 0 else "failed"
     private["driver_execution"] = public["driver_execution"]
     write_json(private_record, private)
