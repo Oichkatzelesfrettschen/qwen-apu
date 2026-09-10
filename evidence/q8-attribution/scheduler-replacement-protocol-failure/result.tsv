@@ -1,0 +1,12 @@
+record_type	id	state	observation
+identity	q8-scheduler-replacement-20260910-01	authorization_closed	proposed_tuple_sha256=8b90eca504bf02017999a26eb47eea0f2cd148edc955548733f06f056a31a3e1; preregistration_source_head=9176c63c0467f73b00450acd98fd13715871a4e0; appliance_checkout_head=455abb8a9ae3bfb6e8fc8776d5c4824148281bf6; appliance_checkout_status_digest=308d8fbab2ebea1711b7b6015d56edecdb8a27bd69cf54321102bfc0e22c526d
+source	runner	identity_matched	sha256=e78585678ea3fce7689175d1aa65822ce5381f90b8459d83ef457afb79da5f5a
+source	broker_source	identity_matched	sha256=bfc8867fcb314a375465ee0027016799522022e5f9704a8e6d6eceb470ae9b58
+source	validator	identity_matched	sha256=698a6711d1761479ff1e552498ebab5999b5740d076bca8b24176db2d5b35f72
+protocol	prerequisite_probe	failed	The shell composed /proc/self/task/$$/schedstat; /proc/self resolved to the spawned reader while $$ retained the parent shell process ID, so the path was invalid. The scheduler prerequisite result was not retained.
+protocol	authorization_record	malformed_retained_source	The initial source record contains literal backslash-t and backslash-n separators; source_sha256=5b9929f2c98f32677035c2612c4e28d2f482cd494bd7be3e0b552b77b2a1add4
+outcome	replacement_calibration	failed_before_start	The runner did not start, the telemetry broker was not built or launched, and the acquisition directory remained absent.
+outcome	q8_candidate_timing	withheld	The replacement result admits neither the sampler instrument nor candidate timing. A new attempt requires a new authorization reference.
+preservation	owned_services	verified	service_process_count=7; all_alive=yes; identity_digest=8f5a83f9cd35283502083838ade90ac66e1afb24bdc1d9445eb7308d3d31280a; authenticated_http=200/200/200; unauthenticated_http=401/403/401
+preservation	appliance_surfaces	verified	served_page_sha256=4539f12f10cd2627383c3bd3ece520273061c7954ae40205668de0d5a8c6a891; KSM=1; DPM=auto; qemu_process_count=1; qemu_identity_digest=fe653ce0b13718604dc909c0ba31fffebf02fda4536575d4471076c50ad84e11
+boundary	acquisition	unchanged	No acquisition process, browser profile, model-server build, deployment change, kernel-setting change, Q8 timing, or n-gram work occurred under this authorization.
