@@ -493,7 +493,13 @@ with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporar
     if os.geteuid() == 0:
         unprivileged_account = pwd.getpwnam("nobody")
         temporary_root.chmod(0o755)
-        (unreadable_root / "results").chmod(0o777)
+        unreadable_results = unreadable_root / "results"
+        os.chown(
+            unreadable_results,
+            unprivileged_account.pw_uid,
+            unprivileged_account.pw_gid,
+        )
+        unreadable_results.chmod(0o700)
         unreadable_identity = (
             unprivileged_account.pw_uid,
             unprivileged_account.pw_gid,
