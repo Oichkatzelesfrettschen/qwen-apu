@@ -55,6 +55,22 @@ before execution. Universal and unbounded cells continue to run on every full
 gate, and any command, tool, mode, read-set, or input change continues to move
 the reconstructed key and run the affected cell.
 
+Gate-infrastructure pull requests use a separate bounded route because a cache
+implementation edit cannot benefit from the cache it invalidates. The route
+runs the three universal policy checks, warning-level ShellCheck over changed
+shell files, the cache mutation fixtures, a declaration-only traversal of all
+151 registered cells, the Q8 and shared-series command-shape fixtures, and the
+CI router's Python checks. The declaration traversal validates each name,
+mode, scope, input specification, and complete command without executing a
+cell. Scheduled runs and changes outside the narrow infrastructure path retain
+the exhaustive gate.
+
+A workstation run over the complete pull-request diff accepted all 12 bounded
+checks in 46.317 seconds. The text-policy walk consumed 16.935 seconds and the
+cache mutation fixtures consumed 26.599 seconds. The result demonstrates the
+focused route and does not substitute for the pull request's GitHub Actions
+result.
+
 ## Focused proof and boundary
 
 `remote/test-repository-gate-cells.sh` proves fresh execution, ordinary reuse,

@@ -6,16 +6,29 @@ set -eu
 # separate integration surfaces; this gate names that boundary by running only
 # tests whose complete fixtures live in this repository.
 
-if [ "$#" -ne 0 ]; then
-    printf 'usage: %s\n' "$0" >&2
+declaration_only=0
+case ${1-} in
+    '') ;;
+    --declarations) declaration_only=1 ;;
+    *)
+        printf 'usage: %s [--declarations]\n' "$0" >&2
+        exit 2
+        ;;
+esac
+[ "$#" -le 1 ] || {
+    printf 'usage: %s [--declarations]\n' "$0" >&2
     exit 2
-fi
+}
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++ ss bwrap; do
+required_commands='find sha256sum'
+if [ "$declaration_only" -eq 0 ]; then
+    required_commands='bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++ ss bwrap'
+fi
+for required_command in $required_commands; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2
@@ -24,7 +37,8 @@ for required_command in bash node shellcheck ruff mypy python3 curl flock git ps
 done
 
 chromium_command=${QWEN_CHROMIUM:-chromium}
-if ! command -v "$chromium_command" >/dev/null 2>&1; then
+if [ "$declaration_only" -eq 0 ] &&
+    ! command -v "$chromium_command" >/dev/null 2>&1; then
     printf 'required quality-gate browser is absent: %s\n' \
         "$chromium_command" >&2
     exit 2
@@ -41,6 +55,89 @@ GATE_CELL_DRIVER_PATH=$script_directory/$(basename -- "$0")
 export GATE_CELL_DRIVER_PATH
 # shellcheck source=remote/gate-cell-key.sh
 . "$script_directory/gate-cell-key.sh"
+
+if [ "$declaration_only" -eq 1 ]; then
+    declaration_stream=''
+    declaration_names=''
+    declaration_count=0
+
+    gate_cell_init() {
+        declaration_stream=$(mktemp)
+        declaration_names=$(mktemp)
+    }
+
+    gate_cell_cleanup() {
+        [ -z "$declaration_stream" ] || rm -f "$declaration_stream"
+        [ -z "$declaration_names" ] || rm -f "$declaration_names"
+    }
+
+    gate_cell() {
+        if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
+            printf 'gate_cell requires four or five arguments\n' >&2
+            return 2
+        fi
+        declaration_name=$1
+        declaration_mode=$2
+        declaration_spec=$3
+        declaration_command=$4
+        declaration_driver_scope=${5:-driver-independent}
+        case $declaration_name in
+            '' | *[!A-Za-z0-9_.-]*)
+                printf 'invalid gate cell name: %s\n' "$declaration_name" >&2
+                return 2
+                ;;
+        esac
+        if grep -qxF "$declaration_name" "$declaration_names"; then
+            printf 'duplicate gate cell name: %s\n' "$declaration_name" >&2
+            return 2
+        fi
+        case $declaration_mode in
+            derive | files | unbounded | universal) ;;
+            *)
+                printf 'unknown gate cell mode: %s\n' "$declaration_mode" >&2
+                return 2
+                ;;
+        esac
+        case $declaration_driver_scope in
+            driver-independent | exact-driver) ;;
+            *)
+                printf 'unknown gate cell driver scope: %s\n' \
+                    "$declaration_driver_scope" >&2
+                return 2
+                ;;
+        esac
+        case $declaration_command in
+            '')
+                printf 'empty command for gate cell: %s\n' \
+                    "$declaration_name" >&2
+                return 2
+                ;;
+            gate_*)
+                if [ "$declaration_driver_scope" != exact-driver ]; then
+                    printf 'driver-owned command requires exact-driver scope: %s\n' \
+                        "$declaration_command" >&2
+                    return 2
+                fi
+                ;;
+        esac
+        [ -n "$declaration_spec" ] || {
+            printf 'empty input specification for gate cell: %s\n' \
+                "$declaration_name" >&2
+            return 2
+        }
+        printf '%s\n' "$declaration_name" >>"$declaration_names"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$declaration_name" \
+            "$declaration_mode" "$declaration_driver_scope" \
+            "$declaration_spec" "$declaration_command" >>"$declaration_stream"
+        declaration_count=$((declaration_count + 1))
+    }
+
+    gate_cell_summary() {
+        printf 'gate_declarations=accepted cells=%s root=%s\n' \
+            "$declaration_count" \
+            "$(sha256sum "$declaration_stream" | cut -d' ' -f1)"
+    }
+fi
 
 shell_files=$(find remote -type f -name '*.sh' -print | sort)
 python_files=$(find remote -type f -name '*.py' -print | sort)

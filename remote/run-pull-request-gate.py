@@ -23,6 +23,13 @@ CI_ROUTING_PATHS = {
     "remote/test-merged-pr-gate-reuse.py",
     "remote/test-run-pull-request-gate.py",
 }
+GATE_INFRASTRUCTURE_PATHS = {
+    "evidence/SHA256SUMS",
+    "remote/gate-cell-key.sh",
+    "remote/repository-quality-gates.sh",
+    "remote/test-repository-gate-cells.sh",
+}
+GATE_INFRASTRUCTURE_EVIDENCE_PREFIX = "evidence/ci-gate-driver-scope-reuse/"
 CI_ROUTING_PYTHON_PATHS = tuple(
     sorted(path for path in CI_ROUTING_PATHS if path.endswith(".py"))
 )
@@ -69,7 +76,18 @@ def classify_paths(paths: Sequence[str]) -> str:
     checked = [validate_changed_path(path) for path in paths]
     if not checked or any(path in FULL_GATE_PATHS for path in checked):
         return "full"
-    if all(path in CI_ROUTING_PATHS for path in checked):
+    gate_infrastructure_paths = [
+        path
+        for path in checked
+        if path in GATE_INFRASTRUCTURE_PATHS
+        or path.startswith(GATE_INFRASTRUCTURE_EVIDENCE_PREFIX)
+    ]
+    if all(
+        path in CI_ROUTING_PATHS or path in gate_infrastructure_paths
+        for path in checked
+    ):
+        if gate_infrastructure_paths:
+            return "gate-infrastructure"
         return "ci-routing"
     if any(not is_safe_path(path) for path in checked):
         return "full"
@@ -80,6 +98,23 @@ def classify_paths(paths: Sequence[str]) -> str:
 
 def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
     checks = list(ALWAYS_CHECKS)
+    if scope == "gate-infrastructure":
+        changed_shell = sorted(path for path in paths if path.endswith(".sh"))
+        if changed_shell:
+            checks.append(("shellcheck", "-S", "warning", *changed_shell))
+        checks.extend(
+            (
+                ("remote/test-repository-gate-cells.sh",),
+                ("remote/repository-quality-gates.sh", "--declarations"),
+                ("python3", "remote/test-q8-four-row-select.py"),
+                ("python3", "remote/test-ab-shared-series.py"),
+                ("ruff", "check", *CI_ROUTING_PYTHON_PATHS),
+                ("python3", "-m", "py_compile", *CI_ROUTING_PYTHON_PATHS),
+                ("python3", "remote/test-run-pull-request-gate.py"),
+                ("python3", "remote/test-merged-pr-gate-reuse.py"),
+            )
+        )
+        return checks
     if scope == "ci-routing":
         checks.extend(
             (
