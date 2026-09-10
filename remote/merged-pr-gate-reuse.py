@@ -26,6 +26,12 @@ class PullRequest:
     head_sha: str
 
 
+@dataclass(frozen=True)
+class GateSource:
+    run_id: int
+    run_attempt: int
+
+
 def sha(value: object) -> str | None:
     return value if isinstance(value, str) and SHA_PATTERN.fullmatch(value) else None
 
@@ -94,27 +100,31 @@ def exhaustive_clone_local_succeeded(value: Json) -> bool:
     )
 
 
-def successful_run_ids(value: Json, head_sha: str) -> list[int]:
+def successful_run_sources(value: Json, head_sha: str) -> list[GateSource]:
     if not isinstance(value, Mapping):
         return []
     runs = value.get("workflow_runs")
     if not isinstance(runs, list) or value.get("total_count") != len(runs):
         return []
-    identifiers: list[int] = []
+    sources: list[GateSource] = []
     for run in runs:
         if not isinstance(run, Mapping):
             return []
         run_id = run.get("id")
+        run_attempt = run.get("run_attempt")
         if (
             isinstance(run_id, int)
+            and run_id > 0
+            and isinstance(run_attempt, int)
+            and run_attempt > 0
             and run.get("name") == "repository quality gates"
             and run.get("event") == "pull_request"
             and run.get("head_sha") == head_sha
             and run.get("status") == "completed"
             and run.get("conclusion") == "success"
         ):
-            identifiers.append(run_id)
-    return identifiers
+            sources.append(GateSource(run_id=run_id, run_attempt=run_attempt))
+    return sources
 
 
 def commit_tree_sha(value: Json) -> str | None:
@@ -142,29 +152,45 @@ def api_fetcher(repository: str, token: str, api_url: str) -> Fetch:
     return fetch
 
 
-def reuse_is_proven(fetch: Fetch, pushed_sha: str) -> bool:
+def reusable_gate_source(fetch: Fetch, pushed_sha: str) -> GateSource | None:
     try:
         pulls = fetch(f"/commits/{pushed_sha}/pulls?per_page=100")
         pull_request = select_merged_pull_request(pulls, pushed_sha)
         if pull_request is None:
-            return False
+            return None
         pushed_tree = commit_tree_sha(fetch(f"/git/commits/{pushed_sha}"))
         head_tree = commit_tree_sha(fetch(f"/git/commits/{pull_request.head_sha}"))
         if pushed_tree is None or pushed_tree != head_tree:
-            return False
+            return None
         encoded_sha = urllib.parse.quote(pull_request.head_sha, safe="")
         runs = fetch(
             "/actions/workflows/repository-quality-gates.yml/runs?"
             "event=pull_request&status=completed&per_page=100"
             f"&head_sha={encoded_sha}"
         )
-        for run_id in successful_run_ids(runs, pull_request.head_sha):
-            jobs = fetch(f"/actions/runs/{run_id}/jobs?per_page=100")
+        for source in successful_run_sources(runs, pull_request.head_sha):
+            jobs = fetch(f"/actions/runs/{source.run_id}/jobs?per_page=100")
             if exhaustive_clone_local_succeeded(jobs):
-                return True
+                return source
     except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError):
-        return False
-    return False
+        return None
+    return None
+
+
+def reuse_is_proven(fetch: Fetch, pushed_sha: str) -> bool:
+    return reusable_gate_source(fetch, pushed_sha) is not None
+
+
+def write_source(path: str, source: GateSource) -> None:
+    destination = os.path.abspath(path)
+    temporary = f"{destination}.pending"
+    with open(temporary, "x", encoding="utf-8") as output:
+        output.write("field\tvalue\n")
+        output.write(f"source_run_id\t{source.run_id}\n")
+        output.write(f"source_run_attempt\t{source.run_attempt}\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, destination)
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -174,6 +200,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--pushed-sha", required=True)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--api-url", default="https://api.github.com")
+    parser.add_argument("--source-result", required=True)
     return parser.parse_args()
 
 
@@ -188,12 +215,23 @@ def main() -> int:
     ):
         print("merged_pr_gate_reuse=full reason=event_or_credentials_ineligible")
         return FULL_GATE_EXIT
-    proven = reuse_is_proven(
+    source = reusable_gate_source(
         api_fetcher(arguments.repository, token, arguments.api_url),
         arguments.pushed_sha,
     )
-    if proven:
-        print("merged_pr_gate_reuse=accepted")
+    if source is not None:
+        try:
+            write_source(arguments.source_result, source)
+        except OSError as error:
+            print(
+                f"merged_pr_gate_reuse=full reason=source_result_error detail={error}"
+            )
+            return FULL_GATE_EXIT
+        print(
+            "merged_pr_gate_reuse=accepted "
+            f"source_run_id={source.run_id} "
+            f"source_run_attempt={source.run_attempt}"
+        )
         return 0
     print("merged_pr_gate_reuse=full reason=proof_unavailable")
     return FULL_GATE_EXIT

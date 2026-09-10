@@ -63,6 +63,7 @@ jobs:
           gate_status=0
           fast_status=3
           echo 'full_gate_ran=false' >> "$GITHUB_OUTPUT"
+          echo 'cache_promoted=false' >> "$GITHUB_OUTPUT"
           if test "${{ github.event_name }}" = pull_request &&
             test "${{ github.event.pull_request.draft }}" = false; then
             echo 'pull_request_gate=full reason=pull_request_is_merge_ready'
@@ -82,7 +83,30 @@ jobs:
               --ref-name "${{ github.ref_name }}" \
               --pushed-sha "${{ github.sha }}" \
               --repository "${{ github.repository }}" \
-              --api-url "${{ github.api_url }}" || fast_status=$?
+              --api-url "${{ github.api_url }}" \
+              --source-result "$RUNNER_TEMP/qwen-gate-reuse-source.tsv" || fast_status=$?
+            if test "$fast_status" -eq 0; then
+              source_run_id=$(awk -F '\t' '$1 == "source_run_id" { print $2 }' \
+                "$RUNNER_TEMP/qwen-gate-reuse-source.tsv")
+              source_run_attempt=$(awk -F '\t' '$1 == "source_run_attempt" { print $2 }' \
+                "$RUNNER_TEMP/qwen-gate-reuse-source.tsv")
+              case $source_run_id:$source_run_attempt in
+                *[!0-9:]* | :* | *:) fast_status=3 ;;
+                *)
+                  import_root="$RUNNER_TEMP/qwen-pr-gate-cache-import"
+                  artifact_name="repository-gate-cache-$source_run_id-$source_run_attempt"
+                  if gh run download "$source_run_id" \
+                    --name "$artifact_name" --dir "$import_root" &&
+                    test -d "$import_root/cells"; then
+                    mkdir -p "$RUNNER_TEMP/qwen-gate-cache/cells"
+                    cp -a "$import_root/cells/." "$RUNNER_TEMP/qwen-gate-cache/cells/"
+                    echo 'cache_promoted=true' >> "$GITHUB_OUTPUT"
+                  else
+                    fast_status=3
+                  fi
+                  ;;
+              esac
+            fi
           fi
           if test "$fast_status" -eq 3; then
             echo 'full_gate_ran=true' >> "$GITHUB_OUTPUT"
@@ -103,11 +127,23 @@ jobs:
           exit "$gate_status"
 
       - name: Save accepted gate cell cache
-        if: steps.gate.outcome == 'success' && steps.gate.outputs.full_gate_ran == 'true'
+        if: >-
+          steps.gate.outcome == 'success' &&
+          (steps.gate.outputs.full_gate_ran == 'true' ||
+           steps.gate.outputs.cache_promoted == 'true')
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ${{ runner.temp }}/qwen-gate-cache
           key: repository-gate-cells-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Retain accepted gate cell cache for exact-tree promotion
+        if: steps.gate.outcome == 'success' && steps.gate.outputs.full_gate_ran == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: repository-gate-cache-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qwen-gate-cache
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Retain the gate terminal result and log
         if: always()

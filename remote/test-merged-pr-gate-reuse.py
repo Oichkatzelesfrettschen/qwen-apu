@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import sys
+import tempfile
 
 DRIVER = pathlib.Path(__file__).with_name("merged-pr-gate-reuse.py")
 SPEC = importlib.util.spec_from_file_location("merged_pr_gate_reuse", DRIVER)
@@ -26,6 +27,7 @@ PULL = {
 }
 RUN = {
     "id": 73,
+    "run_attempt": 2,
     "name": "repository quality gates",
     "event": "pull_request",
     "head_sha": HEAD,
@@ -84,14 +86,32 @@ def fixture_fetch(path: str) -> object:
 
 
 assert MODULE.reuse_is_proven(fixture_fetch, PUSHED)
-assert MODULE.successful_run_ids({"total_count": 1, "workflow_runs": [RUN]}, HEAD) == [
-    73
-]
-assert MODULE.successful_run_ids({"total_count": 2, "workflow_runs": [RUN]}, HEAD) == []
-assert MODULE.successful_run_ids({"total_count": 0, "workflow_runs": None}, HEAD) == []
+assert MODULE.reusable_gate_source(fixture_fetch, PUSHED) == MODULE.GateSource(73, 2)
+with tempfile.TemporaryDirectory() as temporary_directory:
+    source_result = pathlib.Path(temporary_directory) / "source.tsv"
+    MODULE.write_source(str(source_result), MODULE.GateSource(73, 2))
+    assert source_result.read_text(encoding="utf-8") == (
+        "field\tvalue\nsource_run_id\t73\nsource_run_attempt\t2\n"
+    )
+assert MODULE.successful_run_sources(
+    {"total_count": 1, "workflow_runs": [RUN]}, HEAD
+) == [MODULE.GateSource(73, 2)]
 assert (
-    MODULE.successful_run_ids(
+    MODULE.successful_run_sources({"total_count": 2, "workflow_runs": [RUN]}, HEAD)
+    == []
+)
+assert (
+    MODULE.successful_run_sources({"total_count": 0, "workflow_runs": None}, HEAD) == []
+)
+assert (
+    MODULE.successful_run_sources(
         {"total_count": 1, "workflow_runs": [{**RUN, "event": "push"}]}, HEAD
+    )
+    == []
+)
+assert (
+    MODULE.successful_run_sources(
+        {"total_count": 1, "workflow_runs": [{**RUN, "run_attempt": 0}]}, HEAD
     )
     == []
 )
