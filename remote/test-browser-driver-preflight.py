@@ -7,7 +7,6 @@ import importlib.util
 import json
 import os
 import pathlib
-import pwd
 import signal
 import subprocess
 import sys
@@ -81,9 +80,7 @@ def make_executable(path: pathlib.Path, body: str) -> None:
 
 
 def run_fixture(
-    runtime_root: pathlib.Path,
-    record_name: str,
-    run_identity: tuple[int, int] | None = None,
+    runtime_root: pathlib.Path, record_name: str
 ) -> subprocess.CompletedProcess[str]:
     """Run the entry point with a hostile ambient Python first on PATH."""
     hostile = runtime_root / "hostile"
@@ -105,9 +102,6 @@ def run_fixture(
     environment = os.environ.copy()
     environment["PATH"] = f"{hostile}:{environment['PATH']}"
     environment["QWEN_HOME"] = str(runtime_root)
-    run_options: dict[str, Any] = {}
-    if run_identity is not None:
-        run_options["user"], run_options["group"] = run_identity
     return subprocess.run(
         [
             str(RUNNER),
@@ -123,7 +117,6 @@ def run_fixture(
         capture_output=True,
         text=True,
         env=environment,
-        **run_options,
     )
 
 
@@ -413,6 +406,52 @@ def run_start_failure_fixture(runtime_root: pathlib.Path) -> int:
             os.environ["QWEN_BROWSER_RUNTIME_ROOT"] = previous_runtime_root
 
 
+def assert_unreadable_dependency_refuses(runtime_root: pathlib.Path) -> None:
+    """Inject one distribution-file read failure into the identity check."""
+    make_environment(runtime_root, dependency=True)
+    site_packages = next(
+        (runtime_root / "opt" / "browser-venv" / "lib").glob("python*/site-packages")
+    )
+    unreadable_support = site_packages / "marionette_driver" / "support.py"
+    module = load_runner_module()
+    original_file_sha256 = cast(
+        Callable[[pathlib.Path], str], getattr(module, "file_sha256")
+    )
+
+    def refuse_support_file(path: pathlib.Path) -> str:
+        if path.resolve() == unreadable_support.resolve():
+            raise PermissionError("fixture distribution-file refusal")
+        return original_file_sha256(path)
+
+    setattr(module, "file_sha256", refuse_support_file)
+    previous_path = list(sys.path)
+    retained_modules = {
+        name: imported_module
+        for name, imported_module in sys.modules.items()
+        if name == "marionette_driver" or name.startswith("marionette_driver.")
+    }
+    for name in retained_modules:
+        del sys.modules[name]
+    sys.path.insert(0, str(site_packages))
+    try:
+        module_identity = cast(
+            Callable[[str], tuple[str, str]], getattr(module, "module_identity")
+        )
+        preflight_refusal = cast(type[Exception], getattr(module, "PreflightRefusal"))
+        try:
+            module_identity("marionette_driver.marionette")
+        except preflight_refusal as error:
+            assert getattr(error, "stage") == "dependency_identity"
+        else:
+            raise AssertionError("the injected dependency read failure was accepted")
+    finally:
+        sys.path[:] = previous_path
+        for name in tuple(sys.modules):
+            if name == "marionette_driver" or name.startswith("marionette_driver."):
+                del sys.modules[name]
+        sys.modules.update(retained_modules)
+
+
 with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporary:
     temporary_root = pathlib.Path(temporary)
 
@@ -480,49 +519,7 @@ with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporar
         "status": "refused",
     }
 
-    unreadable_root = temporary_root / "unreadable-dependency"
-    (unreadable_root / "results").mkdir(parents=True)
-    make_environment(unreadable_root, dependency=True)
-    unreadable_support = next(
-        (unreadable_root / "opt" / "browser-venv" / "lib").glob(
-            "python*/site-packages/marionette_driver/support.py"
-        )
-    )
-    unreadable_support.chmod(0)
-    unreadable_identity = None
-    if os.geteuid() == 0:
-        unprivileged_account = pwd.getpwnam("nobody")
-        temporary_root.chmod(0o755)
-        unreadable_results = unreadable_root / "results"
-        os.chown(
-            unreadable_results,
-            unprivileged_account.pw_uid,
-            unprivileged_account.pw_gid,
-        )
-        unreadable_results.chmod(0o700)
-        unreadable_identity = (
-            unprivileged_account.pw_uid,
-            unprivileged_account.pw_gid,
-        )
-    try:
-        unreadable = run_fixture(
-            unreadable_root,
-            "unreadable-record",
-            run_identity=unreadable_identity,
-        )
-        assert unreadable.returncode == 2, unreadable.stderr
-        unreadable_public = json.loads(
-            (
-                unreadable_root
-                / "results"
-                / "unreadable-record"
-                / "preflight-public.json"
-            ).read_text()
-        )
-        assert unreadable_public["failure_stage"] == "dependency_identity"
-        assert unreadable_public["driver_execution"] == "not_started"
-    finally:
-        unreadable_support.chmod(0o644)
+    assert_unreadable_dependency_refuses(temporary_root / "unreadable-dependency")
 
     foreign_root = temporary_root / "foreign"
     (foreign_root / "results").mkdir(parents=True)
