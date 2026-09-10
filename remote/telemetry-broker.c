@@ -60,9 +60,11 @@
  * the row carries the counter delta. The enclosing CLOCK_MONOTONIC interval
  * remains sample_cost_ns, including both schedstat reads, all sensor reads,
  * and parsing. The tenth column is the arithmetic residual between those two
- * measured values. That residual conservatively includes sensor service,
- * parsing, and schedstat-read overhead; it does not claim that every residual
- * nanosecond belongs to a sensor. `--scheduler-attribution schedstat` selects
+ * measured values. The schedstat delta is a lower bound because descheduling
+ * can occur after the outer wall clock starts but before the first counter
+ * read, or after the second counter read but before the wall clock ends. The
+ * unattributed residual therefore includes sensor service, parsing, schedstat
+ * reads, and any delay in those endpoint windows. `--scheduler-attribution schedstat` selects
  * this ten-column format and requires kernel.sched_schedstats=1, because a
  * readable counter held at zero by a disabled facility supplies no scheduler
  * attribution. Omitting the option preserves the legacy eight-column format.
@@ -185,8 +187,8 @@ _Static_assert(sizeof(struct sample_record) == 40,
                "the sample record is the ring's fixed width");
 
 struct attribution_record {
-    uint64_t scheduler_runqueue_delay_ns;
-    uint64_t non_scheduler_elapsed_ns;
+    uint64_t scheduler_runqueue_delay_lower_bound_ns;
+    uint64_t unattributed_elapsed_ns;
 };
 
 struct mark_record {
@@ -681,8 +683,8 @@ static int write_record(const struct broker *broker, const char *output_path,
     uint64_t cost_max = 0;
     uint64_t scheduler_delay_total = 0;
     uint64_t scheduler_delay_max = 0;
-    uint64_t non_scheduler_total = 0;
-    uint64_t non_scheduler_max = 0;
+    uint64_t unattributed_total = 0;
+    uint64_t unattributed_max = 0;
     uint64_t unavailable_rows = 0;
     uint64_t first_ns = 0;
     uint64_t last_ns = 0;
@@ -729,7 +731,8 @@ static int write_record(const struct broker *broker, const char *output_path,
                  "\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees"
                  "\tsample_cost_ns\tsclk_actual_mhz");
     if (scheduler_attribution) {
-        fprintf(out, "\tscheduler_runqueue_delay_ns\tnon_scheduler_elapsed_ns");
+        fprintf(out, "\tscheduler_runqueue_delay_lower_bound_ns"
+                     "\tunattributed_elapsed_ns");
     }
     fputc('\n', out);
 
@@ -825,8 +828,8 @@ static int write_record(const struct broker *broker, const char *output_path,
                     &broker->attribution[sample_index];
 
                 fprintf(out, "\t%" PRIu64 "\t%" PRIu64,
-                        attribution->scheduler_runqueue_delay_ns,
-                        attribution->non_scheduler_elapsed_ns);
+                        attribution->scheduler_runqueue_delay_lower_bound_ns,
+                        attribution->unattributed_elapsed_ns);
             }
             fputc('\n', out);
             if ((sample->unavailable_flags & UNAVAILABLE_SENSOR_MASK) != 0) {
@@ -840,13 +843,16 @@ static int write_record(const struct broker *broker, const char *output_path,
                 const struct attribution_record *attribution =
                     &broker->attribution[sample_index];
 
-                scheduler_delay_total += attribution->scheduler_runqueue_delay_ns;
-                if (attribution->scheduler_runqueue_delay_ns > scheduler_delay_max) {
-                    scheduler_delay_max = attribution->scheduler_runqueue_delay_ns;
+                scheduler_delay_total +=
+                    attribution->scheduler_runqueue_delay_lower_bound_ns;
+                if (attribution->scheduler_runqueue_delay_lower_bound_ns >
+                    scheduler_delay_max) {
+                    scheduler_delay_max =
+                        attribution->scheduler_runqueue_delay_lower_bound_ns;
                 }
-                non_scheduler_total += attribution->non_scheduler_elapsed_ns;
-                if (attribution->non_scheduler_elapsed_ns > non_scheduler_max) {
-                    non_scheduler_max = attribution->non_scheduler_elapsed_ns;
+                unattributed_total += attribution->unattributed_elapsed_ns;
+                if (attribution->unattributed_elapsed_ns > unattributed_max) {
+                    unattributed_max = attribution->unattributed_elapsed_ns;
                 }
             }
             if (sample_index == 0) {
@@ -872,18 +878,18 @@ static int write_record(const struct broker *broker, const char *output_path,
                  " mean_sample_cost_ns=%" PRIu64 " max_sample_cost_ns=%" PRIu64,
             broker->sample_count, achieved_ns, mean_cost_ns, cost_max);
     if (scheduler_attribution) {
-        fprintf(out, " mean_scheduler_runqueue_delay_ns=%" PRIu64
-                     " max_scheduler_runqueue_delay_ns=%" PRIu64
-                     " mean_non_scheduler_elapsed_ns=%" PRIu64
-                     " max_non_scheduler_elapsed_ns=%" PRIu64,
+        fprintf(out, " mean_scheduler_runqueue_delay_lower_bound_ns=%" PRIu64
+                     " max_scheduler_runqueue_delay_lower_bound_ns=%" PRIu64
+                     " mean_unattributed_elapsed_ns=%" PRIu64
+                     " max_unattributed_elapsed_ns=%" PRIu64,
                 (broker->sample_count > 0)
                     ? scheduler_delay_total / broker->sample_count
                     : UINT64_C(0),
                 scheduler_delay_max,
                 (broker->sample_count > 0)
-                    ? non_scheduler_total / broker->sample_count
+                    ? unattributed_total / broker->sample_count
                     : UINT64_C(0),
-                non_scheduler_max);
+                unattributed_max);
     }
     fprintf(out, " samples_with_unavailable_sensor=%" PRIu64
                  " first_sample_ns=%" PRIu64 " last_sample_ns=%" PRIu64 "\n",
@@ -906,18 +912,19 @@ static int write_record(const struct broker *broker, const char *output_path,
             broker->sample_count, broker->mark_count, broker->memory_count,
             broker->host_count, mean_cost_ns, cost_max);
     if (scheduler_attribution) {
-        fprintf(stderr, " mean_scheduler_runqueue_delay_ns=%" PRIu64
-                        " max_scheduler_runqueue_delay_ns=%" PRIu64
-                        " mean_non_scheduler_elapsed_ns=%" PRIu64
-                        " max_non_scheduler_elapsed_ns=%" PRIu64,
+        fprintf(stderr,
+                " mean_scheduler_runqueue_delay_lower_bound_ns=%" PRIu64
+                " max_scheduler_runqueue_delay_lower_bound_ns=%" PRIu64
+                " mean_unattributed_elapsed_ns=%" PRIu64
+                " max_unattributed_elapsed_ns=%" PRIu64,
                 (broker->sample_count > 0)
                     ? scheduler_delay_total / broker->sample_count
                     : UINT64_C(0),
                 scheduler_delay_max,
                 (broker->sample_count > 0)
-                    ? non_scheduler_total / broker->sample_count
+                    ? unattributed_total / broker->sample_count
                     : UINT64_C(0),
-                non_scheduler_max);
+                unattributed_max);
     }
     fprintf(stderr, " fast_path_surfaces=gpu_busy_percent"
                     " fast_path_samples=%" PRIu64
@@ -1345,7 +1352,7 @@ int main(int argc, char **argv)
                         "telemetry_broker=acquisition_failed"
                         " reason=attribution_interval"
                         " sample_cost_ns=%" PRIu64
-                        " scheduler_runqueue_delay_ns=%" PRIu64 "\n",
+                        " scheduler_runqueue_delay_lower_bound_ns=%" PRIu64 "\n",
                         sample_cost, scheduler_delay_delta);
                 break;
             }
@@ -1382,9 +1389,9 @@ int main(int argc, char **argv)
                     struct attribution_record *attribution =
                         &broker.attribution[broker.sample_count];
 
-                    attribution->scheduler_runqueue_delay_ns =
+                    attribution->scheduler_runqueue_delay_lower_bound_ns =
                         scheduler_delay_delta;
-                    attribution->non_scheduler_elapsed_ns =
+                    attribution->unattributed_elapsed_ns =
                         sample_cost - scheduler_delay_delta;
                 }
                 broker.sample_count++;

@@ -94,6 +94,15 @@ assert (
 assert (
     MODULE.classify_paths(
         [
+            "remote/telemetry-broker.c",
+            "remote/merged-pr-gate-reuse.py",
+        ]
+    )
+    == "full"
+)
+assert (
+    MODULE.classify_paths(
+        [
             "remote/browser-driver-preflight.py",
             "evidence/unrelated-result/README.md",
         ]

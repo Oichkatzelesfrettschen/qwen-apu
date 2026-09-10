@@ -208,13 +208,15 @@ already documents. The field exists so a future record shape is refused by
 name rather than silently read under today's rules.
 
 `broker-schedstat-v1` requires the ten-column broker record. The appended
-`scheduler_runqueue_delay_ns` value is the cumulative delay-counter delta from
-the current task's schedstat record across the enclosing sample interval;
-`non_scheduler_elapsed_ns` must equal `sample_cost_ns` minus that delta on
-every row. The validator recomputes all four attribution footer aggregates.
-A large sample cost with a zero scheduler delta remains a large residual and
-acquires no scheduler label. A record carrying attributed columns without the
-format, or the format without those columns, refuses at `attribution_schema`.
+`scheduler_runqueue_delay_lower_bound_ns` value is the cumulative delay-counter
+delta from the current task's schedstat record across the enclosing sample
+interval. Descheduling inside the wall-clock interval but outside the two
+counter reads remains endpoint ambiguity, so `unattributed_elapsed_ns` must
+equal `sample_cost_ns` minus the measured lower bound on every row. The
+validator recomputes all four attribution footer aggregates. A large sample
+cost with a zero scheduler lower bound remains unattributed and acquires no
+scheduler label. A record carrying attributed columns without the format, or
+the format without those columns, refuses at `attribution_schema`.
 
 usage: validate-clock-sidecar.py RECORD_TSV --sidecar-status N
        --period-ms F --period-tolerance F --cost-bound-ns N
@@ -248,8 +250,8 @@ COLUMNS = (
 ACTUAL_COLUMN = "sclk_actual_mhz"
 WIDE_COLUMNS = COLUMNS + (ACTUAL_COLUMN,)
 ATTRIBUTION_COLUMNS = WIDE_COLUMNS + (
-    "scheduler_runqueue_delay_ns",
-    "non_scheduler_elapsed_ns",
+    "scheduler_runqueue_delay_lower_bound_ns",
+    "unattributed_elapsed_ns",
 )
 FOOTER_KEYS = (
     "samples",
@@ -261,10 +263,10 @@ FOOTER_KEYS = (
     "last_sample_ns",
 )
 ATTRIBUTION_FOOTER_KEYS = (
-    "mean_scheduler_runqueue_delay_ns",
-    "max_scheduler_runqueue_delay_ns",
-    "mean_non_scheduler_elapsed_ns",
-    "max_non_scheduler_elapsed_ns",
+    "mean_scheduler_runqueue_delay_lower_bound_ns",
+    "max_scheduler_runqueue_delay_lower_bound_ns",
+    "mean_unattributed_elapsed_ns",
+    "max_unattributed_elapsed_ns",
 )
 
 
@@ -758,35 +760,35 @@ def main():
         print("footer_derived=not_run rows=%d" % len(rows))
     if attributed and rows and row_arity:
         scheduler_delays = [int(row[8]) for row in rows]
-        non_scheduler_elapsed = [int(row[9]) for row in rows]
+        unattributed_elapsed = [int(row[9]) for row in rows]
         attribution_rows_held = all(
             scheduler_delay <= cost
             and residual == cost - scheduler_delay
             for cost, scheduler_delay, residual in
-            zip(costs, scheduler_delays, non_scheduler_elapsed))
+            zip(costs, scheduler_delays, unattributed_elapsed))
         check("scheduler_attribution_rows", attribution_rows_held,
               f"rows={len(rows)} invalid="
-              f"{sum(1 for cost, delay, residual in zip(costs, scheduler_delays, non_scheduler_elapsed) if delay > cost or residual != cost - delay)}")
+              f"{sum(1 for cost, delay, residual in zip(costs, scheduler_delays, unattributed_elapsed) if delay > cost or residual != cost - delay)}")
         derived_scheduler_mean = sum(scheduler_delays) // len(scheduler_delays)
         derived_scheduler_max = max(scheduler_delays)
-        derived_non_scheduler_mean = (sum(non_scheduler_elapsed)
-                                      // len(non_scheduler_elapsed))
-        derived_non_scheduler_max = max(non_scheduler_elapsed)
+        derived_unattributed_mean = (sum(unattributed_elapsed)
+                                     // len(unattributed_elapsed))
+        derived_unattributed_max = max(unattributed_elapsed)
         attribution_footer_held = (
             derived_scheduler_mean
-            == int(footer["mean_scheduler_runqueue_delay_ns"])
+            == int(footer["mean_scheduler_runqueue_delay_lower_bound_ns"])
             and derived_scheduler_max
-            == int(footer["max_scheduler_runqueue_delay_ns"])
-            and derived_non_scheduler_mean
-            == int(footer["mean_non_scheduler_elapsed_ns"])
-            and derived_non_scheduler_max
-            == int(footer["max_non_scheduler_elapsed_ns"])
+            == int(footer["max_scheduler_runqueue_delay_lower_bound_ns"])
+            and derived_unattributed_mean
+            == int(footer["mean_unattributed_elapsed_ns"])
+            and derived_unattributed_max
+            == int(footer["max_unattributed_elapsed_ns"])
         )
         check("scheduler_attribution_footer", attribution_footer_held,
               f"scheduler_mean_ns={derived_scheduler_mean}"
               f" scheduler_max_ns={derived_scheduler_max}"
-              f" non_scheduler_mean_ns={derived_non_scheduler_mean}"
-              f" non_scheduler_max_ns={derived_non_scheduler_max}")
+              f" unattributed_mean_ns={derived_unattributed_mean}"
+              f" unattributed_max_ns={derived_unattributed_max}")
     elif attributed:
         print("scheduler_attribution_rows=not_run rows=%d" % len(rows))
         print("scheduler_attribution_footer=not_run rows=%d" % len(rows))

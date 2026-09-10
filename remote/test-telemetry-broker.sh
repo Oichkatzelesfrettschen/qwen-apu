@@ -405,7 +405,7 @@ printf 'observation sclk_values=%s\n' "$distinct_sclk"
 # carrying 1100 in the eighth column and 400 in the second proves the column is
 # the sensor rather than a copy of the step.
 column_line=$(awk '/^#/ { next } { print; exit }' "$record")
-if [ "$column_line" = "$(printf 'monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees\tsample_cost_ns\tsclk_actual_mhz\tscheduler_runqueue_delay_ns\tnon_scheduler_elapsed_ns')" ]; then
+if [ "$column_line" = "$(printf 'monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees\tsample_cost_ns\tsclk_actual_mhz\tscheduler_runqueue_delay_lower_bound_ns\tunattributed_elapsed_ns')" ]; then
     report record_columns accepted
 else
     report record_columns "refused columns=$column_line"
@@ -418,9 +418,10 @@ total_rows=$(awk -F'\t' '/^#/ { next } $1 ~ /^[0-9]+$/ { rows++ } END { print ro
     "$record")
 verdict "$total_rows" "$actual_rows" sclk_actual_in_every_row
 
-# The scheduler counter is read on both sides of the same wall interval whose
-# cost remains column seven. Every row must partition that cost exactly; the
-# validator independently checks the same identity and the four footer totals.
+# The scheduler counter is read inside the wall interval whose cost remains
+# column seven. Its delta is a lower bound because the two endpoint windows
+# remain unattributed. Every row must partition that cost exactly; the
+# validator independently checks the same identity and footer totals.
 attribution_bad_rows=$(awk -F'\t' '
     /^#/ { next }
     $1 ~ /^[0-9]+$/ &&

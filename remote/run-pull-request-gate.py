@@ -55,6 +55,10 @@ Q8_SAMPLER_ATTRIBUTION_PATHS = {
 Q8_SAMPLER_ATTRIBUTION_EVIDENCE_PREFIX = (
     "evidence/q8-attribution/sampler-cost-attribution/"
 )
+Q8_SAMPLER_ATTRIBUTION_ROUTE_SUPPORT_PATHS = {
+    "remote/run-pull-request-gate.py",
+    "remote/test-run-pull-request-gate.py",
+}
 CI_ROUTING_PYTHON_PATHS = tuple(
     sorted(path for path in CI_ROUTING_PATHS if path.endswith(".py"))
 )
@@ -136,7 +140,8 @@ def classify_paths(paths: Sequence[str]) -> str:
     ]
     if (
         all(
-            path in CI_ROUTING_PATHS or path in q8_sampler_attribution_paths
+            path in Q8_SAMPLER_ATTRIBUTION_ROUTE_SUPPORT_PATHS
+            or path in q8_sampler_attribution_paths
             for path in checked
         )
         and q8_sampler_attribution_paths

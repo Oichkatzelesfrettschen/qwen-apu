@@ -51,8 +51,8 @@ COLUMNS = ("monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz"
 # seven or eight columns wide and the validator reads both.
 WIDE_COLUMNS = COLUMNS + "\tsclk_actual_mhz"
 ATTRIBUTION_COLUMNS = (WIDE_COLUMNS
-                       + "\tscheduler_runqueue_delay_ns"
-                       + "\tnon_scheduler_elapsed_ns")
+                       + "\tscheduler_runqueue_delay_lower_bound_ns"
+                       + "\tunattributed_elapsed_ns")
 
 
 def write(name, text):
@@ -68,7 +68,7 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
                    actual_mhz=None, mclk="933", mclk_low_rows=(), mclk_low="400",
                    max_cost_ns=None, dpm_period_ns=None, dpm_read_stride=None,
                    backward_row=None, sampler_format=None,
-                   scheduler_delay_ns=None, non_scheduler_elapsed_ns=None):
+                   scheduler_delay_ns=None, unattributed_elapsed_ns=None):
     """Write one synthetic record; hole_ns is the delay inserted after hole_after.
 
     A hole shifts every later row by hole_ns, so the gap it opens is the period
@@ -107,8 +107,8 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
             row += f"\t{actual_mhz}"
         if scheduler_delay_ns is not None:
             residual = (cost_ns - scheduler_delay_ns
-                        if non_scheduler_elapsed_ns is None
-                        else non_scheduler_elapsed_ns)
+                        if unattributed_elapsed_ns is None
+                        else unattributed_elapsed_ns)
             row += f"\t{scheduler_delay_ns}\t{residual}"
         if dpm_read_stride is not None and index % dpm_read_stride == 0:
             lines.append(f"# dpm_read={instant}")
@@ -122,12 +122,12 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
         f" max_sample_cost_ns={max_cost_ns or cost_ns}"
         f" samples_with_unavailable_sensor={len(unavailable_rows)}"
         f" first_sample_ns={first} last_sample_ns={last}"
-        + (f" mean_scheduler_runqueue_delay_ns={scheduler_delay_ns}"
-           f" max_scheduler_runqueue_delay_ns={scheduler_delay_ns}"
-           f" mean_non_scheduler_elapsed_ns="
-           f"{cost_ns - scheduler_delay_ns if non_scheduler_elapsed_ns is None else non_scheduler_elapsed_ns}"
-           f" max_non_scheduler_elapsed_ns="
-           f"{cost_ns - scheduler_delay_ns if non_scheduler_elapsed_ns is None else non_scheduler_elapsed_ns}"
+        + (f" mean_scheduler_runqueue_delay_lower_bound_ns={scheduler_delay_ns}"
+           f" max_scheduler_runqueue_delay_lower_bound_ns={scheduler_delay_ns}"
+           f" mean_unattributed_elapsed_ns="
+           f"{cost_ns - scheduler_delay_ns if unattributed_elapsed_ns is None else unattributed_elapsed_ns}"
+           f" max_unattributed_elapsed_ns="
+           f"{cost_ns - scheduler_delay_ns if unattributed_elapsed_ns is None else unattributed_elapsed_ns}"
            if scheduler_delay_ns is not None else ""))
     lines.extend([footer_line] * footers)
     return "\n".join(lines) + "\n"
@@ -326,8 +326,8 @@ refused(sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1100,
                        sampler_format="broker-schedstat-v1"),
         "attribution_schema")
 stale_attribution_footer = attributed.replace(
-    "mean_scheduler_runqueue_delay_ns=10000",
-    "mean_scheduler_runqueue_delay_ns=9999",
+    "mean_scheduler_runqueue_delay_lower_bound_ns=10000",
+    "mean_scheduler_runqueue_delay_lower_bound_ns=9999",
 )
 refused(stale_attribution_footer, "scheduler_attribution_footer")
 long_wall_without_scheduler_delay = sidecar_record(
@@ -344,7 +344,7 @@ refused(sidecar_record(columns=ATTRIBUTION_COLUMNS, cost_ns=30_000,
                        actual_mhz=1100,
                        sampler_format="broker-schedstat-v1",
                        scheduler_delay_ns=30_001,
-                       non_scheduler_elapsed_ns=0),
+                       unattributed_elapsed_ns=0),
         "scheduler_attribution_rows")
 refused(attributed.replace("\t10000\t20000\n",
                            "\tunavailable\t20000\n", 1),

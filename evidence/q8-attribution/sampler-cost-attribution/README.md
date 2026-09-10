@@ -20,7 +20,7 @@ every existing acquisition contract keep their legacy eight-column shape.
 | Tuple | Canonical file | SHA-256 | State |
 | --- | --- | --- | --- |
 | Refused | `refused-acquisition-tuple.tsv` | `f3daaf6efe5a1b20abbf849720183969a1b37cd574050300f4fbd2728e7155c9` | `09-P` refused |
-| Proposed | `proposed-acquisition-tuple.tsv` | `58b21ffa2ead66490c513001cbe3160efe82f528c3012c59b48bd81556c35afc` | preregistered, not run |
+| Proposed | `proposed-acquisition-tuple.tsv` | `8b90eca504bf02017999a26eb47eea0f2cd148edc955548733f06f056a31a3e1` | preregistered, not run |
 
 The refused tuple binds the retained sidecar digest and the broker, validator,
 and runner source identities available at the acquisition revision. The
@@ -47,12 +47,15 @@ For each row, the broker performs these bounded operations:
 3. Read the scheduled sensor surfaces at their unchanged cadence.
 4. Read the counter again and record the `CLOCK_MONOTONIC` ending.
 5. Emit `sample_cost_ns`, the counter delta as
-   `scheduler_runqueue_delay_ns`, and their exact difference as
-   `non_scheduler_elapsed_ns`.
+   `scheduler_runqueue_delay_lower_bound_ns`, and their exact difference as
+   `unattributed_elapsed_ns`.
 
-The residual includes sensor service, parsing, and both schedstat reads. It is
-not a pure sensor latency. A long wall-clock row with a zero scheduler delta
-remains a long residual and receives no scheduler attribution. Counter
+The counter delta is a scheduler-delay lower bound because descheduling can
+occur between an outer wall-clock endpoint and its adjacent counter read. The
+unattributed residual includes sensor service, parsing, both schedstat reads,
+and any delay in those endpoint windows. It is not a pure sensor latency or
+proof of non-scheduler time. A long wall-clock row with a zero scheduler lower
+bound remains unattributed and receives no scheduler label. Counter
 regression, read failure, a delay larger than its enclosing wall interval, an
 arithmetic mismatch, a stale footer, or a schema/format mismatch refuses the
 record.
@@ -61,11 +64,12 @@ record.
 
 The change adds two schedstat reads per iteration, so it has a small positive
 cost rather than an assumed speed benefit. Its causal purpose is to determine
-whether the long right tail comes from runnable host descheduling. If scheduler
-delay caused a retained tail row, that row will carry a nonzero delay bounded
-by `sample_cost_ns`; if the delay remains zero, the row stays in the
-non-scheduler residual. A long wall row alone never satisfies the scheduler
-prediction.
+whether the long right tail includes runnable host descheduling. If scheduler
+delay occurs between the two counter reads, that row will carry a nonzero lower
+bound within `sample_cost_ns`; if the lower bound remains zero, the row stays
+unattributed. A long wall row alone never satisfies the scheduler prediction,
+and endpoint ambiguity prevents a zero lower bound from proving that scheduler
+delay was absent.
 
 The replacement calibration admits its instrument only when every retained
 row passes the schema and partition checks and the integer-floor mean of every
@@ -92,7 +96,7 @@ The workstation fixtures completed with exit status 0 on 2026-09-10:
 | Command | Bounded result |
 | --- | --- |
 | `sh remote/test-telemetry-broker.sh` | 28 checks passed, including disabled and malformed preflight refusals, attributed partition closure, and legacy default shape |
-| `python3 remote/test-census-controls.py` | accepted legacy and attributed records; refused schema, row arithmetic, counter-bound, and footer defects; retained a long wall row with zero scheduler delay as residual |
+| `python3 remote/test-census-controls.py` | accepted legacy and attributed records; refused schema, row arithmetic, counter-bound, and footer defects; retained a long wall row with a zero scheduler lower bound as unattributed |
 | `sh remote/test-run-raven2-vulkan-kernel-census.sh` | 60 preflight cases passed; the attributed contract changed identity, print mode stayed device-free, and disabled schedstats refused before output creation |
 
 The broker source also compiled with `-O2 -Wall -Wextra -Werror -std=c11`.

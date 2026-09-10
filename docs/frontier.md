@@ -151,7 +151,7 @@ outside it.
   authorizes neither candidate timing nor an unchanged retry.
 - Prepared input: `evidence/q8-attribution/sampler-cost-attribution/` binds
   the refused and proposed sampler tuples. The proposed broker mode records
-  the task schedstat runqueue-delay delta and the exact non-scheduler residual
+  the task schedstat runqueue-delay lower bound and exact unattributed residual
   beside the unchanged wall-clock `sample_cost_ns`; the runner binds that mode
   into the acquisition contract. A disabled or malformed schedstat facility
   refuses before an arm or output directory starts, and neither runner nor
