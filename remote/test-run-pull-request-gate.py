@@ -12,6 +12,8 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
+WORKFLOW = DRIVER.parent.parent / ".github/workflows/repository-quality-gates.yml"
+
 assert MODULE.classify_paths(["docs/USER-GUIDE.md", "README.md"]) == "documentation"
 assert MODULE.classify_paths(["docs/install-requirements.tsv"]) == "full"
 assert (
@@ -23,6 +25,7 @@ assert (
     == "full"
 )
 assert MODULE.classify_paths(["webui/index.html"]) == "webui"
+assert MODULE.classify_paths(["remote/feature-claims.tsv"]) == "webui"
 assert (
     MODULE.classify_paths(
         [
@@ -34,6 +37,20 @@ assert (
     == "webui"
 )
 assert MODULE.classify_paths(["remote/qwen-launch.sh"]) == "full"
+
+IMAGE_QUALITY_RESULT_PATHS = [
+    "README.md",
+    "evidence/SHA256SUMS",
+    "evidence/image-quality-browser-interpreter/README.md",
+    "evidence/image-quality-successor-broker-grant-stop/README.md",
+    "evidence/image-quality-successor-broker-grant-stop/result.tsv",
+    "evidence/image-quality-successor-broker-grant-stop/transformation.tsv",
+]
+assert MODULE.classify_paths(IMAGE_QUALITY_RESULT_PATHS) == ("documentation+evidence")
+assert (
+    MODULE.classify_paths(["evidence/SHA256SUMS", "evidence/new-result/README.md"])
+    == "evidence"
+)
 assert (
     MODULE.classify_paths([".github/workflows/repository-quality-gates.yml"])
     == "ci-routing"
@@ -48,19 +65,19 @@ assert (
             "evidence/ci-gate-driver-scope-reuse/README.md",
         ]
     )
-    == "gate-infrastructure"
+    == "evidence+gate-infrastructure"
 )
 assert (
     MODULE.classify_paths(
         ["remote/gate-cell-key.sh", "remote/run-pull-request-gate.py"]
     )
-    == "gate-infrastructure"
+    == "ci-routing+gate-infrastructure"
 )
 assert (
     MODULE.classify_paths(
         ["remote/gate-cell-key.sh", "evidence/unrelated-result/README.md"]
     )
-    == "full"
+    == "evidence+gate-infrastructure"
 )
 assert (
     MODULE.classify_paths(
@@ -71,7 +88,7 @@ assert (
             "evidence/image-quality-browser-interpreter/README.md",
         ]
     )
-    == "browser-preflight"
+    == "browser-preflight+evidence"
 )
 assert MODULE.classify_paths(["remote/qwen-home.sh"]) == "full"
 assert (
@@ -85,7 +102,7 @@ assert (
             "remote/run-pull-request-gate.py",
         ]
     )
-    == "browser-preflight"
+    == "browser-preflight+ci-routing"
 )
 assert (
     MODULE.classify_paths(["remote/check-repository-quality-gate-declarations.py"])
@@ -102,7 +119,7 @@ assert (
             "remote/test-telemetry-broker.sh",
         ]
     )
-    == "q8-sampler-attribution"
+    == "documentation+evidence+q8-sampler-attribution"
 )
 assert (
     MODULE.classify_paths(
@@ -111,7 +128,7 @@ assert (
             "evidence/q8-attribution/unrelated-result/README.md",
         ]
     )
-    == "full"
+    == "evidence+q8-sampler-attribution"
 )
 assert (
     MODULE.classify_paths(
@@ -120,7 +137,7 @@ assert (
             "remote/merged-pr-gate-reuse.py",
         ]
     )
-    == "full"
+    == "ci-routing+q8-sampler-attribution"
 )
 assert (
     MODULE.classify_paths(
@@ -129,7 +146,7 @@ assert (
             "evidence/unrelated-result/README.md",
         ]
     )
-    == "full"
+    == "browser-preflight+evidence"
 )
 assert (
     MODULE.classify_paths(
@@ -144,7 +161,7 @@ assert (
     MODULE.classify_paths(
         [".github/workflows/repository-quality-gates.yml", "webui/index.html"]
     )
-    == "full"
+    == "ci-routing+webui"
 )
 assert MODULE.classify_paths([]) == "full"
 try:
@@ -153,6 +170,10 @@ except ValueError:
     pass
 else:
     raise AssertionError("a traversal path entered pull-request routing")
+
+workflow_text = WORKFLOW.read_text(encoding="utf-8")
+assert "github.event.pull_request.draft" not in workflow_text
+assert workflow_text.count("python3 remote/run-pull-request-gate.py") == 1
 
 webui_commands = MODULE.selected_checks(
     ["remote/test-fallback-webui-web-authorization.sh"], "webui"
@@ -166,7 +187,30 @@ assert (
 assert ("remote/test-feature-roster.sh",) in webui_commands
 assert ("python3", "remote/web-mcp/test-fallback-page-image.py") in webui_commands
 assert MODULE.selected_checks(["docs/USER-GUIDE.md"], "documentation") == list(
-    MODULE.ALWAYS_CHECKS
+    MODULE.TEXT_POLICY_CHECKS
+)
+
+image_quality_commands = MODULE.selected_checks(
+    IMAGE_QUALITY_RESULT_PATHS, "documentation+evidence"
+)
+assert ("remote/refresh-evidence-manifest.sh", "--check") in image_quality_commands
+assert ("python3", "remote/check-text-policy.py") in image_quality_commands
+assert ("python3", "remote/check-appliance-paths.py") not in image_quality_commands
+assert ("remote/test-feature-roster.sh",) not in image_quality_commands
+assert not any(
+    "fallback-webui" in argument
+    for command in image_quality_commands
+    for argument in command
+)
+assert not any(
+    "telemetry" in argument
+    for command in image_quality_commands
+    for argument in command
+)
+assert not any(
+    "browser-driver" in argument
+    for command in image_quality_commands
+    for argument in command
 )
 assert ("python3", "remote/test-merged-pr-gate-reuse.py") in MODULE.selected_checks(
     ["remote/merged-pr-gate-reuse.py"], "ci-routing"
@@ -178,7 +222,7 @@ gate_infrastructure_commands = MODULE.selected_checks(
         "remote/test-repository-gate-cells.sh",
         "remote/run-pull-request-gate.py",
     ],
-    "gate-infrastructure",
+    "ci-routing+gate-infrastructure",
 )
 assert (
     "shellcheck",

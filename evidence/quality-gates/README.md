@@ -11,18 +11,30 @@ and SPEC. An accepted record under that key is reused rather than rerun, so
 something the cell's own verdict depends on moves, over a fixture gate of four
 tiny cells rather than the real gate's dozens of minutes-long ones.
 
-Pull requests whose changed paths stay inside documentation and the fallback
-Web UI use `remote/run-pull-request-gate.py`. Documentation changes run the
-three tree-wide manifest, path, and text policies. Web UI changes add the
-feature-roster check, every fallback-page behavior check, the full localhost
-browser fixture, and linters for changed shell and Python files. Any path
-outside that narrow allowlist delegates to the exhaustive gate. Pushes to
-`main`, nightly schedules, and manual runs also execute the exhaustive gate.
+Every pull request uses `remote/run-pull-request-gate.py`, independent of its
+draft state. The driver maps each changed path to the bounded input surfaces
+that consume it and runs the union of their checks. Evidence changes run the
+evidence manifest and text policy; documentation changes run the text policy;
+Web UI changes add the feature roster, fallback-page behavior checks, browser
+fixture, and linters for changed shell and Python files. Browser-preflight,
+Q8-attribution, CI-routing, and gate-infrastructure inputs retain their focused
+fixtures. An unclassified executable or runtime path delegates to the
+exhaustive gate. Scheduled and manual runs also execute the exhaustive gate.
+
+`evidence/SHA256SUMS` belongs to the evidence surface. The manifest accompanies
+a changed evidence directory and does not classify that directory as gate
+infrastructure. A pull request that combines recognized surfaces runs their
+deduplicated union rather than falling through because two independently
+bounded path classes appear together.
 
 The hosted runner saves accepted bounded-cell records under a unique immutable
 cache key and restores the newest earlier key for the same operating system.
 The record's content digest still decides reuse. A cache hit therefore reduces
-work without letting a record certify different source or tool bytes.
+work without letting a record certify different source or tool bytes. An
+exact-tree main push reuses either the accepted targeted PR result or the
+accepted exhaustive PR result. Only an exhaustive source supplies a cell-cache
+artifact for promotion; targeted reuse records its source identity without
+inventing an exhaustive cache.
 
 ## What the key binds
 

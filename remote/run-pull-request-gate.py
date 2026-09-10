@@ -15,7 +15,15 @@ from collections.abc import Sequence
 
 FULL_GATE_EXIT = 3
 FULL_GATE_PATHS = {"docs/install-requirements.tsv"}
-SAFE_EXACT_PATHS = {"README.md", "remote/feature-claims.tsv"}
+SURFACE_ORDER = (
+    "browser-preflight",
+    "ci-routing",
+    "documentation",
+    "evidence",
+    "gate-infrastructure",
+    "q8-sampler-attribution",
+    "webui",
+)
 CI_ROUTING_PATHS = {
     ".github/workflows/repository-quality-gates.yml",
     "remote/merged-pr-gate-reuse.py",
@@ -24,7 +32,6 @@ CI_ROUTING_PATHS = {
     "remote/test-run-pull-request-gate.py",
 }
 GATE_INFRASTRUCTURE_PATHS = {
-    "evidence/SHA256SUMS",
     "remote/check-repository-quality-gate-declarations.py",
     "remote/gate-cell-key.sh",
     "remote/repository-quality-gate-declarations.tsv",
@@ -32,20 +39,14 @@ GATE_INFRASTRUCTURE_PATHS = {
     "remote/test-check-repository-quality-gate-declarations.py",
     "remote/test-repository-gate-cells.sh",
 }
-GATE_INFRASTRUCTURE_EVIDENCE_PREFIX = "evidence/ci-gate-driver-scope-reuse/"
 BROWSER_PREFLIGHT_PATHS = {
-    "evidence/SHA256SUMS",
     "remote/browser-driver-preflight.py",
     "remote/qwen_home.py",
-    "remote/repository-quality-gates.sh",
     "remote/run-browser-driver.sh",
     "remote/test-browser-driver-preflight.py",
     "remote/test-qwen-home.sh",
 }
-BROWSER_PREFLIGHT_EVIDENCE_PREFIX = "evidence/image-quality-browser-interpreter/"
 Q8_SAMPLER_ATTRIBUTION_PATHS = {
-    "docs/frontier.md",
-    "evidence/SHA256SUMS",
     "remote/build-telemetry-broker.sh",
     "remote/run-raven2-vulkan-kernel-census.sh",
     "remote/telemetry-broker.c",
@@ -54,13 +55,6 @@ Q8_SAMPLER_ATTRIBUTION_PATHS = {
     "remote/test-telemetry-broker.sh",
     "remote/validate-clock-sidecar.py",
 }
-Q8_SAMPLER_ATTRIBUTION_EVIDENCE_PREFIX = (
-    "evidence/q8-attribution/sampler-cost-attribution/"
-)
-Q8_SAMPLER_ATTRIBUTION_ROUTE_SUPPORT_PATHS = {
-    "remote/run-pull-request-gate.py",
-    "remote/test-run-pull-request-gate.py",
-}
 CI_ROUTING_PYTHON_PATHS = tuple(
     sorted(path for path in CI_ROUTING_PATHS if path.endswith(".py"))
 )
@@ -68,9 +62,11 @@ GATE_DECLARATION_PYTHON_PATHS = (
     "remote/check-repository-quality-gate-declarations.py",
     "remote/test-check-repository-quality-gate-declarations.py",
 )
-SAFE_PREFIXES = ("docs/", "webui/")
 SAFE_TEST_PATTERN = re.compile(r"remote/test-fallback-webui-[A-Za-z0-9_.-]+\Z")
-SAFE_WEB_MCP_PATHS = {"remote/web-mcp/test-fallback-page-image.py"}
+WEBUI_INPUT_PATHS = {
+    "remote/feature-claims.tsv",
+    "remote/web-mcp/test-fallback-page-image.py",
+}
 UI_TESTS: tuple[tuple[str, ...], ...] = (
     ("node", "remote/test-fallback-webui-model-state.mjs"),
     ("node", "remote/test-fallback-webui-conversations.mjs"),
@@ -84,9 +80,7 @@ UI_TESTS: tuple[tuple[str, ...], ...] = (
     ("remote/test-fallback-webui-image-authorization.sh",),
     ("python3", "remote/web-mcp/test-fallback-page-image.py"),
 )
-ALWAYS_CHECKS: tuple[tuple[str, ...], ...] = (
-    ("remote/refresh-evidence-manifest.sh", "--check"),
-    ("python3", "remote/check-appliance-paths.py"),
+TEXT_POLICY_CHECKS: tuple[tuple[str, ...], ...] = (
     ("python3", "remote/check-text-policy.py"),
 )
 
@@ -98,75 +92,78 @@ def validate_changed_path(value: str) -> str:
     return value
 
 
-def is_safe_path(path: str) -> bool:
-    return (
-        path in SAFE_EXACT_PATHS
-        or path in SAFE_WEB_MCP_PATHS
-        or path.startswith(SAFE_PREFIXES)
+def path_surfaces(path: str) -> set[str]:
+    if path in FULL_GATE_PATHS:
+        return {"full"}
+    surfaces: set[str] = set()
+    if path == "README.md" or path.startswith("docs/"):
+        surfaces.add("documentation")
+    if path == "evidence/SHA256SUMS" or path.startswith(("benchmarks/", "evidence/")):
+        surfaces.add("evidence")
+    if path in CI_ROUTING_PATHS:
+        surfaces.add("ci-routing")
+    if path in GATE_INFRASTRUCTURE_PATHS:
+        surfaces.add("gate-infrastructure")
+    if path in BROWSER_PREFLIGHT_PATHS:
+        surfaces.add("browser-preflight")
+    if path in Q8_SAMPLER_ATTRIBUTION_PATHS:
+        surfaces.add("q8-sampler-attribution")
+    if (
+        path.startswith("webui/")
+        or path in WEBUI_INPUT_PATHS
         or SAFE_TEST_PATTERN.fullmatch(path) is not None
-    )
+    ):
+        surfaces.add("webui")
+    return surfaces or {"full"}
 
 
 def classify_paths(paths: Sequence[str]) -> str:
     checked = [validate_changed_path(path) for path in paths]
-    if not checked or any(path in FULL_GATE_PATHS for path in checked):
+    if not checked:
         return "full"
-    gate_infrastructure_paths = [
-        path
-        for path in checked
-        if path in GATE_INFRASTRUCTURE_PATHS
-        or path.startswith(GATE_INFRASTRUCTURE_EVIDENCE_PREFIX)
-    ]
-    if all(
-        path in CI_ROUTING_PATHS or path in gate_infrastructure_paths
-        for path in checked
-    ):
-        if gate_infrastructure_paths:
-            return "gate-infrastructure"
-        return "ci-routing"
-    browser_preflight_paths = [
-        path
-        for path in checked
-        if path in BROWSER_PREFLIGHT_PATHS
-        or path.startswith(BROWSER_PREFLIGHT_EVIDENCE_PREFIX)
-    ]
-    if (
-        all(
-            path in CI_ROUTING_PATHS or path in browser_preflight_paths
-            for path in checked
-        )
-        and browser_preflight_paths
-    ):
-        return "browser-preflight"
-    q8_sampler_attribution_paths = [
-        path
-        for path in checked
-        if path in Q8_SAMPLER_ATTRIBUTION_PATHS
-        or path.startswith(Q8_SAMPLER_ATTRIBUTION_EVIDENCE_PREFIX)
-    ]
-    if (
-        all(
-            path in Q8_SAMPLER_ATTRIBUTION_ROUTE_SUPPORT_PATHS
-            or path in q8_sampler_attribution_paths
-            for path in checked
-        )
-        and q8_sampler_attribution_paths
-    ):
-        return "q8-sampler-attribution"
-    if any(not is_safe_path(path) for path in checked):
+    surfaces = set().union(*(path_surfaces(path) for path in checked))
+    if "full" in surfaces:
         return "full"
-    if all(path == "README.md" or path.startswith("docs/") for path in checked):
-        return "documentation"
-    return "webui"
+    return "+".join(surface for surface in SURFACE_ORDER if surface in surfaces)
+
+
+def append_unique(
+    checks: list[tuple[str, ...]], additions: Sequence[tuple[str, ...]]
+) -> None:
+    for command in additions:
+        if command not in checks:
+            checks.append(command)
 
 
 def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
-    checks = list(ALWAYS_CHECKS)
-    if scope == "q8-sampler-attribution":
-        changed_shell = sorted(path for path in paths if path.endswith(".sh"))
-        if changed_shell:
-            checks.append(("shellcheck", "-S", "warning", *changed_shell))
+    surfaces = set(scope.split("+"))
+    checks = list(TEXT_POLICY_CHECKS)
+    changed_shell = sorted(path for path in paths if path.endswith(".sh"))
+    changed_python = sorted(path for path in paths if path.endswith(".py"))
+    if changed_shell:
+        checks.append(("shellcheck", "-S", "warning", *changed_shell))
+    if changed_python:
         checks.extend(
+            (
+                ("ruff", "check", *changed_python),
+                ("python3", "-m", "py_compile", *changed_python),
+            )
+        )
+    if "evidence" in surfaces:
+        checks.insert(0, ("remote/refresh-evidence-manifest.sh", "--check"))
+    if surfaces & {
+        "browser-preflight",
+        "gate-infrastructure",
+        "q8-sampler-attribution",
+        "webui",
+    }:
+        checks.insert(
+            1 if "evidence" in surfaces else 0,
+            ("python3", "remote/check-appliance-paths.py"),
+        )
+    if "q8-sampler-attribution" in surfaces:
+        append_unique(
+            checks,
             (
                 (
                     "ruff",
@@ -190,14 +187,11 @@ def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
                 ("sh", "remote/test-run-raven2-vulkan-kernel-census.sh"),
                 ("python3", "remote/test-run-pull-request-gate.py"),
                 ("remote/repository-quality-gates.sh", "--declarations"),
-            )
+            ),
         )
-        return checks
-    if scope == "browser-preflight":
-        changed_shell = sorted(path for path in paths if path.endswith(".sh"))
-        if changed_shell:
-            checks.append(("shellcheck", "-S", "warning", *changed_shell))
-        checks.extend(
+    if "browser-preflight" in surfaces:
+        append_unique(
+            checks,
             (
                 (
                     "ruff",
@@ -230,14 +224,11 @@ def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
                 ("remote/test-qwen-home.sh",),
                 ("remote/test-feature-roster.sh",),
                 ("remote/repository-quality-gates.sh", "--declarations"),
-            )
+            ),
         )
-        return checks
-    if scope == "gate-infrastructure":
-        changed_shell = sorted(path for path in paths if path.endswith(".sh"))
-        if changed_shell:
-            checks.append(("shellcheck", "-S", "warning", *changed_shell))
-        checks.extend(
+    if "gate-infrastructure" in surfaces:
+        append_unique(
+            checks,
             (
                 ("remote/test-repository-gate-cells.sh",),
                 (
@@ -265,34 +256,23 @@ def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
                 ("python3", "-m", "py_compile", *CI_ROUTING_PYTHON_PATHS),
                 ("python3", "remote/test-run-pull-request-gate.py"),
                 ("python3", "remote/test-merged-pr-gate-reuse.py"),
-            )
+            ),
         )
-        return checks
-    if scope == "ci-routing":
-        checks.extend(
+    if "ci-routing" in surfaces:
+        append_unique(
+            checks,
             (
                 ("ruff", "check", *CI_ROUTING_PYTHON_PATHS),
                 ("python3", "-m", "py_compile", *CI_ROUTING_PYTHON_PATHS),
                 ("python3", "remote/test-run-pull-request-gate.py"),
                 ("python3", "remote/test-merged-pr-gate-reuse.py"),
-            )
+            ),
         )
-        return checks
-    if scope != "webui":
-        return checks
-    changed_shell = sorted(path for path in paths if path.endswith(".sh"))
-    changed_python = sorted(path for path in paths if path.endswith(".py"))
-    if changed_shell:
-        checks.append(("shellcheck", "-S", "warning", *changed_shell))
-    if changed_python:
-        checks.extend(
-            (
-                ("ruff", "check", *changed_python),
-                ("python3", "-m", "py_compile", *changed_python),
-            )
+    if "webui" in surfaces:
+        append_unique(
+            checks,
+            (("remote/test-feature-roster.sh",), *UI_TESTS),
         )
-    checks.append(("remote/test-feature-roster.sh",))
-    checks.extend(UI_TESTS)
     return checks
 
 
