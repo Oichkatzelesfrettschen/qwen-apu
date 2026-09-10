@@ -16,15 +16,16 @@ isolated Python mode. Ambient user-site and `PYTHONPATH` packages therefore
 carry no import authority, and the dependency source and distribution metadata
 must resolve inside the declared environment.
 
-The preflight fingerprints four roles: browser-environment Python, the
-`marionette_driver.marionette` dependency source, the acquisition driver, and
-the intended Firefox executable. `preflight-private.json` retains their paths
-under the new result directory. `preflight-public.json` carries role names,
-versions, and SHA-256 identities while omitting paths. A dependency or identity
-failure writes both records with `driver_execution=not_started` and exits 2.
-The runner owns and injects the driver's `--firefox-bin` argument, so the
-fingerprinted executable and the executable handed to the driver are one
-identity.
+The preflight fingerprints four roles: browser-environment Python, the complete
+installed-file manifest of the `marionette_driver` distribution, the
+acquisition driver, and the intended Firefox executable. Every manifest entry
+must resolve inside the declared environment, and the imported module must be
+one of those entries. `preflight-private.json` retains their paths under the
+new result directory. `preflight-public.json` carries role names, versions, and
+SHA-256 identities while omitting paths. A dependency or identity failure
+writes both records with `driver_execution=not_started` and exits 2. The runner
+owns and injects the driver's `--firefox-bin` argument, so the fingerprinted
+executable and the executable handed to the driver are one identity.
 
 The entry point declares and reuses the existing private browser environment;
 the preparation neither provisions another environment nor installs a browser
@@ -49,15 +50,21 @@ driver. The deadline arm starts a fixture driver and child in the runner's
 owned process group, records status 124, and observes group termination. The
 signal arm sends SIGTERM to the runner, observes the driver group terminate,
 and retains status 143, the signal identity, and the cleanup result before the
-runner exits.
+runner exits. Additional arms show that a non-imported distribution file moves
+the dependency digest, `nan` and `inf` timeouts refuse, SIGHUP retains status
+129 after group cleanup, a driver that exits before its child still triggers
+child cleanup, and a process-creation error retains a `driver_start` refusal.
 
 `environment-preflight.json` is the role-only derivative from a workstation
 preflight through the declared existing environment. It reports Python 3.14.7,
 `marionette_driver` 3.7.1, the acquisition-driver identity, and the intended
 Firefox-executable identity with `driver_execution=withheld_preflight_only`.
 `transformation.tsv` binds the retained private source digest, public derivative
-digest, and producer digest. The preflight started neither the driver nor
-Firefox.
+digest, and its original producer digest. The retained derivative predates the
+complete-distribution and terminal-cleanup additions and is not reclassified as
+their proof. The successor acquisition runs the stronger preflight before any
+driver or Firefox startup. The retained preflight started neither the driver
+nor Firefox.
 
 ## Successor acquisition
 

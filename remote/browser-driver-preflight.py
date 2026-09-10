@@ -8,6 +8,7 @@ import hashlib
 import importlib
 import importlib.metadata
 import json
+import math
 import os
 import pathlib
 import signal
@@ -81,7 +82,7 @@ def write_json(path: pathlib.Path, value: dict[str, Any]) -> None:
 
 
 def module_identity(module_name: str) -> tuple[str, str]:
-    """Import one dependency and return its version and source digest."""
+    """Import one dependency and hash its complete installed-file manifest."""
     try:
         module = importlib.import_module(module_name)
     except Exception as error:
@@ -111,16 +112,37 @@ def module_identity(module_name: str) -> tuple[str, str]:
         raise PreflightRefusal(
             "dependency_identity", "the required browser distribution has no metadata"
         ) from error
-    try:
-        pathlib.Path(str(distribution.locate_file(""))).resolve().relative_to(
-            environment_root
+    distribution_files = distribution.files
+    if not distribution_files:
+        raise PreflightRefusal(
+            "dependency_identity",
+            "the required browser distribution has no installed-file manifest",
         )
+    distribution_digest = hashlib.sha256()
+    located_files: set[pathlib.Path] = set()
+    try:
+        for distribution_path in sorted(distribution_files, key=str):
+            located_path = pathlib.Path(
+                str(distribution.locate_file(distribution_path))
+            ).resolve()
+            environment_path = located_path.relative_to(environment_root)
+            require_file(located_path, "dependency_identity")
+            located_files.add(located_path)
+            distribution_digest.update(environment_path.as_posix().encode("utf-8"))
+            distribution_digest.update(b"\0")
+            distribution_digest.update(file_sha256(located_path).encode("ascii"))
+            distribution_digest.update(b"\n")
     except ValueError as error:
         raise PreflightRefusal(
             "dependency_identity",
-            "the required browser distribution resolves outside the declared environment",
+            "the required browser distribution manifest escapes the declared environment",
         ) from error
-    return distribution.version, file_sha256(module_path)
+    if module_path.resolve() not in located_files:
+        raise PreflightRefusal(
+            "dependency_identity",
+            "the imported browser module is absent from the distribution manifest",
+        )
+    return distribution.version, distribution_digest.hexdigest()
 
 
 def interpreter_identity(expected_python: pathlib.Path) -> dict[str, str]:
@@ -161,8 +183,10 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("driver_arguments", nargs=argparse.REMAINDER)
     arguments = parser.parse_args()
-    if arguments.driver_timeout_seconds <= 0:
-        parser.error("--driver-timeout-seconds must be positive")
+    if not math.isfinite(arguments.driver_timeout_seconds) or (
+        arguments.driver_timeout_seconds <= 0
+    ):
+        parser.error("--driver-timeout-seconds must be finite and positive")
     if arguments.driver_arguments[:1] == ["--"]:
         arguments.driver_arguments = arguments.driver_arguments[1:]
     if any(
@@ -174,18 +198,47 @@ def parse_arguments() -> argparse.Namespace:
     return arguments
 
 
+def process_group_lives(process_group_id: int) -> bool:
+    """Return whether the owned process group retains any member."""
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def wait_for_process_group_exit(
+    process: subprocess.Popen[bytes], timeout: float
+) -> bool:
+    """Reap the leader and wait for every owned group member to exit."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        process.poll()
+        if not process_group_lives(process.pid):
+            return True
+        time.sleep(0.02)
+    process.poll()
+    return not process_group_lives(process.pid)
+
+
 def terminate_process_group(process: subprocess.Popen[bytes]) -> str:
     """Terminate one owned process group within the cleanup deadline."""
-    if process.poll() is not None:
+    process.poll()
+    if not process_group_lives(process.pid):
         return "already_exited"
-    os.killpg(process.pid, signal.SIGTERM)
     try:
-        process.wait(timeout=TERMINATION_GRACE_SECONDS)
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return "already_exited"
+    if wait_for_process_group_exit(process, TERMINATION_GRACE_SECONDS):
         return "terminated"
-    except subprocess.TimeoutExpired:
+    try:
         os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=TERMINATION_GRACE_SECONDS)
+    except ProcessLookupError:
+        return "terminated"
+    if wait_for_process_group_exit(process, TERMINATION_GRACE_SECONDS):
         return "killed"
+    return "kill_incomplete"
 
 
 def main() -> int:
@@ -274,7 +327,7 @@ def main() -> int:
 
     previous_handlers = {
         signal_number: signal.signal(signal_number, request_termination)
-        for signal_number in (signal.SIGINT, signal.SIGTERM)
+        for signal_number in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
     }
     try:
         process = subprocess.Popen(
@@ -288,13 +341,24 @@ def main() -> int:
             ],
             start_new_session=True,
         )
-    except BaseException:
+    except OSError as error:
         for signal_number, previous_handler in previous_handlers.items():
             signal.signal(signal_number, previous_handler)
-        raise
+        private["status"] = "refused"
+        public["status"] = "refused"
+        private["driver_execution"] = "not_started"
+        public["driver_execution"] = "not_started"
+        private["failure_stage"] = "driver_start"
+        private["failure_detail"] = f"{type(error).__name__}: {error}"
+        public["failure_stage"] = "driver_start"
+        write_json(private_record, private)
+        write_json(public_record, public)
+        return 2
     private["driver_execution"] = "started"
     public["driver_execution"] = "started"
     private["driver_pid"] = process.pid
+    driver_status = 125
+    cleanup = "kill_incomplete"
     try:
         deadline = time.monotonic() + arguments.driver_timeout_seconds
         while True:
@@ -309,7 +373,7 @@ def main() -> int:
                 break
             try:
                 driver_status = process.wait(timeout=min(remaining, 0.1))
-                cleanup = "already_exited"
+                cleanup = terminate_process_group(process)
                 break
             except subprocess.TimeoutExpired:
                 continue
@@ -324,6 +388,10 @@ def main() -> int:
     private["elapsed_ns"] = time.monotonic_ns() - started_monotonic_ns
     public["driver_status"] = driver_status
     public["cleanup"] = cleanup
+    if cleanup == "kill_incomplete" and driver_status == 0:
+        driver_status = 125
+        private["driver_status"] = driver_status
+        public["driver_status"] = driver_status
     public["driver_execution"] = "completed" if driver_status == 0 else "failed"
     private["driver_execution"] = public["driver_execution"]
     write_json(private_record, private)

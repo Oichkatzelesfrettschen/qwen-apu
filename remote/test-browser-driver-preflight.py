@@ -3,14 +3,18 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import pathlib
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import venv
+from collections.abc import Callable
+from typing import Any, cast
 
 SCRIPT_DIRECTORY = pathlib.Path(__file__).resolve().parent
 RUNNER = SCRIPT_DIRECTORY / "run-browser-driver.sh"
@@ -38,10 +42,19 @@ def make_environment(root: pathlib.Path, dependency: bool) -> pathlib.Path:
         (package / "marionette.py").write_text(
             "IDENTITY = 'fixture'\n", encoding="utf-8"
         )
+        (package / "support.py").write_text("VALUE = 1\n", encoding="utf-8")
         metadata = site_packages / "marionette_driver-3.7.1.dist-info"
         metadata.mkdir()
         (metadata / "METADATA").write_text(
             "Metadata-Version: 2.1\nName: marionette_driver\nVersion: 3.7.1\n",
+            encoding="utf-8",
+        )
+        (metadata / "RECORD").write_text(
+            "marionette_driver/__init__.py,,\n"
+            "marionette_driver/marionette.py,,\n"
+            "marionette_driver/support.py,,\n"
+            "marionette_driver-3.7.1.dist-info/METADATA,,\n"
+            "marionette_driver-3.7.1.dist-info/RECORD,,\n",
             encoding="utf-8",
         )
     return environment / "bin" / "python"
@@ -58,7 +71,7 @@ def run_fixture(
 ) -> subprocess.CompletedProcess[str]:
     """Run the entry point with a hostile ambient Python first on PATH."""
     hostile = runtime_root / "hostile"
-    hostile.mkdir()
+    hostile.mkdir(exist_ok=True)
     make_executable(
         hostile / "python3",
         "#!/bin/sh\nprintf 'ambient python selected\\n' >\"$QWEN_HOME/ambient-python-used\"\nexit 99\n",
@@ -219,7 +232,9 @@ def run_import_isolation_fixture(
     )
 
 
-def run_signal_fixture(runtime_root: pathlib.Path) -> tuple[int, int]:
+def run_signal_fixture(
+    runtime_root: pathlib.Path, signal_number: signal.Signals
+) -> tuple[int, int]:
     """Interrupt the runner and return its status and owned child PID."""
     (runtime_root / "results").mkdir(parents=True)
     make_environment(runtime_root, dependency=True)
@@ -272,8 +287,116 @@ def run_signal_fixture(runtime_root: pathlib.Path) -> tuple[int, int]:
             raise AssertionError((process.returncode, stdout, stderr))
         time.sleep(0.02)
     child_process_id = int((runtime_root / "signal-child-pid").read_text())
-    process.send_signal(signal.SIGTERM)
+    process.send_signal(signal_number)
     return process.wait(timeout=15), child_process_id
+
+
+def run_orphan_fixture(
+    runtime_root: pathlib.Path,
+) -> tuple[subprocess.CompletedProcess[str], int]:
+    """Let the driver exit while its owned child remains alive."""
+    (runtime_root / "results").mkdir(parents=True)
+    make_environment(runtime_root, dependency=True)
+    child = runtime_root / "fixture-child.py"
+    child.write_text(
+        "import os\nimport pathlib\nimport signal\nimport time\n"
+        "root = pathlib.Path(os.environ['QWEN_HOME'])\n"
+        "def stop(_signal, _frame):\n"
+        "    (root / 'orphan-child-terminated').write_text('1')\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "(root / 'orphan-child-ready').write_text('1')\n"
+        "while True:\n    time.sleep(1)\n",
+        encoding="utf-8",
+    )
+    driver = runtime_root / "fixture-driver.py"
+    driver.write_text(
+        "import os\nimport pathlib\nimport subprocess\nimport sys\nimport time\n"
+        "root = pathlib.Path(os.environ['QWEN_HOME'])\n"
+        "child = subprocess.Popen([sys.executable, str(root / 'fixture-child.py')])\n"
+        "(root / 'orphan-child-pid').write_text(str(child.pid))\n"
+        "while not (root / 'orphan-child-ready').exists():\n    time.sleep(0.01)\n",
+        encoding="utf-8",
+    )
+    firefox = runtime_root / "firefox-fixture"
+    make_executable(firefox, "#!/bin/sh\nexit 0\n")
+    environment = os.environ.copy()
+    environment["QWEN_HOME"] = str(runtime_root)
+    result = subprocess.run(
+        [
+            str(RUNNER),
+            "--driver",
+            str(driver),
+            "--firefox-bin",
+            str(firefox),
+            "--record-directory",
+            str(runtime_root / "results" / "orphan-record"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=15,
+    )
+    return result, int((runtime_root / "orphan-child-pid").read_text())
+
+
+def run_start_failure_fixture(runtime_root: pathlib.Path) -> int:
+    """Inject a Popen refusal after identities pass and retain its record."""
+    (runtime_root / "results").mkdir(parents=True)
+    expected_python = make_environment(runtime_root, dependency=True)
+    driver = runtime_root / "fixture-driver.py"
+    driver.write_text("raise SystemExit(0)\n", encoding="utf-8")
+    firefox = runtime_root / "firefox-fixture"
+    make_executable(firefox, "#!/bin/sh\nexit 0\n")
+    specification = importlib.util.spec_from_file_location(
+        "browser_driver_preflight_fixture",
+        SCRIPT_DIRECTORY / "browser-driver-preflight.py",
+    )
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    setattr(
+        module,
+        "interpreter_identity",
+        lambda _path: {
+            "role": "browser_environment_python",
+            "sha256": "0" * 64,
+            "version": "fixture",
+        },
+    )
+    setattr(module, "module_identity", lambda _name: ("fixture", "1" * 64))
+
+    def refuse_start(*_arguments: object, **_keywords: object) -> None:
+        raise OSError("fixture process creation refusal")
+
+    module_subprocess = cast(Any, getattr(module, "subprocess"))
+    original_popen = module_subprocess.Popen
+    module_subprocess.Popen = refuse_start
+    previous_arguments = list(sys.argv)
+    previous_runtime_root = os.environ.get("QWEN_BROWSER_RUNTIME_ROOT")
+    sys.argv = [
+        str(SCRIPT_DIRECTORY / "browser-driver-preflight.py"),
+        "--expected-python",
+        str(expected_python),
+        "--driver",
+        str(driver),
+        "--firefox-bin",
+        str(firefox),
+        "--record-directory",
+        str(runtime_root / "results" / "start-failure-record"),
+    ]
+    os.environ["QWEN_BROWSER_RUNTIME_ROOT"] = str(runtime_root)
+    try:
+        main_function = cast(Callable[[], int], getattr(module, "main"))
+        return main_function()
+    finally:
+        module_subprocess.Popen = original_popen
+        sys.argv = previous_arguments
+        if previous_runtime_root is None:
+            os.environ.pop("QWEN_BROWSER_RUNTIME_ROOT", None)
+        else:
+            os.environ["QWEN_BROWSER_RUNTIME_ROOT"] = previous_runtime_root
 
 
 with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporary:
@@ -296,6 +419,29 @@ with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporar
     assert (
         accepted_public["identities"]["browser_python"]["role"]
         == "browser_environment_python"
+    )
+    accepted_dependency_digest = accepted_public["identities"]["browser_dependency"][
+        "sha256"
+    ]
+    support_file = next(
+        (accepted_root / "opt" / "browser-venv" / "lib").glob(
+            "python*/site-packages/marionette_driver/support.py"
+        )
+    )
+    support_file.write_text("VALUE = 2\n", encoding="utf-8")
+    changed_dependency = run_fixture(accepted_root, "changed-dependency-record")
+    assert changed_dependency.returncode == 0, changed_dependency.stderr
+    changed_dependency_public = json.loads(
+        (
+            accepted_root
+            / "results"
+            / "changed-dependency-record"
+            / "preflight-public.json"
+        ).read_text()
+    )
+    assert (
+        changed_dependency_public["identities"]["browser_dependency"]["sha256"]
+        != accepted_dependency_digest
     )
 
     refused_root = temporary_root / "refused"
@@ -352,6 +498,26 @@ with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporar
     )
     assert override_attempt.returncode == 2
     assert not (temporary_root / "outside").exists()
+    for non_finite_timeout in ("nan", "inf"):
+        timeout_refusal = subprocess.run(
+            [
+                str(RUNNER),
+                "--driver",
+                str(override_root / "fixture-driver.py"),
+                "--firefox-bin",
+                str(override_root / "firefox-fixture"),
+                "--record-directory",
+                str(override_root / "results" / f"timeout-{non_finite_timeout}"),
+                "--driver-timeout-seconds",
+                non_finite_timeout,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "QWEN_HOME": str(override_root)},
+        )
+        assert timeout_refusal.returncode == 2
+        assert "must be finite and positive" in timeout_refusal.stderr
 
     import_root = temporary_root / "import-isolation"
     import_result = run_import_isolation_fixture(import_root)
@@ -382,7 +548,9 @@ with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporar
             os.kill(child_process_id, signal.SIGKILL)
 
     signal_root = temporary_root / "signal"
-    signal_status, signal_child_process_id = run_signal_fixture(signal_root)
+    signal_status, signal_child_process_id = run_signal_fixture(
+        signal_root, signal.SIGTERM
+    )
     try:
         assert signal_status == 128 + signal.SIGTERM
         signal_public = json.loads(
@@ -399,4 +567,55 @@ with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporar
         if process_is_running(signal_child_process_id):
             os.kill(signal_child_process_id, signal.SIGKILL)
 
-print("browser_driver_preflight=accepted checks=7")
+    hangup_root = temporary_root / "hangup"
+    hangup_status, hangup_child_process_id = run_signal_fixture(
+        hangup_root, signal.SIGHUP
+    )
+    try:
+        assert hangup_status == 128 + signal.SIGHUP
+        hangup_public = json.loads(
+            (
+                hangup_root / "results" / "signal-record" / "preflight-public.json"
+            ).read_text()
+        )
+        assert hangup_public["termination_signal"] == signal.SIGHUP
+        assert hangup_public["cleanup"] in {"terminated", "killed"}
+        assert not process_is_running(hangup_child_process_id)
+    finally:
+        if process_is_running(hangup_child_process_id):
+            os.kill(hangup_child_process_id, signal.SIGKILL)
+
+    orphan_root = temporary_root / "orphan"
+    orphan_result, orphan_child_process_id = run_orphan_fixture(orphan_root)
+    try:
+        assert orphan_result.returncode == 0, orphan_result.stderr
+        orphan_public = json.loads(
+            (
+                orphan_root / "results" / "orphan-record" / "preflight-public.json"
+            ).read_text()
+        )
+        assert orphan_public["driver_status"] == 0
+        assert orphan_public["cleanup"] in {"terminated", "killed"}
+        assert (orphan_root / "orphan-child-terminated").is_file()
+        assert not process_is_running(orphan_child_process_id)
+    finally:
+        if process_is_running(orphan_child_process_id):
+            os.kill(orphan_child_process_id, signal.SIGKILL)
+
+    start_failure_root = temporary_root / "start-failure"
+    assert run_start_failure_fixture(start_failure_root) == 2
+    start_failure_public = json.loads(
+        (
+            start_failure_root
+            / "results"
+            / "start-failure-record"
+            / "preflight-public.json"
+        ).read_text()
+    )
+    assert start_failure_public["driver_execution"] == "not_started"
+    assert start_failure_public["failure_stage"] == "driver_start"
+    assert start_failure_public["schema"] == "qwen-browser-driver-preflight-v1"
+    assert start_failure_public["status"] == "refused"
+    assert "identities" in start_failure_public
+
+print("browser_driver_preflight=accepted checks=12")
