@@ -220,9 +220,21 @@ gate_cell python-syntax files "$python_files" gate_python_syntax_walk exact-driv
 gate_cell test-repository-gate-cells derive \
     'remote/test-repository-gate-cells.sh remote/gate-cell-key.sh' \
     remote/test-repository-gate-cells.sh
+gate_cell test-check-repository-quality-gate-declarations derive \
+    'remote/test-check-repository-quality-gate-declarations.py
+remote/check-repository-quality-gate-declarations.py' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-check-repository-quality-gate-declarations.py'
+gate_cell check-repository-quality-gate-declarations derive \
+    'remote/check-repository-quality-gate-declarations.py
+remote/repository-quality-gate-declarations.tsv
+remote/repository-quality-gates.sh' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/check-repository-quality-gate-declarations.py'
 gate_cell test-run-pull-request-gate derive \
     'remote/test-run-pull-request-gate.py remote/run-pull-request-gate.py' \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-run-pull-request-gate.py'
+gate_cell test-merged-pr-gate-reuse derive \
+    'remote/test-merged-pr-gate-reuse.py remote/merged-pr-gate-reuse.py' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-merged-pr-gate-reuse.py'
 gate_cell test-qwen-home derive \
     'remote/test-qwen-home.sh remote/qwen-home.sh remote/qwen_home.py' \
     remote/test-qwen-home.sh

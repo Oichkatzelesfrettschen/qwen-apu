@@ -222,6 +222,10 @@ def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
                 ("python3", "-m", "py_compile", *CI_ROUTING_PYTHON_PATHS),
                 ("python3", "remote/test-run-pull-request-gate.py"),
                 ("python3", "remote/test-merged-pr-gate-reuse.py"),
+                (
+                    "python3",
+                    "remote/check-repository-quality-gate-declarations.py",
+                ),
                 ("python3", "remote/test-browser-driver-preflight.py"),
                 ("remote/test-qwen-home.sh",),
                 ("remote/test-feature-roster.sh",),

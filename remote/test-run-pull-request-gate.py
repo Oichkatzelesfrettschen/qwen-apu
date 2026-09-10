@@ -238,6 +238,10 @@ assert (
     "python3",
     "remote/test-merged-pr-gate-reuse.py",
 ) in browser_preflight_commands
+assert (
+    "python3",
+    "remote/check-repository-quality-gate-declarations.py",
+) in browser_preflight_commands
 assert ("remote/test-qwen-home.sh",) in browser_preflight_commands
 assert ("remote/test-feature-roster.sh",) in browser_preflight_commands
 assert (
