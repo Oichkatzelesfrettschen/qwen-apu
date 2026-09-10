@@ -44,6 +44,15 @@ the active router preset. The readiness command preserves installed files and
 running services. A refusal prints the existing command that owns each missing
 input.
 
+For an atomic machine-readable record with bounded process cleanup, run
+`remote/readiness-driver.py`. The wrapper invokes
+`remote/check-launch-readiness.sh` directly and writes `terminal.json`,
+`stdout.log`, and `stderr.log` under `$QWEN_HOME/results/`. The wrapper verifies
+the declared launch inputs only. It performs no HTTP service verification and
+restores no machine state because the wrapped readiness check is read-only. A
+process whose session identity cannot be read leaves cleanup unproven and makes
+the terminal result refuse acceptance.
+
 Stop the appliance with `remote/qwen-teardown.sh`. Teardown stops and proves
 the absence of the server, tmux session, guards, broker, image service,
 SearXNG process, active router snapshot, and listeners. Teardown preserves

@@ -158,7 +158,9 @@ remote/verify-baseline-denominator.py
 remote/test-verify-external-vulkan-lease.py
 remote/verify-external-vulkan-lease.py
 remote/summarize-stage-timing.py
-remote/test-summarize-stage-timing.py'
+remote/test-summarize-stage-timing.py
+remote/readiness-driver.py
+remote/test-readiness-driver.py'
 
 gate_shell_syntax() {
     for shell_file in $shell_files; do
@@ -244,6 +246,9 @@ gate_cell test-runtime-root derive \
 gate_cell test-check-launch-readiness files \
     'remote/test-check-launch-readiness.sh remote/check-launch-readiness.sh remote/qwen-home.sh remote/runtime-root.sh remote/check-install-requirements.sh remote/searxng-launch.sh remote/resolve-active-deployment.sh remote/open-verified-lock-descriptor.py remote/read-image-mcp-server.py' \
     remote/test-check-launch-readiness.sh
+gate_cell test-readiness-driver derive \
+    'remote/test-readiness-driver.py remote/readiness-driver.py remote/qwen_home.py remote/check-launch-readiness.sh' \
+    'PYTHONWARNINGS=error PYTHONDONTWRITEBYTECODE=1 python3 remote/test-readiness-driver.py'
 gate_cell test-deletion-plan derive \
     'remote/test-deletion-plan.sh remote/check-deletion-plan.sh remote/runtime-root.sh remote/qwen-home.sh remote/open-verified-lock-descriptor.py' \
     remote/test-deletion-plan.sh
