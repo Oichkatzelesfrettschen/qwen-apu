@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import pwd
 import signal
 import subprocess
 import sys
@@ -80,7 +81,9 @@ def make_executable(path: pathlib.Path, body: str) -> None:
 
 
 def run_fixture(
-    runtime_root: pathlib.Path, record_name: str
+    runtime_root: pathlib.Path,
+    record_name: str,
+    run_identity: tuple[int, int] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run the entry point with a hostile ambient Python first on PATH."""
     hostile = runtime_root / "hostile"
@@ -102,6 +105,9 @@ def run_fixture(
     environment = os.environ.copy()
     environment["PATH"] = f"{hostile}:{environment['PATH']}"
     environment["QWEN_HOME"] = str(runtime_root)
+    run_options: dict[str, Any] = {}
+    if run_identity is not None:
+        run_options["user"], run_options["group"] = run_identity
     return subprocess.run(
         [
             str(RUNNER),
@@ -117,6 +123,7 @@ def run_fixture(
         capture_output=True,
         text=True,
         env=environment,
+        **run_options,
     )
 
 
@@ -482,8 +489,21 @@ with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporar
         )
     )
     unreadable_support.chmod(0)
+    unreadable_identity = None
+    if os.geteuid() == 0:
+        unprivileged_account = pwd.getpwnam("nobody")
+        temporary_root.chmod(0o755)
+        (unreadable_root / "results").chmod(0o777)
+        unreadable_identity = (
+            unprivileged_account.pw_uid,
+            unprivileged_account.pw_gid,
+        )
     try:
-        unreadable = run_fixture(unreadable_root, "unreadable-record")
+        unreadable = run_fixture(
+            unreadable_root,
+            "unreadable-record",
+            run_identity=unreadable_identity,
+        )
         assert unreadable.returncode == 2, unreadable.stderr
         unreadable_public = json.loads(
             (
