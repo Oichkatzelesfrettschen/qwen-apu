@@ -73,10 +73,15 @@ def fixture_fetch(path: str) -> object:
                     "conclusion": "success",
                     "steps": [
                         {
+                            "name": "Run clone-local gates",
+                            "status": "completed",
+                            "conclusion": "success",
+                        },
+                        {
                             "name": "Save accepted gate cell cache",
                             "status": "completed",
                             "conclusion": "success",
-                        }
+                        },
                     ],
                 }
             ],
@@ -85,14 +90,53 @@ def fixture_fetch(path: str) -> object:
     return fixture[path]
 
 
+def targeted_fixture_fetch(path: str) -> object:
+    if path != "/actions/runs/73/jobs?per_page=100":
+        return fixture_fetch(path)
+    return {
+        "total_count": 1,
+        "jobs": [
+            {
+                "name": "clone-local",
+                "status": "completed",
+                "conclusion": "success",
+                "steps": [
+                    {
+                        "name": "Run clone-local gates",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                    {
+                        "name": "Save accepted gate cell cache",
+                        "status": "completed",
+                        "conclusion": "skipped",
+                    },
+                ],
+            }
+        ],
+    }
+
+
 assert MODULE.reuse_is_proven(fixture_fetch, PUSHED)
-assert MODULE.reusable_gate_source(fixture_fetch, PUSHED) == MODULE.GateSource(73, 2)
+assert MODULE.reusable_gate_source(fixture_fetch, PUSHED) == MODULE.GateSource(
+    73, 2, "exhaustive"
+)
+assert MODULE.reusable_gate_source(targeted_fixture_fetch, PUSHED) == MODULE.GateSource(
+    73, 2, "targeted"
+)
 with tempfile.TemporaryDirectory() as temporary_directory:
     source_result = pathlib.Path(temporary_directory) / "source.tsv"
-    MODULE.write_source(str(source_result), MODULE.GateSource(73, 2))
+    MODULE.write_source(str(source_result), MODULE.GateSource(73, 2, "targeted"))
     assert source_result.read_text(encoding="utf-8") == (
         "field\tvalue\nsource_run_id\t73\nsource_run_attempt\t2\n"
+        "source_gate_kind\ttargeted\n"
     )
+try:
+    MODULE.write_source("unused", MODULE.GateSource(73, 2))
+except ValueError:
+    pass
+else:
+    raise AssertionError("an unclassified gate source was written")
 assert MODULE.successful_run_sources(
     {"total_count": 1, "workflow_runs": [RUN]}, HEAD
 ) == [MODULE.GateSource(73, 2)]
@@ -125,14 +169,46 @@ assert MODULE.exhaustive_clone_local_succeeded(
                 "conclusion": "success",
                 "steps": [
                     {
+                        "name": "Run clone-local gates",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                    {
                         "name": "Save accepted gate cell cache",
                         "status": "completed",
                         "conclusion": "success",
-                    }
+                    },
                 ],
             }
         ],
     }
+)
+assert (
+    MODULE.clone_local_gate_kind(
+        {
+            "total_count": 1,
+            "jobs": [
+                {
+                    "name": "clone-local",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "steps": [
+                        {
+                            "name": "Run clone-local gates",
+                            "status": "completed",
+                            "conclusion": "success",
+                        },
+                        {
+                            "name": "Save accepted gate cell cache",
+                            "status": "completed",
+                            "conclusion": "skipped",
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    == "targeted"
 )
 assert not MODULE.exhaustive_clone_local_succeeded(
     {
@@ -173,6 +249,7 @@ assert not MODULE.exhaustive_clone_local_succeeded(
     }
 )
 assert not MODULE.exhaustive_clone_local_succeeded({"total_count": 0, "jobs": []})
+assert MODULE.clone_local_gate_kind({"total_count": 0, "jobs": []}) is None
 assert not MODULE.exhaustive_clone_local_succeeded(
     {"total_count": 2, "jobs": [{"name": "clone-local"}, {"name": "clone-local"}]}
 )

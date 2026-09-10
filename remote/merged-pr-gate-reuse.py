@@ -30,6 +30,7 @@ class PullRequest:
 class GateSource:
     run_id: int
     run_attempt: int
+    gate_kind: str = "unclassified"
 
 
 def sha(value: object) -> str | None:
@@ -68,36 +69,54 @@ def select_merged_pull_request(value: Json, pushed_sha: str) -> PullRequest | No
     return accepted[0] if len(accepted) == 1 and len(value) == 1 else None
 
 
-def exhaustive_clone_local_succeeded(value: Json) -> bool:
+def clone_local_gate_kind(value: Json) -> str | None:
     if not isinstance(value, Mapping):
-        return False
+        return None
     jobs = value.get("jobs")
     if not isinstance(jobs, list) or value.get("total_count") != len(jobs):
-        return False
+        return None
     clone_jobs = [
         job
         for job in jobs
         if isinstance(job, Mapping) and job.get("name") == "clone-local"
     ]
     if len(clone_jobs) != 1:
-        return False
+        return None
     clone_job = clone_jobs[0]
     steps = clone_job.get("steps")
     if not isinstance(steps, list):
-        return False
+        return None
+    gate_steps = [
+        step
+        for step in steps
+        if isinstance(step, Mapping) and step.get("name") == "Run clone-local gates"
+    ]
     cache_save_steps = [
         step
         for step in steps
         if isinstance(step, Mapping)
         and step.get("name") == "Save accepted gate cell cache"
     ]
-    return (
-        clone_job.get("status") == "completed"
-        and clone_job.get("conclusion") == "success"
-        and len(cache_save_steps) == 1
-        and cache_save_steps[0].get("status") == "completed"
-        and cache_save_steps[0].get("conclusion") == "success"
-    )
+    if (
+        clone_job.get("status") != "completed"
+        or clone_job.get("conclusion") != "success"
+        or len(gate_steps) != 1
+        or gate_steps[0].get("status") != "completed"
+        or gate_steps[0].get("conclusion") != "success"
+        or len(cache_save_steps) != 1
+        or cache_save_steps[0].get("status") != "completed"
+    ):
+        return None
+    cache_conclusion = cache_save_steps[0].get("conclusion")
+    if cache_conclusion == "success":
+        return "exhaustive"
+    if cache_conclusion == "skipped":
+        return "targeted"
+    return None
+
+
+def exhaustive_clone_local_succeeded(value: Json) -> bool:
+    return clone_local_gate_kind(value) == "exhaustive"
 
 
 def successful_run_sources(value: Json, head_sha: str) -> list[GateSource]:
@@ -170,8 +189,9 @@ def reusable_gate_source(fetch: Fetch, pushed_sha: str) -> GateSource | None:
         )
         for source in successful_run_sources(runs, pull_request.head_sha):
             jobs = fetch(f"/actions/runs/{source.run_id}/jobs?per_page=100")
-            if exhaustive_clone_local_succeeded(jobs):
-                return source
+            gate_kind = clone_local_gate_kind(jobs)
+            if gate_kind is not None:
+                return GateSource(source.run_id, source.run_attempt, gate_kind)
     except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError):
         return None
     return None
@@ -182,12 +202,15 @@ def reuse_is_proven(fetch: Fetch, pushed_sha: str) -> bool:
 
 
 def write_source(path: str, source: GateSource) -> None:
+    if source.gate_kind not in {"exhaustive", "targeted"}:
+        raise ValueError(f"invalid source gate kind: {source.gate_kind}")
     destination = os.path.abspath(path)
     temporary = f"{destination}.pending"
     with open(temporary, "x", encoding="utf-8") as output:
         output.write("field\tvalue\n")
         output.write(f"source_run_id\t{source.run_id}\n")
         output.write(f"source_run_attempt\t{source.run_attempt}\n")
+        output.write(f"source_gate_kind\t{source.gate_kind}\n")
         output.flush()
         os.fsync(output.fileno())
     os.replace(temporary, destination)
@@ -222,7 +245,7 @@ def main() -> int:
     if source is not None:
         try:
             write_source(arguments.source_result, source)
-        except OSError as error:
+        except (OSError, ValueError) as error:
             print(
                 f"merged_pr_gate_reuse=full reason=source_result_error detail={error}"
             )
@@ -230,7 +253,8 @@ def main() -> int:
         print(
             "merged_pr_gate_reuse=accepted "
             f"source_run_id={source.run_id} "
-            f"source_run_attempt={source.run_attempt}"
+            f"source_run_attempt={source.run_attempt} "
+            f"source_gate_kind={source.gate_kind}"
         )
         return 0
     print("merged_pr_gate_reuse=full reason=proof_unavailable")
