@@ -61,6 +61,26 @@ assert (
 assert (
     MODULE.classify_paths(
         [
+            "remote/browser-driver-preflight.py",
+            "remote/test-browser-driver-preflight.py",
+            "evidence/SHA256SUMS",
+            "evidence/image-quality-browser-interpreter/README.md",
+        ]
+    )
+    == "browser-preflight"
+)
+assert (
+    MODULE.classify_paths(
+        [
+            "remote/browser-driver-preflight.py",
+            "evidence/unrelated-result/README.md",
+        ]
+    )
+    == "full"
+)
+assert (
+    MODULE.classify_paths(
+        [
             ".github/workflows/repository-quality-gates.yml",
             "remote/merged-pr-gate-reuse.py",
         ]
@@ -122,5 +142,31 @@ assert (
 ) in gate_infrastructure_commands
 assert ("python3", "remote/test-q8-four-row-select.py") in gate_infrastructure_commands
 assert ("python3", "remote/test-ab-shared-series.py") in gate_infrastructure_commands
-assert ("python3", "remote/test-run-pull-request-gate.py") in gate_infrastructure_commands
+assert (
+    "python3",
+    "remote/test-run-pull-request-gate.py",
+) in gate_infrastructure_commands
+browser_preflight_commands = MODULE.selected_checks(
+    [
+        "remote/browser-driver-preflight.py",
+        "remote/test-browser-driver-preflight.py",
+    ],
+    "browser-preflight",
+)
+assert (
+    "mypy",
+    "--strict",
+    "remote/browser-driver-preflight.py",
+    "remote/test-browser-driver-preflight.py",
+) in browser_preflight_commands
+assert (
+    "python3",
+    "remote/test-browser-driver-preflight.py",
+) in browser_preflight_commands
+assert ("remote/test-qwen-home.sh",) in browser_preflight_commands
+assert ("remote/test-feature-roster.sh",) in browser_preflight_commands
+assert (
+    "remote/repository-quality-gates.sh",
+    "--declarations",
+) in browser_preflight_commands
 print("pull_request_gate_routing=accepted")
