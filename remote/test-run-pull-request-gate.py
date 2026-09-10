@@ -173,6 +173,7 @@ else:
 
 workflow_text = WORKFLOW.read_text(encoding="utf-8")
 assert "github.event.pull_request.draft" not in workflow_text
+assert "ready_for_review" not in workflow_text
 assert workflow_text.count("python3 remote/run-pull-request-gate.py") == 1
 
 webui_commands = MODULE.selected_checks(
