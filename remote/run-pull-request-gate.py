@@ -25,15 +25,17 @@ CI_ROUTING_PATHS = {
 }
 GATE_INFRASTRUCTURE_PATHS = {
     "evidence/SHA256SUMS",
+    "remote/check-repository-quality-gate-declarations.py",
     "remote/gate-cell-key.sh",
+    "remote/repository-quality-gate-declarations.tsv",
     "remote/repository-quality-gates.sh",
+    "remote/test-check-repository-quality-gate-declarations.py",
     "remote/test-repository-gate-cells.sh",
 }
 GATE_INFRASTRUCTURE_EVIDENCE_PREFIX = "evidence/ci-gate-driver-scope-reuse/"
 BROWSER_PREFLIGHT_PATHS = {
     "evidence/SHA256SUMS",
     "remote/browser-driver-preflight.py",
-    "remote/qwen-home.sh",
     "remote/qwen_home.py",
     "remote/repository-quality-gates.sh",
     "remote/run-browser-driver.sh",
@@ -61,6 +63,10 @@ Q8_SAMPLER_ATTRIBUTION_ROUTE_SUPPORT_PATHS = {
 }
 CI_ROUTING_PYTHON_PATHS = tuple(
     sorted(path for path in CI_ROUTING_PATHS if path.endswith(".py"))
+)
+GATE_DECLARATION_PYTHON_PATHS = (
+    "remote/check-repository-quality-gate-declarations.py",
+    "remote/test-check-repository-quality-gate-declarations.py",
 )
 SAFE_PREFIXES = ("docs/", "webui/")
 SAFE_TEST_PATTERN = re.compile(r"remote/test-fallback-webui-[A-Za-z0-9_.-]+\Z")
@@ -212,6 +218,14 @@ def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
                     "remote/browser-driver-preflight.py",
                     "remote/test-browser-driver-preflight.py",
                 ),
+                ("ruff", "check", *CI_ROUTING_PYTHON_PATHS),
+                ("python3", "-m", "py_compile", *CI_ROUTING_PYTHON_PATHS),
+                ("python3", "remote/test-run-pull-request-gate.py"),
+                ("python3", "remote/test-merged-pr-gate-reuse.py"),
+                (
+                    "python3",
+                    "remote/check-repository-quality-gate-declarations.py",
+                ),
                 ("python3", "remote/test-browser-driver-preflight.py"),
                 ("remote/test-qwen-home.sh",),
                 ("remote/test-feature-roster.sh",),
@@ -226,7 +240,25 @@ def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
         checks.extend(
             (
                 ("remote/test-repository-gate-cells.sh",),
-                ("remote/repository-quality-gates.sh", "--declarations"),
+                (
+                    "ruff",
+                    "check",
+                    *GATE_DECLARATION_PYTHON_PATHS,
+                ),
+                (
+                    "python3",
+                    "-m",
+                    "py_compile",
+                    *GATE_DECLARATION_PYTHON_PATHS,
+                ),
+                (
+                    "python3",
+                    "remote/test-check-repository-quality-gate-declarations.py",
+                ),
+                (
+                    "python3",
+                    "remote/check-repository-quality-gate-declarations.py",
+                ),
                 ("python3", "remote/test-q8-four-row-select.py"),
                 ("python3", "remote/test-ab-shared-series.py"),
                 ("ruff", "check", *CI_ROUTING_PYTHON_PATHS),

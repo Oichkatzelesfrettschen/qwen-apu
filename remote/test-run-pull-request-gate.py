@@ -15,6 +15,10 @@ SPEC.loader.exec_module(MODULE)
 assert MODULE.classify_paths(["docs/USER-GUIDE.md", "README.md"]) == "documentation"
 assert MODULE.classify_paths(["docs/install-requirements.tsv"]) == "full"
 assert (
+    MODULE.classify_paths(["remote/repository-quality-gate-declarations.tsv"])
+    == "gate-infrastructure"
+)
+assert (
     MODULE.classify_paths(["docs/install-requirements.tsv", "webui/index.html"])
     == "full"
 )
@@ -68,6 +72,24 @@ assert (
         ]
     )
     == "browser-preflight"
+)
+assert MODULE.classify_paths(["remote/qwen-home.sh"]) == "full"
+assert (
+    MODULE.classify_paths(["remote/qwen-home.sh", "remote/browser-driver-preflight.py"])
+    == "full"
+)
+assert (
+    MODULE.classify_paths(
+        [
+            "remote/browser-driver-preflight.py",
+            "remote/run-pull-request-gate.py",
+        ]
+    )
+    == "browser-preflight"
+)
+assert (
+    MODULE.classify_paths(["remote/check-repository-quality-gate-declarations.py"])
+    == "gate-infrastructure"
 )
 assert (
     MODULE.classify_paths(
@@ -188,10 +210,6 @@ assert (
     "remote/test-run-raven2-vulkan-kernel-census.sh",
 ) in q8_sampler_commands
 assert ("remote/test-repository-gate-cells.sh",) in gate_infrastructure_commands
-assert (
-    "remote/repository-quality-gates.sh",
-    "--declarations",
-) in gate_infrastructure_commands
 assert ("python3", "remote/test-q8-four-row-select.py") in gate_infrastructure_commands
 assert ("python3", "remote/test-ab-shared-series.py") in gate_infrastructure_commands
 assert (
@@ -215,10 +233,27 @@ assert (
     "python3",
     "remote/test-browser-driver-preflight.py",
 ) in browser_preflight_commands
+assert ("python3", "remote/test-run-pull-request-gate.py") in browser_preflight_commands
+assert (
+    "python3",
+    "remote/test-merged-pr-gate-reuse.py",
+) in browser_preflight_commands
+assert (
+    "python3",
+    "remote/check-repository-quality-gate-declarations.py",
+) in browser_preflight_commands
 assert ("remote/test-qwen-home.sh",) in browser_preflight_commands
 assert ("remote/test-feature-roster.sh",) in browser_preflight_commands
 assert (
     "remote/repository-quality-gates.sh",
     "--declarations",
 ) in browser_preflight_commands
+assert (
+    "python3",
+    "remote/check-repository-quality-gate-declarations.py",
+) in gate_infrastructure_commands
+assert (
+    "python3",
+    "remote/test-check-repository-quality-gate-declarations.py",
+) in gate_infrastructure_commands
 print("pull_request_gate_routing=accepted")
