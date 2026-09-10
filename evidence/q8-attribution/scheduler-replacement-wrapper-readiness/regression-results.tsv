@@ -1,0 +1,8 @@
+test	state	bounded_result
+mixed_parent_child_procfs	accepted_reproduction	A child reader using the parent process ID under /proc/self/task received FileNotFoundError; the result carries no scheduler-facility classification.
+same_reader_procfs	accepted	The Python process resolved its own process ID and read three nonnegative task schedstat integers.
+scheduler_prerequisite_classification	accepted	Absent, disabled, and malformed sched_schedstats plus absent and malformed task schedstat produced distinct refusals; a valid fixture produced three integers.
+authorization_tsv_consumer	accepted	The csv-written tab-delimited record round-tripped through the execution reader; literal escapes, duplicate fields, embedded controls, and overwrite refused.
+failure_before_calibration	accepted	A disabled fixture started zero runner children, retained a complete terminal record, preserved the fixture bytes, and left broker and calibration states unstarted.
+accepted_runner_boundary	accepted	An accepted prerequisite fixture invoked the registered runner command surface once with calibration, broker, schedstat, affinity, and admission-bound settings fixed.
+runner_deadline_cleanup	accepted	The deadline terminated the owned subprocess group and retained exit 124 with a complete terminal record.

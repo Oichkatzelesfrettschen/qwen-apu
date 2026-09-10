@@ -153,6 +153,15 @@ assert (
 assert (
     MODULE.classify_paths(
         [
+            "remote/run-q8-scheduler-replacement.py",
+            "remote/test-run-q8-scheduler-replacement.py",
+        ]
+    )
+    == "q8-sampler-attribution"
+)
+assert (
+    MODULE.classify_paths(
+        [
             "remote/telemetry-broker.c",
             "remote/merged-pr-gate-reuse.py",
         ]
@@ -261,6 +270,16 @@ q8_sampler_commands = MODULE.selected_checks(
     ],
     "q8-sampler-attribution",
 )
+assert (
+    "python3",
+    "remote/test-run-q8-scheduler-replacement.py",
+) in q8_sampler_commands
+assert (
+    "mypy",
+    "--strict",
+    "remote/run-q8-scheduler-replacement.py",
+    "remote/test-run-q8-scheduler-replacement.py",
+) in q8_sampler_commands
 assert (
     "shellcheck",
     "-S",
