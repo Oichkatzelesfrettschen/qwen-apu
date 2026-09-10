@@ -1,0 +1,20 @@
+{
+  "schema": "qwen-source-grounded-qualification-v1",
+  "source_manifest_head": "09b937b1fabe671e0795e887c13d285abf0ee9da",
+  "served_page_sha256": "4539f12f10cd2627383c3bd3ece520273061c7954ae40205668de0d5a8c6a891",
+  "serving_bundle": "lease-q4k-6b262d93-r1",
+  "serving_executable_sha256": "510c0420346ffa4f5104d3f2b28117262a0d30b2907dc21c833d38442c3e49af",
+  "profile": "web-open",
+  "source_scope": "docs.python.org",
+  "tool_execution_outcome": "success",
+  "evidence_obtained": true,
+  "task_completion": "complete",
+  "observed_answer": "The Python Tutorial",
+  "browser_cleanup": "completed",
+  "command_failures": 0,
+  "separate_failed_required_retrieval": "$HOME/Github/qwen-apu/.runtime/results/web-source-success-20260909",
+  "non_claims": [
+    "The successful docs.python.org fetch does not reclassify the retained Wikipedia provider failure.",
+    "The qualification covers the tested web-open profile and source-grounded task only."
+  ]
+}

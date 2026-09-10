@@ -127,8 +127,19 @@ outside it.
   Q8-specific experiment is a kernel-delta bracket inside the Q8_0 mat-vec
   body, where reaching a 50 ms token asks a 19.6% local reduction of that
   family.
-- Next action: `evidence/q8-attribution/q8-kernel-delta-design.md` registers
-  that bracket. The shape split in
+- Admission: held. The retained
+  `evidence/q8-attribution/calibration-20260908/` acquisition analysis binds a
+  later calibration arm `09-P` with 748 sampler rows
+  with an integer-floor mean cost of `1,038,085 ns`, above the registered
+  `1,000,000 ns` limit. The request-window diagnostic mean was `427,521 ns`,
+  but diagnostics do not replace the full denominator. Accepted arms also
+  contain isolated larger stalls, so the result identifies neither a
+  deterministic broker defect nor a kernel-performance effect. The unchanged
+  calibration is not repeated, and Q8 calibration or candidate timing resumes
+  only after a registered input changes.
+- Withheld candidate: `evidence/q8-attribution/q8-kernel-delta-design.md`
+  registers the bracket but carries no execution authority under the refused
+  calibration. The shape split in
   `evidence/q8-attribution/device-20260905/shape-selection.md` re-keys the
   four accepted I1 arms' brackets by tensor and puts the tied output
   projection `token_embd.weight` at 12.719 of the family's 38.355 ms per
@@ -138,10 +149,9 @@ outside it.
   `2*rm_stdq` every other legacy quant already uses, against a 44-to-56-VGPR
   band with zero spills in the shader lab and a 5% fall in that shape's own
   exclusive interval under `QWEN_CENSUS_AB_MODE=kernel-delta`. The lab arm
-  runs `remote/raven2-shader-lab/q8-mat-vec-receipt.sh --allow-device` on the
-  appliance, since gfx902 register allocation comes from RADV's own ACO
-  backend, and costs one pipeline creation rather than a teardown window; the
-  bracket needs a served window after the 4B series decision.
+  would run `remote/raven2-shader-lab/q8-mat-vec-receipt.sh --allow-device` on
+  the appliance because gfx902 register allocation comes from RADV's own ACO
+  backend. The refused calibration withholds that device action.
 
 ## E5: the standard packed dot through OpSDotKHR and ACO
 
