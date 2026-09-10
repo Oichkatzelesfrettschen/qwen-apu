@@ -184,11 +184,14 @@ export GATE_CELL_ROOT
 GATE_CELL_DRIVER_PATH=$gate_script_directory/$(basename -- "$0")
 export GATE_CELL_DRIVER_PATH
 . "$gate_script_directory/gate-cell-key.sh"
+gate_gamma() {
+    python3 remote/gamma-test.py
+}
 gate_cell_init
 trap gate_cell_cleanup EXIT
 gate_cell alpha derive remote/alpha-test.sh 'sh remote/alpha-test.sh'
 gate_cell beta derive remote/beta-test.sh 'sh remote/beta-test.sh'
-gate_cell gamma derive remote/gamma-test.py 'python3 remote/gamma-test.py'
+gate_cell gamma derive remote/gamma-test.py gate_gamma exact-driver
 gate_cell delta derive remote/delta-test.py 'python3 remote/delta-test.py'
 gate_cell_summary
 FIXTURE
@@ -315,12 +318,16 @@ if ! grep -qE '^cell=reused key=[0-9a-f]{64} name=alpha$' "$run_output"; then
 fi
 # QWEN_GATE_TIMING=0 removes the clock reads entirely, for a run that wants no
 # measurement of itself at all.
-run_fixture_gate 0 1 0
+run_fixture_gate 0 0 0
 if grep -q '^cell=timing ' "$run_output" || grep -q '^gate_timing ' "$run_output"; then
     report_failure timing-off timing_lines_absent
 fi
 if [ "$(summary_field root)" != "$first_root" ]; then
     report_failure timing-off root_is_unmoved_by_timing
+fi
+run_fixture_gate 0 1 0
+if marker_holds alpha || marker_holds gamma || marker_holds delta; then
+    report_failure timing-off untimed_records_reuse
 fi
 
 # QWEN_GATE_SPARSE=0 runs every cell against the same warm cache.
@@ -568,28 +575,98 @@ if marker_holds alpha; then
     report_failure tool-digest alpha_reuses_the_new_sh_key
 fi
 
-# The driver and this reader are bound into every key, so an edit to either one
-# reruns every bounded cell even though no cell names either file in its own
-# spec.
+# A driver edit reruns the cell whose command executes a driver-owned function.
+# Driver-independent cells reconstruct the old key from their current manifest
+# and migrate the accepted record because every result-bearing field still
+# matches.
 run_fixture_gate
 printf '# driver edit\n' >>"$fixture_root/remote/gate.sh"
 run_fixture_gate
-if ! marker_holds alpha || ! marker_holds gamma || ! marker_holds delta; then
-    report_failure driver-identity every_bounded_cell_reruns_on_a_driver_edit
+if marker_holds alpha || ! marker_holds gamma || marker_holds delta; then
+    report_failure driver-identity only_exact_driver_cell_reruns_on_a_driver_edit
+fi
+if [ "$(grep -c '^cell=compatible-driver .* name=alpha$' "$run_output")" -ne 1 ] ||
+    [ "$(grep -c '^cell=compatible-driver .* name=delta$' "$run_output")" -ne 1 ]; then
+    report_failure driver-identity independent_cells_report_compatible_driver_reuse
 fi
 run_fixture_gate
 if marker_holds alpha || marker_holds gamma || marker_holds delta; then
     report_failure driver-identity bounded_cells_reuse_the_new_driver_key
 fi
 
+# A reader edit changes non-substitutable runner semantics, so every bounded
+# cell reruns even when its repository inputs and command remain equal.
 printf '# reader edit\n' >>"$fixture_root/remote/gate-cell-key.sh"
 run_fixture_gate
 if ! marker_holds alpha || ! marker_holds gamma || ! marker_holds delta; then
     report_failure reader-identity every_bounded_cell_reruns_on_a_reader_edit
 fi
+if grep -q '^cell=compatible-driver ' "$run_output"; then
+    report_failure reader-identity reader_edit_never_uses_compatible_driver_reuse
+fi
 run_fixture_gate
 if marker_holds alpha || marker_holds gamma || marker_holds delta; then
     report_failure reader-identity bounded_cells_reuse_the_new_reader_key
+fi
+
+# A duplicated binding field makes every older alpha record ineligible. A
+# later driver edit therefore executes alpha instead of accepting a malformed
+# exact or compatible record, while the next unchanged run reuses the newly
+# written valid record.
+for cached_record in "$cache_directory"/cells/*; do
+    [ -f "$cached_record" ] || continue
+    if grep -qx 'name=alpha' "$cached_record"; then
+        printf 'status=accepted\n' >>"$cached_record"
+    fi
+done
+printf '# second driver edit\n' >>"$fixture_root/remote/gate.sh"
+run_fixture_gate
+if ! marker_holds alpha; then
+    report_failure record-validation malformed_compatible_records_are_rejected
+fi
+run_fixture_gate
+if marker_holds alpha; then
+    report_failure record-validation repaired_record_reuses
+fi
+
+# An unknown scope refuses before any cell command executes.
+sed 's/gate_cell alpha derive remote\/alpha-test.sh '\''sh remote\/alpha-test.sh'\''/gate_cell alpha derive remote\/alpha-test.sh '\''sh remote\/alpha-test.sh'\'' unknown-scope/' \
+    "$fixture_root/remote/gate.sh" >"$fixture_root/remote/bad-scope-gate.sh"
+chmod 0755 "$fixture_root/remote/bad-scope-gate.sh"
+: >"$marker_file"
+if QWEN_GATE_FIXTURE_MARKER="$marker_file" \
+    QWEN_GATE_CACHE_DIR="$cache_directory" \
+    QWEN_CHROMIUM="$fixture_chromium" \
+    sh "$fixture_root/remote/bad-scope-gate.sh" \
+    >"$work_directory/bad-scope.out" 2>"$work_directory/bad-scope.err"; then
+    report_failure driver-scope unknown_scope_is_refused
+fi
+if marker_holds alpha ||
+    ! grep -q 'unknown gate cell driver scope: unknown-scope' \
+        "$work_directory/bad-scope.err"; then
+    report_failure driver-scope refusal_precedes_command_and_names_scope
+fi
+
+# A driver-owned function without the explicit strict scope is refused. The
+# default remains concise for commands whose implementation is inside their
+# hashed script inputs, while a new gate_* helper cannot silently opt into
+# compatible-driver reuse.
+sed 's/gate_gamma exact-driver/gate_gamma/' \
+    "$fixture_root/remote/gate.sh" >"$fixture_root/remote/missing-scope-gate.sh"
+chmod 0755 "$fixture_root/remote/missing-scope-gate.sh"
+: >"$marker_file"
+if QWEN_GATE_FIXTURE_MARKER="$marker_file" \
+    QWEN_GATE_CACHE_DIR="$cache_directory" \
+    QWEN_CHROMIUM="$fixture_chromium" \
+    sh "$fixture_root/remote/missing-scope-gate.sh" \
+    >"$work_directory/missing-scope.out" \
+    2>"$work_directory/missing-scope.err"; then
+    report_failure driver-scope missing_exact_scope_is_refused
+fi
+if marker_holds gamma ||
+    ! grep -q 'driver-owned command requires exact-driver scope: gate_gamma' \
+        "$work_directory/missing-scope.err"; then
+    report_failure driver-scope driver_function_refusal_precedes_command
 fi
 
 # A GATE_CELL_DRIVER_PATH naming a file the tree lacks refuses at init rather
