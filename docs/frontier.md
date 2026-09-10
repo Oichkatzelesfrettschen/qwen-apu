@@ -135,8 +135,20 @@ outside it.
   but diagnostics do not replace the full denominator. Accepted arms also
   contain isolated larger stalls, so the result identifies neither a
   deterministic broker defect nor a kernel-performance effect. The unchanged
-  calibration is not repeated, and Q8 calibration or candidate timing resumes
-  only after a registered input changes.
+  calibration is not repeated.
+- Re-entry input: a reviewed telemetry-acquisition change must alter the
+  registered tuple of broker source digest, sampled surfaces and cadence,
+  process affinity and niceness, or per-read/scheduler attribution. A threshold
+  change, row deletion, phase exclusion, model rebuild, or unchanged rerun does
+  not satisfy re-entry. Before device work, a new preregistration under
+  `evidence/q8-attribution/sampler-cost-attribution/` must bind the refused and
+  proposed tuple digests, state the causal prediction, keep the full-row
+  `1,000,000 ns` admission bound, and pass broker fixtures that distinguish
+  sensor-read time from host descheduling. The next action is one calibration
+  run through the existing bounded wrapper after that preregistration lands;
+  its complete terminal, sidecars, controls, and admission verdict remain in
+  the same evidence directory. A refused replacement closes the new tuple and
+  authorizes neither candidate timing nor an unchanged retry.
 - Withheld candidate: `evidence/q8-attribution/q8-kernel-delta-design.md`
   registers the bracket but carries no execution authority under the refused
   calibration. The shape split in
