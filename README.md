@@ -103,20 +103,27 @@ not make the inference process root.
 Attachment ownership, saved-history deletion, image-omission notices, qualitative
 vision recognition, image generation, and reviewer completion have passed live
 checks. Recognition accuracy and generated-image quality remain imperfect.
-A retained Wikipedia attempt failed retrieval; that result does not mean the
-site is generally unavailable.
+A retained Wikipedia attempt failed required retrieval and produced the honest
+incomplete-source result. A separate `docs.python.org` search and fetch produced
+a grounded answer through `web-open`; the success does not reclassify the
+Wikipedia result or establish general source availability.
 
 The source includes explicit incomplete notices after failed web retrieval and
 application-owned image controls. The compatibility correction passed CI and the updated page is deployed.
-Remote Firefox has confirmed an explicit incomplete outcome when the model
-answered without retrieval. A fresh image conversation completed generation
-and exposed verified Open and Download controls. Image-tool selection failed
-in the preceding mixed web/image conversation, so reliable tool selection
-across that sequence remains an open limitation.
+Remote Firefox has confirmed the explicit incomplete outcome after failed
+required retrieval. A mixed Wikipedia-to-image sequence then completed one
+image call: the verified card remained authoritative and a fabricated URL in
+model prose stayed labeled unverified. Generated-image prose can remain
+unreliable; Open, Download, Review, and Remove are application-owned controls.
+The bounded record is
+[`evidence/ui-tool-qualification-20260909/`](evidence/ui-tool-qualification-20260909/).
 A merged change alone does not change the laptop's running page.
 
 The serving bundle and inference executable remain fixed during this UI work.
-Q8 timing remains held independently of product qualification. Historical
+Q8 timing remains held independently of product qualification: calibration arm
+`09-P` measured `1,038,085 ns` across its full 748-row sampler denominator,
+above the registered `1,000,000 ns` limit. The unchanged calibration and
+candidate timing remain withheld until a registered input changes. Historical
 throughput figures are observations from particular runs, not promised response
 rates for a busy laptop.
 

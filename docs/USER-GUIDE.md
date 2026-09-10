@@ -95,8 +95,12 @@ produced.` Retry the request, approve a corrected proposal, or clear `web` and
 ask a separate question based on the model's general knowledge. Do not treat a
 failed retrieval as evidence for the requested claim.
 
-The deployed UI reports the explicit incomplete outcome described above.
-A remote Firefox check confirmed the outcome when the model skipped retrieval.
+The deployed UI reports the explicit incomplete outcome described above. A
+remote Firefox check retained that outcome after a required Wikipedia retrieval
+failed. A separate `web-open` check searched and fetched `docs.python.org` and
+produced the requested grounded answer. The successful and failed outcomes are
+recorded separately in
+[`ui-tool-qualification-20260909`](../evidence/ui-tool-qualification-20260909/).
 
 ## Generate and review an image
 
@@ -113,11 +117,12 @@ vision reviewer to inspect it, or `remove image` to remove the live card and
 its saved reference. Treat image links written in model prose as unverified.
 
 Image generation and review already run in the live image lane. The canonical
-card actions are deployed and have passed the automated browser tests.
-A remote Firefox check also completed generation and verified Open and
-Download in a fresh conversation. In the preceding mixed web/image conversation,
-the model described image parameters without calling the tool. A prose proposal
-alone does not mean an image was generated.
+card actions are deployed and have passed the automated browser tests. A remote
+Firefox mixed Wikipedia-to-image sequence completed generation; the verified
+card remained authoritative while a fabricated model-written URL stayed under
+the unverified warning. Generated-image prose can be unreliable. Open,
+Download, Review, and Remove remain application-owned controls. The retained
+qualification covers the tested `image-sdxs-512-a` profile only.
 
 ![Completed image card with its Open, Download, and Review controls](images/generated-image-controls.png)
 

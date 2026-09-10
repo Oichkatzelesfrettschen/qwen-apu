@@ -329,7 +329,7 @@
       "model_id": "qwen38-4b-distill",
       "execution_policy": "validator-gated",
       "features": [
-        { "feature": "web-search", "status": "candidate", "evidence": "evidence/conversational-suite/20260905T2324Z/README.md", "note": "validator-gated search and fetch execute through the approval broker; failed required retrieval remains an explicit incomplete result" }
+        { "feature": "web-search", "status": "candidate", "evidence": "evidence/ui-tool-qualification-20260909/", "note": "validator-gated search and fetch produced one docs.python.org grounded answer; a separate failed required retrieval remained an explicit incomplete result" }
       ]
     },
     {
