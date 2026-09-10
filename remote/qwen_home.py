@@ -22,6 +22,7 @@ _DECLARED = {
     "cache": "cache",
     "tmp": "tmp",
     "results": "results",
+    "browser_python": "opt/browser-venv/bin/python",
     "llama_source": "opt/llama.cpp",
     "image_source": "opt/stable-diffusion.cpp",
     "image_runtime": "opt/stable-diffusion.cpp/build-raven2/bin/sd-cli",

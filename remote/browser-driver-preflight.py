@@ -112,7 +112,9 @@ def module_identity(module_name: str) -> tuple[str, str]:
             "dependency_identity", "the required browser distribution has no metadata"
         ) from error
     try:
-        distribution.locate_file("").resolve().relative_to(environment_root)
+        pathlib.Path(str(distribution.locate_file(""))).resolve().relative_to(
+            environment_root
+        )
     except ValueError as error:
         raise PreflightRefusal(
             "dependency_identity",
@@ -152,7 +154,6 @@ def parse_arguments() -> argparse.Namespace:
     """Parse the bounded runner interface."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected-python", required=True, type=pathlib.Path)
-    parser.add_argument("--runtime-root", required=True, type=pathlib.Path)
     parser.add_argument("--driver", required=True, type=pathlib.Path)
     parser.add_argument("--firefox-bin", required=True, type=pathlib.Path)
     parser.add_argument("--record-directory", required=True, type=pathlib.Path)
@@ -165,10 +166,11 @@ def parse_arguments() -> argparse.Namespace:
     if arguments.driver_arguments[:1] == ["--"]:
         arguments.driver_arguments = arguments.driver_arguments[1:]
     if any(
-        argument == "--firefox-bin" or argument.startswith("--firefox-bin=")
+        argument in {"--firefox-bin", "--runtime-root"}
+        or argument.startswith(("--firefox-bin=", "--runtime-root="))
         for argument in arguments.driver_arguments
     ):
-        parser.error("the preflight owns the driver's --firefox-bin argument")
+        parser.error("the preflight owns its runtime root and the driver's Firefox")
     return arguments
 
 
@@ -189,7 +191,12 @@ def terminate_process_group(process: subprocess.Popen[bytes]) -> str:
 def main() -> int:
     """Refuse before driver execution or own the accepted driver process."""
     arguments = parse_arguments()
-    runtime_root = arguments.runtime_root.absolute()
+    runtime_root_text = os.environ.get("QWEN_BROWSER_RUNTIME_ROOT")
+    if not runtime_root_text:
+        raise PreflightRefusal(
+            "runtime_root", "the wrapper did not provide the runtime-root authority"
+        )
+    runtime_root = pathlib.Path(runtime_root_text).absolute()
     record_directory = arguments.record_directory.absolute()
     expected_python = arguments.expected_python.absolute()
     driver = arguments.driver.absolute()
@@ -259,25 +266,59 @@ def main() -> int:
         return 0
 
     started_monotonic_ns = time.monotonic_ns()
-    process = subprocess.Popen(
-        [
-            str(expected_python),
-            str(driver),
-            "--firefox-bin",
-            str(firefox),
-            *arguments.driver_arguments,
-        ],
-        start_new_session=True,
-    )
+    termination_signal: int | None = None
+
+    def request_termination(signal_number: int, _frame: object) -> None:
+        nonlocal termination_signal
+        termination_signal = signal_number
+
+    previous_handlers = {
+        signal_number: signal.signal(signal_number, request_termination)
+        for signal_number in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        process = subprocess.Popen(
+            [
+                str(expected_python),
+                "-I",
+                str(driver),
+                "--firefox-bin",
+                str(firefox),
+                *arguments.driver_arguments,
+            ],
+            start_new_session=True,
+        )
+    except BaseException:
+        for signal_number, previous_handler in previous_handlers.items():
+            signal.signal(signal_number, previous_handler)
+        raise
     private["driver_execution"] = "started"
     public["driver_execution"] = "started"
     private["driver_pid"] = process.pid
     try:
-        driver_status = process.wait(timeout=arguments.driver_timeout_seconds)
-        cleanup = "already_exited"
-    except subprocess.TimeoutExpired:
-        driver_status = 124
-        cleanup = terminate_process_group(process)
+        deadline = time.monotonic() + arguments.driver_timeout_seconds
+        while True:
+            if termination_signal is not None:
+                cleanup = terminate_process_group(process)
+                driver_status = 128 + termination_signal
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                cleanup = terminate_process_group(process)
+                driver_status = 124
+                break
+            try:
+                driver_status = process.wait(timeout=min(remaining, 0.1))
+                cleanup = "already_exited"
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        for signal_number, previous_handler in previous_handlers.items():
+            signal.signal(signal_number, previous_handler)
+    if termination_signal is not None:
+        private["termination_signal"] = termination_signal
+        public["termination_signal"] = termination_signal
     private["driver_status"] = driver_status
     private["cleanup"] = cleanup
     private["elapsed_ns"] = time.monotonic_ns() - started_monotonic_ns

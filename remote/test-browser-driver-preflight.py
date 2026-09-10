@@ -176,6 +176,106 @@ def run_timeout_fixture(
     return result, child_process_id
 
 
+def run_import_isolation_fixture(
+    runtime_root: pathlib.Path,
+) -> subprocess.CompletedProcess[str]:
+    """Run a driver while PYTHONPATH offers a conflicting dependency."""
+    (runtime_root / "results").mkdir(parents=True)
+    make_environment(runtime_root, dependency=True)
+    hostile_root = runtime_root / "hostile-python"
+    hostile_package = hostile_root / "marionette_driver"
+    hostile_package.mkdir(parents=True)
+    (hostile_package / "__init__.py").write_text("", encoding="utf-8")
+    (hostile_package / "marionette.py").write_text(
+        "IDENTITY = 'hostile'\n", encoding="utf-8"
+    )
+    driver = runtime_root / "fixture-driver.py"
+    driver.write_text(
+        "import os\nimport pathlib\n"
+        "from marionette_driver.marionette import IDENTITY\n"
+        "pathlib.Path(os.environ['QWEN_HOME'], 'driver-dependency').write_text(IDENTITY)\n",
+        encoding="utf-8",
+    )
+    firefox = runtime_root / "firefox-fixture"
+    make_executable(firefox, "#!/bin/sh\nexit 0\n")
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(hostile_root)
+    environment["QWEN_HOME"] = str(runtime_root)
+    return subprocess.run(
+        [
+            str(RUNNER),
+            "--driver",
+            str(driver),
+            "--firefox-bin",
+            str(firefox),
+            "--record-directory",
+            str(runtime_root / "results" / "import-record"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=15,
+    )
+
+
+def run_signal_fixture(runtime_root: pathlib.Path) -> tuple[int, int]:
+    """Interrupt the runner and return its status and owned child PID."""
+    (runtime_root / "results").mkdir(parents=True)
+    make_environment(runtime_root, dependency=True)
+    child = runtime_root / "fixture-child.py"
+    child.write_text(
+        "import os\nimport pathlib\nimport signal\nimport time\n"
+        "root = pathlib.Path(os.environ['QWEN_HOME'])\n"
+        "def stop(_signal, _frame):\n"
+        "    (root / 'signal-child-terminated').write_text('1')\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "(root / 'signal-child-ready').write_text('1')\n"
+        "while True:\n    time.sleep(1)\n",
+        encoding="utf-8",
+    )
+    driver = runtime_root / "fixture-driver.py"
+    driver.write_text(
+        "import os\nimport pathlib\nimport subprocess\nimport sys\nimport time\n"
+        "root = pathlib.Path(os.environ['QWEN_HOME'])\n"
+        "child = subprocess.Popen([sys.executable, str(root / 'fixture-child.py')])\n"
+        "(root / 'signal-child-pid').write_text(str(child.pid))\n"
+        "while not (root / 'signal-child-ready').exists():\n    time.sleep(0.01)\n"
+        "(root / 'signal-driver-ready').write_text('1')\n"
+        "while True:\n    time.sleep(1)\n",
+        encoding="utf-8",
+    )
+    firefox = runtime_root / "firefox-fixture"
+    make_executable(firefox, "#!/bin/sh\nexit 0\n")
+    environment = os.environ.copy()
+    environment["QWEN_HOME"] = str(runtime_root)
+    process = subprocess.Popen(
+        [
+            str(RUNNER),
+            "--driver",
+            str(driver),
+            "--firefox-bin",
+            str(firefox),
+            "--record-directory",
+            str(runtime_root / "results" / "signal-record"),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+    )
+    deadline = time.monotonic() + 10
+    while not (runtime_root / "signal-driver-ready").exists():
+        if process.poll() is not None or time.monotonic() >= deadline:
+            stdout, stderr = process.communicate(timeout=1)
+            raise AssertionError((process.returncode, stdout, stderr))
+        time.sleep(0.02)
+    child_process_id = int((runtime_root / "signal-child-pid").read_text())
+    process.send_signal(signal.SIGTERM)
+    return process.wait(timeout=15), child_process_id
+
+
 with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporary:
     temporary_root = pathlib.Path(temporary)
 
@@ -216,6 +316,48 @@ with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporar
         "status": "refused",
     }
 
+    foreign_root = temporary_root / "foreign"
+    (foreign_root / "results").mkdir(parents=True)
+    make_environment(foreign_root, dependency=True)
+    (foreign_root / ".qwen-runtime-root").write_text(
+        "tree_root=/another/checkout\n", encoding="utf-8"
+    )
+    foreign = run_fixture(foreign_root, "foreign-record")
+    assert foreign.returncode == 2, foreign.stderr
+    assert "is bound to /another/checkout" in foreign.stderr
+    assert not (foreign_root / "results" / "foreign-record").exists()
+
+    override_root = temporary_root / "override"
+    (override_root / "results").mkdir(parents=True)
+    make_environment(override_root, dependency=True)
+    override = run_fixture(override_root, "override-record")
+    assert override.returncode == 0, override.stderr
+    override_attempt = subprocess.run(
+        [
+            str(RUNNER),
+            "--driver",
+            str(override_root / "fixture-driver.py"),
+            "--firefox-bin",
+            str(override_root / "firefox-fixture"),
+            "--record-directory",
+            str(override_root / "results" / "override-attempt"),
+            "--runtime-root",
+            str(temporary_root / "outside"),
+            "--preflight-only",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "QWEN_HOME": str(override_root)},
+    )
+    assert override_attempt.returncode == 2
+    assert not (temporary_root / "outside").exists()
+
+    import_root = temporary_root / "import-isolation"
+    import_result = run_import_isolation_fixture(import_root)
+    assert import_result.returncode == 0, import_result.stderr
+    assert (import_root / "driver-dependency").read_text() == "fixture"
+
     timeout_root = temporary_root / "timeout"
     timeout_result, child_process_id = run_timeout_fixture(timeout_root)
     try:
@@ -239,4 +381,22 @@ with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporar
         if process_is_running(child_process_id):
             os.kill(child_process_id, signal.SIGKILL)
 
-print("browser_driver_preflight=accepted checks=3")
+    signal_root = temporary_root / "signal"
+    signal_status, signal_child_process_id = run_signal_fixture(signal_root)
+    try:
+        assert signal_status == 128 + signal.SIGTERM
+        signal_public = json.loads(
+            (
+                signal_root / "results" / "signal-record" / "preflight-public.json"
+            ).read_text()
+        )
+        assert signal_public["driver_status"] == 128 + signal.SIGTERM
+        assert signal_public["termination_signal"] == signal.SIGTERM
+        assert signal_public["cleanup"] in {"terminated", "killed"}
+        assert (signal_root / "signal-child-terminated").is_file()
+        assert not process_is_running(signal_child_process_id)
+    finally:
+        if process_is_running(signal_child_process_id):
+            os.kill(signal_child_process_id, signal.SIGKILL)
+
+print("browser_driver_preflight=accepted checks=7")

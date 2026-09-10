@@ -2,15 +2,19 @@
 
 ## Result
 
-The browser acquisition entry point resolves the Python executable at
-`$QWEN_HOME/opt/browser-venv/bin/python` and launches the lifecycle runner with
-that path. Shell activation, a script shebang, and the first `python3` on
-`PATH` carry no selection authority. The Python runner verifies that its
-running executable and virtual-environment prefix equal the declared browser
+`qwen-home.sh` declares the browser Python as
+`$QWEN_HOME/opt/browser-venv/bin/python`, and the browser acquisition entry
+point launches the lifecycle runner with that path. Shell activation, a script
+shebang, and the first `python3` on `PATH` carry no selection authority. The
+entry point refuses a runtime root bound to another checkout and passes its
+runtime-root authority through an internal environment value that caller
+arguments cannot replace. The Python runner verifies that its running
+executable and virtual-environment prefix equal the declared browser
 environment before it imports `marionette_driver` or starts the acquisition
-driver. Isolated Python mode excludes ambient user-site and `PYTHONPATH`
-packages, and the dependency source and distribution metadata must resolve
-inside the declared environment.
+driver. The runner launches both itself and the accepted acquisition driver in
+isolated Python mode. Ambient user-site and `PYTHONPATH` packages therefore
+carry no import authority, and the dependency source and distribution metadata
+must resolve inside the declared environment.
 
 The preflight fingerprints four roles: browser-environment Python, the
 `marionette_driver.marionette` dependency source, the acquisition driver, and
@@ -22,16 +26,30 @@ The runner owns and injects the driver's `--firefox-bin` argument, so the
 fingerprinted executable and the executable handed to the driver are one
 identity.
 
+The entry point declares and reuses the existing private browser environment;
+the preparation neither provisions another environment nor installs a browser
+dependency. An absent or divergent dependency remains a preflight refusal.
+The driver is a workstation-side acquisition controller that runs from the Git
+checkout. `check-runtime-tree.sh` guards the copied appliance runtime and
+intentionally refuses a Git source clone, so its synced-tree contract does not
+apply to this controller. The successor record instead binds the checkout's
+acquisition-driver digest; the retained qualification record binds the source
+and deployed payload manifests separately.
+
 The focused fixture puts an executable named `python3` first on `PATH`; that
 executable would leave a marker and exit 99 if selected. The accepted arm uses
 the declared virtual environment, imports the fixture dependency, writes the
 role-only record, and leaves the hostile marker absent. The refusal arm removes
 the dependency metadata and module, observes `failure_stage=dependency_import`,
 and leaves driver, Firefox, profile, image-authorization, and image-generation
-markers absent. A third arm starts a fixture driver and child in the runner's
-owned process group, reaches the registered deadline, records status 124, and
-observes the child handle a group-delivered termination before the runner
-returns.
+markers absent. Further arms prove a foreign runtime-root marker refuses before
+record creation, a caller-supplied runtime-root option cannot redirect output,
+and a hostile `PYTHONPATH` package cannot replace the dependency used by the
+driver. The deadline arm starts a fixture driver and child in the runner's
+owned process group, records status 124, and observes group termination. The
+signal arm sends SIGTERM to the runner, observes the driver group terminate,
+and retains status 143, the signal identity, and the cleanup result before the
+runner exits.
 
 `environment-preflight.json` is the role-only derivative from a workstation
 preflight through the declared existing environment. It reports Python 3.14.7,
