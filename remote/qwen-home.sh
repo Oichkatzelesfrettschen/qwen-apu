@@ -27,6 +27,7 @@ qwen_home_names='qwen_tree_root qwen_home qwen_home_marker qwen_home_manifest
 qwen_home_bin qwen_home_opt qwen_home_models qwen_home_deployments
 qwen_home_state qwen_home_cache qwen_home_tmp qwen_home_results
 qwen_home_build_cache qwen_home_gate_cache qwen_home_gate_venv
+qwen_home_browser_python
 qwen_home_llama_source qwen_home_llama_server qwen_home_llama_bench
 qwen_home_llama_cli qwen_home_llama_quantize qwen_home_gguf_py
 qwen_home_llama_upstream qwen_home_llama_trace qwen_home_llama_census_bench qwen_home_radv_root
@@ -64,6 +65,7 @@ qwen_home_resolve() {
     qwen_home_build_cache=$qwen_home_cache/build
     qwen_home_gate_cache=$qwen_home_cache/gate
     qwen_home_gate_venv=$qwen_home_opt/gate-venv
+    qwen_home_browser_python=$qwen_home_opt/browser-venv/bin/python
     qwen_home_llama_source=$qwen_home_opt/llama.cpp
     qwen_home_llama_server=$qwen_home_llama_source/build-appliance-current/bin/llama-server
     qwen_home_llama_bench=$qwen_home_llama_source/build-qwen-vulkan/bin/llama-bench

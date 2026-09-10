@@ -29,8 +29,8 @@ done || paths_under_root=failed
 report every_path_under_root "$paths_under_root"
 
 # ---- QWEN_HOME moves the whole layout ----
-moved=$(QWEN_HOME=/mnt/elsewhere "$resolver" print qwen_home_models qwen_home_searxng_python qwen_home_web_token_key | tr '\n' ' ')
-[ "$moved" = '/mnt/elsewhere/models /mnt/elsewhere/opt/searxng/venv/bin/python /mnt/elsewhere/state/web-token.key ' ] \
+moved=$(QWEN_HOME=/mnt/elsewhere "$resolver" print qwen_home_models qwen_home_searxng_python qwen_home_browser_python qwen_home_web_token_key | tr '\n' ' ')
+[ "$moved" = '/mnt/elsewhere/models /mnt/elsewhere/opt/searxng/venv/bin/python /mnt/elsewhere/opt/browser-venv/bin/python /mnt/elsewhere/state/web-token.key ' ] \
     && report override_moves_every_path ok || report override_moves_every_path "$moved"
 
 # ---- a relative QWEN_HOME is refused ----
@@ -54,8 +54,8 @@ sourced=$(env -u QWEN_HOME sh -c '
     && report sourced_form_matches_command_form ok || report sourced_form_matches_command_form "$sourced"
 
 # ---- the python module agrees ----
-python_home=$(env -u QWEN_HOME python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import qwen_home; print(qwen_home.home()); print(qwen_home.path("searxng_python"))' "$script_directory" | tr '\n' ' ')
-[ "$python_home" = "$tree_root/.runtime $tree_root/.runtime/opt/searxng/venv/bin/python " ] \
+python_home=$(env -u QWEN_HOME python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import qwen_home; print(qwen_home.home()); print(qwen_home.path("searxng_python")); print(qwen_home.path("browser_python"))' "$script_directory" | tr '\n' ' ')
+[ "$python_home" = "$tree_root/.runtime $tree_root/.runtime/opt/searxng/venv/bin/python $tree_root/.runtime/opt/browser-venv/bin/python " ] \
     && report python_module_agrees ok || report python_module_agrees "$python_home"
 
 if [ "$failures" -ne 0 ]; then printf '%s failure(s)\n' "$failures"; exit 1; fi
