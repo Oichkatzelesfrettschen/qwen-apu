@@ -408,6 +408,7 @@ def run_start_failure_fixture(runtime_root: pathlib.Path) -> int:
 
 def assert_unreadable_dependency_refuses(runtime_root: pathlib.Path) -> None:
     """Inject one distribution-file read failure into the identity check."""
+    fixture_environment = runtime_root / "opt" / "browser-venv"
     make_environment(runtime_root, dependency=True)
     site_packages = next(
         (runtime_root / "opt" / "browser-venv" / "lib").glob("python*/site-packages")
@@ -417,14 +418,18 @@ def assert_unreadable_dependency_refuses(runtime_root: pathlib.Path) -> None:
     original_file_sha256 = cast(
         Callable[[pathlib.Path], str], getattr(module, "file_sha256")
     )
+    injected_read_attempted = False
 
     def refuse_support_file(path: pathlib.Path) -> str:
+        nonlocal injected_read_attempted
         if path.resolve() == unreadable_support.resolve():
+            injected_read_attempted = True
             raise PermissionError("fixture distribution-file refusal")
         return original_file_sha256(path)
 
     setattr(module, "file_sha256", refuse_support_file)
     previous_path = list(sys.path)
+    previous_prefix = sys.prefix
     retained_modules = {
         name: imported_module
         for name, imported_module in sys.modules.items()
@@ -433,6 +438,7 @@ def assert_unreadable_dependency_refuses(runtime_root: pathlib.Path) -> None:
     for name in retained_modules:
         del sys.modules[name]
     sys.path.insert(0, str(site_packages))
+    sys.prefix = str(fixture_environment)
     try:
         module_identity = cast(
             Callable[[str], tuple[str, str]], getattr(module, "module_identity")
@@ -442,9 +448,11 @@ def assert_unreadable_dependency_refuses(runtime_root: pathlib.Path) -> None:
             module_identity("marionette_driver.marionette")
         except preflight_refusal as error:
             assert getattr(error, "stage") == "dependency_identity"
+            assert injected_read_attempted
         else:
             raise AssertionError("the injected dependency read failure was accepted")
     finally:
+        sys.prefix = previous_prefix
         sys.path[:] = previous_path
         for name in tuple(sys.modules):
             if name == "marionette_driver" or name.startswith("marionette_driver."):
