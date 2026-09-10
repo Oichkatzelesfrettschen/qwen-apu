@@ -1,0 +1,21 @@
+field	value
+contract	image-quality-successor-v1
+predecessor_record	evidence/ui-tool-qualification-20260909/README.md
+predecessor_protocol_sha256	138cb71e3ca3e16493556834b0a3fcf726a4802678e6bdf47ad48078ca47b2d6
+predecessor_mutation	forbidden
+successor_result_root	$QWEN_HOME/results
+successor_result_shape	fresh_direct_child
+execution_authority	required
+execution_status	withheld
+browser_entrypoint	remote/run-browser-driver.sh
+browser_python_role	$QWEN_HOME/opt/browser-venv/bin/python
+image_profile	image-sdxs-512-a
+reviewer	lfm25-vl-16b
+width	512
+height	512
+steps	4
+stopping_rule	stop_on_first_protocol_or_restoration_failure
+row	seed	prompt
+fox-side-profile	314159	A single red fox standing on plain white snow, full body, strict left-facing side profile, one head, two ears, four anatomically plausible legs, one tail, no other animals or objects.
+red-cube-left-of-blue-sphere	271828	A single red cube strictly to the left of a single blue sphere on a plain white background, both fully visible, no other objects, no text.
+exact-text-sign	161803	A single plain rectangular sign centered on a plain white background. The sign contains exactly the uppercase text RAVEN2 READY, with no other letters, words, numbers, symbols, or objects.

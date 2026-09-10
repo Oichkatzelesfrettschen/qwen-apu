@@ -305,6 +305,9 @@ gate_cell test-image-mcp derive remote/image-mcp/test-image-mcp.py \
 gate_cell test-image-review derive \
     'remote/test-image-review.py remote/image_protocol.py' \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-image-review.py'
+gate_cell test-browser-driver-preflight derive \
+    'remote/test-browser-driver-preflight.py remote/browser-driver-preflight.py remote/run-browser-driver.sh remote/qwen-home.sh' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-browser-driver-preflight.py'
 gate_cell test-web-mcp derive remote/web-mcp/test-web-mcp.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-web-mcp.py'
 gate_cell test-authorize-broker derive remote/web-mcp/test-authorize-broker.py \

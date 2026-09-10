@@ -1,0 +1,26 @@
+{
+  "driver_execution": "withheld_preflight_only",
+  "identities": {
+    "acquisition_driver": {
+      "role": "acquisition_driver",
+      "sha256": "f6e530f5e3fe9c2505f9d33b0b6f576d0fccf423bded4659ac87bea1ecf12a25"
+    },
+    "browser_dependency": {
+      "import": "marionette_driver.marionette",
+      "role": "browser_dependency",
+      "sha256": "240842e646460580498b4e66f1415e340382ae11f5590581808363e315e8be8f",
+      "version": "3.7.1"
+    },
+    "browser_python": {
+      "role": "browser_environment_python",
+      "sha256": "dd65a07e8f535525443d63e2bd6dd10efbf22bf22e0b6d65e634266acc7ac976",
+      "version": "3.14.7"
+    },
+    "firefox_executable": {
+      "role": "firefox_executable",
+      "sha256": "fc6cce6569e2540b244d7309baa03173f5df7383c2fbc9b122aaf3cdacfca703"
+    }
+  },
+  "schema": "qwen-browser-driver-preflight-v1",
+  "status": "accepted"
+}
