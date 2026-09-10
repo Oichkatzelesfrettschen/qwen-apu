@@ -1,0 +1,7 @@
+workload_id	source_path	source_sha256	model_id
+accumulator	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/kernel-delta-witness-4b-20260903T2020Z/arms/1-C/accumulator/response-run-1.json	04f49200c5e09a6a0aefa94a41e00908a0bc47105c6cf316cee2e4f1a415eb52	qwen38-4b-distill
+constraints	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/kernel-delta-witness-4b-20260903T2020Z/arms/1-C/constraints/response-run-1.json	77904c31ab89e023eaefab1aba37fc9c2bbd21e1feeaacacd38714be4b92152a	qwen38-4b-distill
+list-transform	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/kernel-delta-witness-4b-20260903T2020Z/arms/1-C/list-transform/response-run-1.json	4132ab8f178255a5f28a70ca833eded8c4a9def4dc83929beba71d9bc9bc2b63	qwen38-4b-distill
+stack	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/kernel-delta-witness-4b-20260903T2020Z/arms/1-C/stack/response-run-1.json	57fd5655023be321b2fa627f1c2f1778a9421269afd8dd2a086da50c384e3493	qwen38-4b-distill
+state-machine	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/kernel-delta-witness-4b-20260903T2020Z/arms/1-C/state-machine/response-run-1.json	eac455d18472146c0755b29dcc46d5277b5cd058f92431b8ab88d23c95800db6	qwen38-4b-distill
+variable-trace	evidence/raven2-vulkan-kernel-census/q4k-scale-decode/kernel-delta-witness-4b-20260903T2020Z/arms/1-C/variable-trace/response-run-1.json	c4eba6d79fe1480ae1e59c4273146b42551bf87688e539eccea378d8173ffa33	qwen38-4b-distill

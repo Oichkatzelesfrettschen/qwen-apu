@@ -1,0 +1,15 @@
+field	value
+schema	qwen-ngram-retrieval-screen-v1
+manifest_sha256	d216a8a1361698485507846075a2120eec16800a0ec801ed2807ca60ab398943
+runner_sha256	94c477e8d325d672ad99ebd341a5b35a5e291606644848e3b8b6950f3ca0da74
+target_cost_evidence	evidence/mtp-speculation-matrix.md
+target_cost_evidence_sha256	cb361afe5bb78ad8401c5914299c6bb34c6fc8fb6f7e856aef04025922a978f1
+model_id	qwen38-4b-distill
+workloads	6
+key_sizes	12,8,4
+max_draft_tokens	3
+historical_target_pass_ms	draft_0:323.0,draft_1:459.0,draft_2:662.0,draft_3:783.0
+projection_scope	optimistic_target_only_prior_costs_without_lookup_or_bookkeeping
+external_split	leave-one-workload-out
+prompt_token_ids	unavailable
+target_verification	not_run

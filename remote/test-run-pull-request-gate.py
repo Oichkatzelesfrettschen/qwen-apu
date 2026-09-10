@@ -133,6 +133,26 @@ assert (
 assert (
     MODULE.classify_paths(
         [
+            "remote/screen-ngram-retrieval.py",
+            "remote/test-screen-ngram-retrieval.py",
+        ]
+    )
+    == "ngram-screen"
+)
+assert (
+    MODULE.classify_paths(
+        [
+            "evidence/SHA256SUMS",
+            "evidence/ngram-retrieval-screen/README.md",
+            "remote/screen-ngram-retrieval.py",
+            "remote/test-screen-ngram-retrieval.py",
+        ]
+    )
+    == "evidence+ngram-screen"
+)
+assert (
+    MODULE.classify_paths(
+        [
             "remote/telemetry-broker.c",
             "remote/merged-pr-gate-reuse.py",
         ]
@@ -248,6 +268,29 @@ assert (
     "remote/run-raven2-vulkan-kernel-census.sh",
     "remote/test-telemetry-broker.sh",
 ) in q8_sampler_commands
+ngram_screen_commands = MODULE.selected_checks(
+    [
+        "remote/screen-ngram-retrieval.py",
+        "remote/test-screen-ngram-retrieval.py",
+    ],
+    "ngram-screen",
+)
+assert (
+    "python3",
+    "remote/test-screen-ngram-retrieval.py",
+) in ngram_screen_commands
+assert (
+    "ruff",
+    "format",
+    "--check",
+    "remote/screen-ngram-retrieval.py",
+    "remote/test-screen-ngram-retrieval.py",
+) in ngram_screen_commands
+assert not any(
+    "telemetry" in argument or "browser-driver" in argument
+    for command in ngram_screen_commands
+    for argument in command
+)
 assert ("sh", "remote/test-telemetry-broker.sh") in q8_sampler_commands
 assert ("python3", "remote/test-census-controls.py") in q8_sampler_commands
 assert (

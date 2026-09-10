@@ -1,0 +1,4 @@
+configuration	workloads	tokens	target_passes	committed_per_target_pass	proposed_rounds	proposed_tokens	accepted_tokens	acceptance	projected_target_ms	projected_speedup	lookup_mean_ns	lookup_p95_ns	lookup_max_ns	external_proposals	max_index_peak_bytes
+none	6	768	768	1.000000	0	0	0	-	248064.000	1.000000	71	90	331	0	0
+history	6	768	747	1.028112	28	84	22	0.261905	254161.000	0.976011	2165	2846	7123	0	0
+history_external	6	768	650	1.181538	79	235	119	0.506383	245966.000	1.008530	3505	5731	11351	58	791056
