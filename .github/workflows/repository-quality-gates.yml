@@ -10,7 +10,9 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
+  pull-requests: read
 
 jobs:
   clone-local:
@@ -51,6 +53,7 @@ jobs:
         env:
           PATH: /tmp/qwen-apu-quality-gates/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
           QWEN_CHROMIUM: google-chrome
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           gate_status=0
           fast_status=3
@@ -64,6 +67,14 @@ jobs:
               --changed-files "$RUNNER_TEMP/qwen-changed-files" \
               --result-root "$RUNNER_TEMP/qwen-gate-results" \
               --worktree "$RUNNER_TEMP/qwen-apu-gate" || fast_status=$?
+          elif test "${{ github.event_name }}" = push && test "${{ github.ref_name }}" = main; then
+            fast_status=0
+            python3 remote/merged-pr-gate-reuse.py \
+              --event-name "${{ github.event_name }}" \
+              --ref-name "${{ github.ref_name }}" \
+              --pushed-sha "${{ github.sha }}" \
+              --repository "${{ github.repository }}" \
+              --api-url "${{ github.api_url }}" || fast_status=$?
           fi
           if test "$fast_status" -eq 3; then
             echo 'full_gate_ran=true' >> "$GITHUB_OUTPUT"

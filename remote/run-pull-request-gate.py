@@ -16,6 +16,16 @@ from collections.abc import Sequence
 FULL_GATE_EXIT = 3
 FULL_GATE_PATHS = {"docs/install-requirements.tsv"}
 SAFE_EXACT_PATHS = {"README.md", "remote/feature-claims.tsv"}
+CI_ROUTING_PATHS = {
+    ".github/workflows/repository-quality-gates.yml",
+    "remote/merged-pr-gate-reuse.py",
+    "remote/run-pull-request-gate.py",
+    "remote/test-merged-pr-gate-reuse.py",
+    "remote/test-run-pull-request-gate.py",
+}
+CI_ROUTING_PYTHON_PATHS = tuple(
+    sorted(path for path in CI_ROUTING_PATHS if path.endswith(".py"))
+)
 SAFE_PREFIXES = ("docs/", "webui/")
 SAFE_TEST_PATTERN = re.compile(r"remote/test-fallback-webui-[A-Za-z0-9_.-]+\Z")
 SAFE_WEB_MCP_PATHS = {"remote/web-mcp/test-fallback-page-image.py"}
@@ -57,11 +67,11 @@ def is_safe_path(path: str) -> bool:
 
 def classify_paths(paths: Sequence[str]) -> str:
     checked = [validate_changed_path(path) for path in paths]
-    if (
-        not checked
-        or any(path in FULL_GATE_PATHS for path in checked)
-        or any(not is_safe_path(path) for path in checked)
-    ):
+    if not checked or any(path in FULL_GATE_PATHS for path in checked):
+        return "full"
+    if all(path in CI_ROUTING_PATHS for path in checked):
+        return "ci-routing"
+    if any(not is_safe_path(path) for path in checked):
         return "full"
     if all(path == "README.md" or path.startswith("docs/") for path in checked):
         return "documentation"
@@ -70,6 +80,16 @@ def classify_paths(paths: Sequence[str]) -> str:
 
 def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
     checks = list(ALWAYS_CHECKS)
+    if scope == "ci-routing":
+        checks.extend(
+            (
+                ("ruff", "check", *CI_ROUTING_PYTHON_PATHS),
+                ("python3", "-m", "py_compile", *CI_ROUTING_PYTHON_PATHS),
+                ("python3", "remote/test-run-pull-request-gate.py"),
+                ("python3", "remote/test-merged-pr-gate-reuse.py"),
+            )
+        )
+        return checks
     if scope != "webui":
         return checks
     changed_shell = sorted(path for path in paths if path.endswith(".sh"))
