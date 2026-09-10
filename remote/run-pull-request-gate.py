@@ -21,6 +21,7 @@ SURFACE_ORDER = (
     "documentation",
     "evidence",
     "gate-infrastructure",
+    "ngram-screen",
     "q8-sampler-attribution",
     "webui",
 )
@@ -54,6 +55,10 @@ Q8_SAMPLER_ATTRIBUTION_PATHS = {
     "remote/test-run-raven2-vulkan-kernel-census.sh",
     "remote/test-telemetry-broker.sh",
     "remote/validate-clock-sidecar.py",
+}
+NGRAM_SCREEN_PATHS = {
+    "remote/screen-ngram-retrieval.py",
+    "remote/test-screen-ngram-retrieval.py",
 }
 CI_ROUTING_PYTHON_PATHS = tuple(
     sorted(path for path in CI_ROUTING_PATHS if path.endswith(".py"))
@@ -108,6 +113,8 @@ def path_surfaces(path: str) -> set[str]:
         surfaces.add("browser-preflight")
     if path in Q8_SAMPLER_ATTRIBUTION_PATHS:
         surfaces.add("q8-sampler-attribution")
+    if path in NGRAM_SCREEN_PATHS:
+        surfaces.add("ngram-screen")
     if (
         path.startswith("webui/")
         or path in WEBUI_INPUT_PATHS
@@ -224,6 +231,19 @@ def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
                 ("remote/test-qwen-home.sh",),
                 ("remote/test-feature-roster.sh",),
                 ("remote/repository-quality-gates.sh", "--declarations"),
+            ),
+        )
+    if "ngram-screen" in surfaces:
+        append_unique(
+            checks,
+            (
+                (
+                    "ruff",
+                    "format",
+                    "--check",
+                    *sorted(NGRAM_SCREEN_PATHS),
+                ),
+                ("python3", "remote/test-screen-ngram-retrieval.py"),
             ),
         )
     if "gate-infrastructure" in surfaces:
