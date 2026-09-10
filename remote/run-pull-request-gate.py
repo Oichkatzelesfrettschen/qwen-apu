@@ -14,6 +14,7 @@ import time
 from collections.abc import Sequence
 
 FULL_GATE_EXIT = 3
+FULL_GATE_PATHS = {"docs/install-requirements.tsv"}
 SAFE_EXACT_PATHS = {"README.md", "remote/feature-claims.tsv"}
 SAFE_PREFIXES = ("docs/", "webui/")
 SAFE_TEST_PATTERN = re.compile(r"remote/test-fallback-webui-[A-Za-z0-9_.-]+\Z")
@@ -56,7 +57,11 @@ def is_safe_path(path: str) -> bool:
 
 def classify_paths(paths: Sequence[str]) -> str:
     checked = [validate_changed_path(path) for path in paths]
-    if not checked or any(not is_safe_path(path) for path in checked):
+    if (
+        not checked
+        or any(path in FULL_GATE_PATHS for path in checked)
+        or any(not is_safe_path(path) for path in checked)
+    ):
         return "full"
     if all(path == "README.md" or path.startswith("docs/") for path in checked):
         return "documentation"

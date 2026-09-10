@@ -13,6 +13,11 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 assert MODULE.classify_paths(["docs/USER-GUIDE.md", "README.md"]) == "documentation"
+assert MODULE.classify_paths(["docs/install-requirements.tsv"]) == "full"
+assert (
+    MODULE.classify_paths(["docs/install-requirements.tsv", "webui/index.html"])
+    == "full"
+)
 assert MODULE.classify_paths(["webui/index.html"]) == "webui"
 assert (
     MODULE.classify_paths(
