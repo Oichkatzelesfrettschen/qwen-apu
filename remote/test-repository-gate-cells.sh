@@ -318,12 +318,16 @@ if ! grep -qE '^cell=reused key=[0-9a-f]{64} name=alpha$' "$run_output"; then
 fi
 # QWEN_GATE_TIMING=0 removes the clock reads entirely, for a run that wants no
 # measurement of itself at all.
-run_fixture_gate 0 1 0
+run_fixture_gate 0 0 0
 if grep -q '^cell=timing ' "$run_output" || grep -q '^gate_timing ' "$run_output"; then
     report_failure timing-off timing_lines_absent
 fi
 if [ "$(summary_field root)" != "$first_root" ]; then
     report_failure timing-off root_is_unmoved_by_timing
+fi
+run_fixture_gate 0 1 0
+if marker_holds alpha || marker_holds gamma || marker_holds delta; then
+    report_failure timing-off untimed_records_reuse
 fi
 
 # QWEN_GATE_SPARSE=0 runs every cell against the same warm cache.
@@ -590,17 +594,15 @@ if marker_holds alpha || marker_holds gamma || marker_holds delta; then
     report_failure driver-identity bounded_cells_reuse_the_new_driver_key
 fi
 
-# A reader edit changes the shared identity. The current reader derives the
-# same manifests for independent cells and migrates them; exact-driver gamma
-# reruns because its function and the reader share the strict driver identity.
+# A reader edit changes non-substitutable runner semantics, so every bounded
+# cell reruns even when its repository inputs and command remain equal.
 printf '# reader edit\n' >>"$fixture_root/remote/gate-cell-key.sh"
 run_fixture_gate
-if marker_holds alpha || ! marker_holds gamma || marker_holds delta; then
-    report_failure reader-identity only_exact_driver_cell_reruns_on_a_reader_edit
+if ! marker_holds alpha || ! marker_holds gamma || ! marker_holds delta; then
+    report_failure reader-identity every_bounded_cell_reruns_on_a_reader_edit
 fi
-if [ "$(grep -c '^cell=compatible-driver .* name=alpha$' "$run_output")" -ne 1 ] ||
-    [ "$(grep -c '^cell=compatible-driver .* name=delta$' "$run_output")" -ne 1 ]; then
-    report_failure reader-identity independent_cells_reconstruct_the_old_manifest
+if grep -q '^cell=compatible-driver ' "$run_output"; then
+    report_failure reader-identity reader_edit_never_uses_compatible_driver_reuse
 fi
 run_fixture_gate
 if marker_holds alpha || marker_holds gamma || marker_holds delta; then

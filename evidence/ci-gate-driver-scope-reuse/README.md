@@ -45,15 +45,19 @@ accepted record only when the current reader substitutes that record's old
 driver digest into the current manifest and reproduces the record filename's
 SHA-256 exactly. The equality proves that every other manifest field remains
 identical. The helper then validates unique status, name, key, tools, driver,
-read-set, and numeric execution-cost fields before migrating the record to the
-current key.
+runner, read-set, and execution-cost fields before migrating the record to the
+current key. The runner digest remains non-substitutable because the reader
+owns manifest construction, reuse validation, command execution, and record
+writing. An untimed record carries `run_ns=-` and remains reusable.
 
 The four cells that execute functions defined inside
-`repository-quality-gates.sh` declare `exact-driver`. A driver or reader edit
-reruns those cells. A new `gate_*` command without that declaration refuses
-before execution. Universal and unbounded cells continue to run on every full
-gate, and any command, tool, mode, read-set, or input change continues to move
-the reconstructed key and run the affected cell.
+`repository-quality-gates.sh` and the browser cell that expands its driver
+variable declare `exact-driver`. A driver edit reruns those five cells. A
+reader edit reruns every bounded cell. A new `gate_*` command without the
+strict declaration refuses before execution. Universal and unbounded cells
+continue to run on every full gate, and any command, tool, mode, read-set, or
+input change continues to move the reconstructed key and run the affected
+cell.
 
 Gate-infrastructure pull requests use a separate bounded route because a cache
 implementation edit cannot benefit from the cache it invalidates. The route
@@ -65,11 +69,12 @@ mode, scope, input specification, and complete command without executing a
 cell. Scheduled runs and changes outside the narrow infrastructure path retain
 the exhaustive gate.
 
-A workstation run over the complete pull-request diff accepted all 12 bounded
-checks in 46.317 seconds. The text-policy walk consumed 16.935 seconds and the
-cache mutation fixtures consumed 26.599 seconds. The result demonstrates the
-focused route and does not substitute for the pull request's GitHub Actions
-result.
+A workstation run over the repaired pull-request diff accepted all 12 bounded
+checks in 47.543 seconds. The text-policy walk consumed 17.485 seconds and the
+cache mutation fixtures consumed 27.450 seconds. GitHub Actions run
+`34452507107` then accepted the bounded route at pull-request head `db954d55`
+in 1 minute 39 seconds including setup; its gate step consumed 71 seconds. The
+run establishes the routing correction rather than an exact future duration.
 
 ## Focused proof and boundary
 
@@ -79,8 +84,8 @@ invalidation, malformed scope refusal, and cache-record field validation over
 a disposable fixture tree. ShellCheck grades the changed shell files at
 warning severity.
 
-The next CI run falsifies the operational prediction if an unchanged
-driver-independent cell executes solely because the driver or reader digest
-moved. The correction claims neither an exact future job duration nor hardware
-behavior. The preparation runs no model, browser, remote command, or appliance
-mutation.
+The next full gate after one accepted record set falsifies the compatibility
+prediction if an unchanged driver-independent cell executes solely because the
+driver digest moved. The correction claims neither an exact future job duration
+nor hardware behavior. The preparation runs no model, browser, remote command,
+or appliance mutation.

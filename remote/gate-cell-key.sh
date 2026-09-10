@@ -37,14 +37,14 @@
 # evidence paths in prose and a directory-wide search over those extensions
 # would pull a README's citations into every cell that names it.
 #
-# Every cell's key also carries the identity of the driver that invokes
-# gate_cell and of this reader itself. A bounded cell whose command lives in a
-# separate file can reuse an older accepted record across a driver or reader
-# edit only when the current reader reconstructs the old key from the current
-# command, tools, mode, read-set class, and input hashes. A match proves that
-# the driver digest is the only manifest field that moved. A cell that executes
-# a function defined by the driver requests `exact-driver` scope instead, so an
-# edit to gate_shell_syntax or another driver-owned function reruns that cell.
+# Every cell's key carries separate driver and runner identities. A bounded
+# cell whose command lives in a separate file can reuse an older accepted
+# record across a driver edit only when the current reader reconstructs the old
+# key from the current command, tools, mode, read-set class, and input hashes.
+# A runner edit always invalidates the record because the runner owns manifest
+# construction, reuse validation, command execution, and record writing. A
+# cell that executes a driver function or expands a driver variable requests
+# `exact-driver` scope, so its driver dependency remains non-substitutable.
 #
 # GATE_CELL_ROOT is the tree paths resolve against and defaults to the
 # repository root, which is what lets the test drive the derivation over a
@@ -72,6 +72,7 @@ gate_cell_sparse=${QWEN_GATE_SPARSE:-1}
 gate_cell_directory_walk_limit=${QWEN_GATE_DIRECTORY_WALK_LIMIT:-64}
 gate_cell_tool_digest=''
 gate_cell_driver_digest=''
+gate_cell_runner_digest=''
 gate_cell_key_stream=''
 gate_cell_record_index=''
 gate_cell_run_count=0
@@ -206,12 +207,13 @@ gate_cell_init() {
     # the gate and both live under the fixture root's own remote/ for the
     # test -- so the driver's own directory is where the reader's copy is read
     # back from.
-    gate_cell_driver_digest=$(
-        {
-            gate_cell_identity_line "$gate_cell_driver_path" driver
-            gate_cell_identity_line "$gate_cell_reader_path" reader
-        } | sha256sum | cut -d' ' -f1
-    )
+    gate_cell_driver_digest=$(gate_cell_identity_line \
+        "$gate_cell_driver_path" driver | sha256sum | cut -d' ' -f1)
+    # Runner semantics are never eligible for compatibility substitution. A
+    # reader edit can change manifest construction, reuse validation, command
+    # execution, or record writing even when every repository input is equal.
+    gate_cell_runner_digest=$(gate_cell_identity_line \
+        "$gate_cell_reader_path" runner | sha256sum | cut -d' ' -f1)
     gate_cell_key_stream=$(mktemp)
     gate_cell_record_index=$(mktemp)
     gate_cell_run_count=0
@@ -271,9 +273,11 @@ gate_cell_record_is_accepted() {
     [ "$(gate_cell_record_field "$accepted_record" key || true)" = "$accepted_key" ] || return 1
     [ "$(gate_cell_record_field "$accepted_record" tools || true)" = "$gate_cell_tool_digest" ] || return 1
     [ "$(gate_cell_record_field "$accepted_record" driver || true)" = "$accepted_driver" ] || return 1
+    [ "$(gate_cell_record_field "$accepted_record" runner || true)" = "$gate_cell_runner_digest" ] || return 1
     [ "$(gate_cell_record_field "$accepted_record" read_set || true)" = "$accepted_read_set" ] || return 1
     accepted_run_ns=$(gate_cell_record_field "$accepted_record" run_ns || true)
     case $accepted_run_ns in
+        -) ;;
         '' | *[!0-9]*) return 1 ;;
     esac
     return 0
@@ -835,6 +839,7 @@ gate_cell() {
         printf 'command=%s\n' "$cell_command"
         printf 'tools=%s\n' "$gate_cell_tool_digest"
         printf 'driver=%s\n' "$gate_cell_driver_digest"
+        printf 'runner=%s\n' "$gate_cell_runner_digest"
         printf 'mode=%s\n' "$cell_mode"
     } >"$cell_manifest"
 
@@ -922,6 +927,7 @@ gate_cell() {
                 printf 'key=%s\n' "$cell_key"
                 printf 'tools=%s\n' "$gate_cell_tool_digest"
                 printf 'driver=%s\n' "$gate_cell_driver_digest"
+                printf 'runner=%s\n' "$gate_cell_runner_digest"
                 printf 'read_set=%s\n' "$cell_read_set_state"
                 printf 'key_ns=%s\n' "$cell_key_ns"
                 printf 'run_ns=%s\n' "$cell_avoided_ns"
@@ -962,6 +968,7 @@ gate_cell() {
             printf 'key=%s\n' "$cell_key"
             printf 'tools=%s\n' "$gate_cell_tool_digest"
             printf 'driver=%s\n' "$gate_cell_driver_digest"
+            printf 'runner=%s\n' "$gate_cell_runner_digest"
             printf 'read_set=%s\n' "$cell_read_set_state"
             printf 'key_ns=%s\n' "$cell_key_ns"
             printf 'run_ns=%s\n' "$cell_run_ns"

@@ -591,7 +591,8 @@ gate_cell test-admit-image-router derive remote/test-admit-image-router.sh \
     remote/test-admit-image-router.sh
 gate_cell test-fallback-page-image derive \
     remote/web-mcp/test-fallback-page-image.py \
-    'PYTHONDONTWRITEBYTECODE=1 QWEN_CHROMIUM="$chromium_command" python3 remote/web-mcp/test-fallback-page-image.py'
+    'PYTHONDONTWRITEBYTECODE=1 QWEN_CHROMIUM="$chromium_command" python3 remote/web-mcp/test-fallback-page-image.py' \
+    exact-driver
 gate_cell test-code-agent-endpoint-fixture derive \
     remote/test-code-agent-endpoint-fixture.sh \
     remote/test-code-agent-endpoint-fixture.sh
