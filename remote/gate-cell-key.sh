@@ -38,9 +38,13 @@
 # would pull a README's citations into every cell that names it.
 #
 # Every cell's key also carries the identity of the driver that invokes
-# gate_cell and of this reader itself: an edit to gate_shell_syntax or to
-# gate_cell_named_paths changes what a cell's accepted record used to certify,
-# and neither script is otherwise a file any cell names in its own spec.
+# gate_cell and of this reader itself. A bounded cell whose command lives in a
+# separate file can reuse an older accepted record across a driver or reader
+# edit only when the current reader reconstructs the old key from the current
+# command, tools, mode, read-set class, and input hashes. A match proves that
+# the driver digest is the only manifest field that moved. A cell that executes
+# a function defined by the driver requests `exact-driver` scope instead, so an
+# edit to gate_shell_syntax or another driver-owned function reruns that cell.
 #
 # GATE_CELL_ROOT is the tree paths resolve against and defaults to the
 # repository root, which is what lets the test drive the derivation over a
@@ -69,6 +73,7 @@ gate_cell_directory_walk_limit=${QWEN_GATE_DIRECTORY_WALK_LIMIT:-64}
 gate_cell_tool_digest=''
 gate_cell_driver_digest=''
 gate_cell_key_stream=''
+gate_cell_record_index=''
 gate_cell_run_count=0
 gate_cell_reused_count=0
 
@@ -208,15 +213,101 @@ gate_cell_init() {
         } | sha256sum | cut -d' ' -f1
     )
     gate_cell_key_stream=$(mktemp)
+    gate_cell_record_index=$(mktemp)
     gate_cell_run_count=0
     gate_cell_reused_count=0
     mkdir -p "$gate_cell_cache_directory/cells"
+    for indexed_record in "$gate_cell_cache_directory"/cells/*; do
+        [ -f "$indexed_record" ] || continue
+        indexed_name=$(gate_cell_record_field "$indexed_record" name || true)
+        [ -n "$indexed_name" ] || continue
+        case $indexed_name in
+            *[!A-Za-z0-9_.-]*) continue ;;
+        esac
+        printf '%s\t%s\n' "$indexed_name" "$indexed_record" \
+            >>"$gate_cell_record_index"
+    done
 }
 
 gate_cell_cleanup() {
     if [ -n "$gate_cell_key_stream" ]; then
         rm -f "$gate_cell_key_stream"
     fi
+    if [ -n "$gate_cell_record_index" ]; then
+        rm -f "$gate_cell_record_index"
+    fi
+}
+
+# Read one unique field from an accepted-record candidate. A malformed or
+# duplicated field prints nothing, which makes the candidate ineligible for
+# reuse rather than asking callers to distinguish malformed from absent.
+gate_cell_record_field() {
+    record_field_count=$(awk -F= -v field="$2" '$1 == field { count++ } END { print count + 0 }' "$1")
+    [ "$record_field_count" -eq 1 ] || return 1
+    awk -F= -v field="$2" '$1 == field { sub(/^[^=]*=/, ""); print; exit }' "$1"
+}
+
+gate_cell_is_sha256() {
+    [ "${#1}" -eq 64 ] || return 1
+    case $1 in
+        *[!0-9a-f]*) return 1 ;;
+    esac
+    return 0
+}
+
+# Require every record field that binds the reuse decision. The filename and
+# recorded key must agree, so a truncated copy or a record moved under another
+# key cannot stand in for an accepted cell.
+gate_cell_record_is_accepted() {
+    accepted_record=$1
+    accepted_key=$2
+    accepted_name=$3
+    accepted_driver=$4
+    accepted_read_set=$5
+    [ -f "$accepted_record" ] || return 1
+    [ "$(basename -- "$accepted_record")" = "$accepted_key" ] || return 1
+    [ "$(gate_cell_record_field "$accepted_record" status || true)" = accepted ] || return 1
+    [ "$(gate_cell_record_field "$accepted_record" name || true)" = "$accepted_name" ] || return 1
+    [ "$(gate_cell_record_field "$accepted_record" key || true)" = "$accepted_key" ] || return 1
+    [ "$(gate_cell_record_field "$accepted_record" tools || true)" = "$gate_cell_tool_digest" ] || return 1
+    [ "$(gate_cell_record_field "$accepted_record" driver || true)" = "$accepted_driver" ] || return 1
+    [ "$(gate_cell_record_field "$accepted_record" read_set || true)" = "$accepted_read_set" ] || return 1
+    accepted_run_ns=$(gate_cell_record_field "$accepted_record" run_ns || true)
+    case $accepted_run_ns in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    return 0
+}
+
+# Find an accepted record whose old key the current manifest reproduces after
+# substituting only that record's driver digest. SHA-256 equality proves every
+# other manifest field remains identical. Only caller-declared
+# `driver-independent` cells use this path.
+gate_cell_compatible_driver_record() {
+    compatible_manifest=$1
+    compatible_name=$2
+    compatible_read_set=$3
+    compatible_tab=$(printf '\t')
+    while IFS="$compatible_tab" read -r indexed_name compatible_record; do
+        [ "$indexed_name" = "$compatible_name" ] || continue
+        [ -f "$compatible_record" ] || continue
+        compatible_driver=$(gate_cell_record_field "$compatible_record" driver || true)
+        gate_cell_is_sha256 "$compatible_driver" || continue
+        [ "$compatible_driver" != "$gate_cell_driver_digest" ] || continue
+        compatible_key=$(basename -- "$compatible_record")
+        gate_cell_is_sha256 "$compatible_key" || continue
+        reconstructed_key=$(
+            sed "s/^driver=.*/driver=$compatible_driver/" "$compatible_manifest" |
+                sha256sum | cut -d' ' -f1
+        )
+        [ "$reconstructed_key" = "$compatible_key" ] || continue
+        if gate_cell_record_is_accepted "$compatible_record" "$compatible_key" \
+            "$compatible_name" "$compatible_driver" "$compatible_read_set"; then
+            printf '%s\n' "$compatible_record"
+            return 0
+        fi
+    done <"$gate_cell_record_index"
+    return 1
 }
 
 # One manifest line per path carrying its content digest and its mode bits,
@@ -706,12 +797,35 @@ gate_cell_read_set() {
 # it reads the whole tree. Every mode records its read-set state -- `bounded`,
 # `unbounded`, or `universal` -- as its own manifest and record line, so a
 # reader of an accepted record sees why a cell always runs without recomputing
-# its spec.
+# its spec. DRIVER_SCOPE defaults to `driver-independent`; `exact-driver`
+# applies where CELL_COMMAND invokes a function whose implementation lives in
+# the driver rather than in CELL_SPEC's hashed files.
 gate_cell() {
+    if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
+        printf 'gate_cell requires four or five arguments\n' >&2
+        return 2
+    fi
     cell_name=$1
     cell_mode=$2
     cell_spec=$3
     cell_command=$4
+    cell_driver_scope=${5:-driver-independent}
+    if [ "$#" -eq 4 ]; then
+        case $cell_command in
+            gate_*)
+                printf 'driver-owned command requires exact-driver scope: %s\n' \
+                    "$cell_command" >&2
+                return 2
+                ;;
+        esac
+    fi
+    case $cell_driver_scope in
+        driver-independent | exact-driver) ;;
+        *)
+            printf 'unknown gate cell driver scope: %s\n' "$cell_driver_scope" >&2
+            return 2
+            ;;
+    esac
     cell_always_runs=0
     cell_key_begin_ns=$(gate_cell_now_ns)
     cell_manifest=$(mktemp)
@@ -772,7 +886,6 @@ gate_cell() {
     esac
 
     cell_key=$(sha256sum "$cell_manifest" | cut -d' ' -f1)
-    rm -f "$cell_manifest"
     printf '%s\n' "$cell_key" >>"$gate_cell_key_stream"
     cell_record=$gate_cell_cache_directory/cells/$cell_key
     # The key phase ends here: everything above derived the read set and hashed
@@ -780,19 +893,43 @@ gate_cell() {
     cell_key_ns=$(gate_cell_interval_ns "$cell_key_begin_ns" "$(gate_cell_now_ns)")
     gate_cell_key_ns_total=$(gate_cell_add_ns "$gate_cell_key_ns_total" "$cell_key_ns")
 
-    if [ "$gate_cell_sparse" = 1 ] && [ "$cell_always_runs" -eq 0 ] &&
-        [ -f "$cell_record" ] &&
-        grep -qx 'status=accepted' "$cell_record" &&
-        grep -qx "tools=$gate_cell_tool_digest" "$cell_record" &&
-        grep -qx "driver=$gate_cell_driver_digest" "$cell_record"; then
+    compatible_record=''
+    if [ "$gate_cell_sparse" = 1 ] && [ "$cell_always_runs" -eq 0 ]; then
+        if gate_cell_record_is_accepted "$cell_record" "$cell_key" \
+            "$cell_name" "$gate_cell_driver_digest" "$cell_read_set_state"; then
+            compatible_record=$cell_record
+        elif [ "$cell_driver_scope" = driver-independent ]; then
+            compatible_record=$(gate_cell_compatible_driver_record \
+                "$cell_manifest" "$cell_name" "$cell_read_set_state" || true)
+        fi
+    fi
+    rm -f "$cell_manifest"
+
+    if [ -n "$compatible_record" ]; then
         gate_cell_reused_count=$((gate_cell_reused_count + 1))
         # The record carries what this cell cost when it last ran, so a reuse
         # states the execution it avoided rather than leaving the saving as an
         # unmeasured claim. A record written before that field reads `-`.
-        cell_avoided_ns=$(awk -F= '$1 == "run_ns" { print $2; exit }' \
-            "$cell_record")
+        cell_avoided_ns=$(gate_cell_record_field "$compatible_record" run_ns)
         gate_cell_avoided_ns_total=$(gate_cell_add_ns \
             "$gate_cell_avoided_ns_total" "${cell_avoided_ns:--}")
+        if [ "$compatible_record" != "$cell_record" ]; then
+            compatible_key=$(basename -- "$compatible_record")
+            cell_record_temporary=$cell_record.$$
+            {
+                printf 'status=accepted\n'
+                printf 'name=%s\n' "$cell_name"
+                printf 'key=%s\n' "$cell_key"
+                printf 'tools=%s\n' "$gate_cell_tool_digest"
+                printf 'driver=%s\n' "$gate_cell_driver_digest"
+                printf 'read_set=%s\n' "$cell_read_set_state"
+                printf 'key_ns=%s\n' "$cell_key_ns"
+                printf 'run_ns=%s\n' "$cell_avoided_ns"
+            } >"$cell_record_temporary"
+            mv "$cell_record_temporary" "$cell_record"
+            printf 'cell=compatible-driver key=%s previous_key=%s name=%s\n' \
+                "$cell_key" "$compatible_key" "$cell_name"
+        fi
         # The decision line keeps the shape its readers already match, and the
         # timing is a line of its own beside it.
         printf 'cell=reused key=%s name=%s\n' "$cell_key" "$cell_name"

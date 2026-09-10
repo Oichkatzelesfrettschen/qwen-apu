@@ -112,11 +112,11 @@ gate_cell appliance-paths universal \
 gate_cell text-policy universal remote/check-text-policy.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/check-text-policy.py'
 
-gate_cell shell-syntax files "$shell_files" gate_shell_syntax
-gate_cell shellcheck files "$shell_files" gate_shellcheck_walk
+gate_cell shell-syntax files "$shell_files" gate_shell_syntax exact-driver
+gate_cell shellcheck files "$shell_files" gate_shellcheck_walk exact-driver
 gate_cell ruff-repository files "$python_files" 'ruff check remote'
-gate_cell ruff-typed files "$typed_python_files" gate_ruff_typed_walk
-gate_cell python-syntax files "$python_files" gate_python_syntax_walk
+gate_cell ruff-typed files "$typed_python_files" gate_ruff_typed_walk exact-driver
+gate_cell python-syntax files "$python_files" gate_python_syntax_walk exact-driver
 
 # Unit tests over parsers, ledgers, and protocol schemas: each holds its whole
 # fixture in the repository and finishes in seconds.
