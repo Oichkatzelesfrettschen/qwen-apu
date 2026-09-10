@@ -26,8 +26,9 @@ integrity companion. Documentation, Web UI, browser preflight, Q8 sampler
 attribution, CI routing, and gate infrastructure remain separately named.
 Unknown executable and runtime paths still select the exhaustive gate.
 
-The workflow sends every pull request through the same classifier. Draft and
-ready-for-review events therefore make the same decision for the same diff.
+The workflow sends opened, synchronized, and reopened pull requests through the
+same classifier. Marking an already checked commit ready for review changes no
+tree input and starts no duplicate job.
 `remote/merged-pr-gate-reuse.py` accepts an exact-tree successful PR source as
 either `targeted` or `exhaustive`. Main promotes a cache only for an exhaustive
 source; targeted reuse retains the source receipt and claims no full-gate
