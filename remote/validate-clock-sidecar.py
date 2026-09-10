@@ -207,6 +207,17 @@ and the reader falls back to the legacy inference the `dpm_freshness=` line
 already documents. The field exists so a future record shape is refused by
 name rather than silently read under today's rules.
 
+`broker-schedstat-v1` requires the ten-column broker record. The appended
+`scheduler_runqueue_delay_lower_bound_ns` value is the cumulative delay-counter
+delta from the current task's schedstat record across the enclosing sample
+interval. Descheduling inside the wall-clock interval but outside the two
+counter reads remains endpoint ambiguity, so `unattributed_elapsed_ns` must
+equal `sample_cost_ns` minus the measured lower bound on every row. The
+validator recomputes all four attribution footer aggregates. A large sample
+cost with a zero scheduler lower bound remains unattributed and acquires no
+scheduler label. A record carrying attributed columns without the format, or
+the format without those columns, refuses at `attribution_schema`.
+
 usage: validate-clock-sidecar.py RECORD_TSV --sidecar-status N
        --period-ms F --period-tolerance F --cost-bound-ns N
        [--max-gap-ns N] [--max-lost-fraction F]
@@ -238,6 +249,10 @@ COLUMNS = (
 # other and the retained corpus reads unchanged.
 ACTUAL_COLUMN = "sclk_actual_mhz"
 WIDE_COLUMNS = COLUMNS + (ACTUAL_COLUMN,)
+ATTRIBUTION_COLUMNS = WIDE_COLUMNS + (
+    "scheduler_runqueue_delay_lower_bound_ns",
+    "unattributed_elapsed_ns",
+)
 FOOTER_KEYS = (
     "samples",
     "achieved_period_ns",
@@ -246,6 +261,12 @@ FOOTER_KEYS = (
     "samples_with_unavailable_sensor",
     "first_sample_ns",
     "last_sample_ns",
+)
+ATTRIBUTION_FOOTER_KEYS = (
+    "mean_scheduler_runqueue_delay_lower_bound_ns",
+    "max_scheduler_runqueue_delay_lower_bound_ns",
+    "mean_unattributed_elapsed_ns",
+    "max_unattributed_elapsed_ns",
 )
 
 
@@ -356,7 +377,10 @@ def count_against(rows, index, required, two_sided):
 # The sampler_format value sample-clock-sidecar.py stamps once it declares
 # its own record shape; an unrecognized value refuses the record rather than
 # reading it under an assumption the value does not state.
-KNOWN_SAMPLER_FORMATS = frozenset({"native-fresh-v1"})
+KNOWN_SAMPLER_FORMATS = frozenset({
+    "native-fresh-v1",
+    "broker-schedstat-v1",
+})
 
 
 def declared_multiple(header, key, requested_period_ns, exact_required=False):
@@ -661,13 +685,24 @@ def main():
     else:
         print("dpm_marker_cadence=not_run no dpm_read markers")
 
-    wide = column_line == "\t".join(WIDE_COLUMNS)
-    expected_columns = WIDE_COLUMNS if wide else COLUMNS
-    check("columns", column_line in ("\t".join(COLUMNS), "\t".join(WIDE_COLUMNS)),
+    attributed = column_line == "\t".join(ATTRIBUTION_COLUMNS)
+    wide = attributed or column_line == "\t".join(WIDE_COLUMNS)
+    expected_columns = (ATTRIBUTION_COLUMNS if attributed else
+                        WIDE_COLUMNS if wide else COLUMNS)
+    check("columns", column_line in ("\t".join(COLUMNS),
+                                     "\t".join(WIDE_COLUMNS),
+                                     "\t".join(ATTRIBUTION_COLUMNS)),
           f"columns={column_line or '-'} width={len(expected_columns)}")
+    attribution_shape_held = ((sampler_format == "broker-schedstat-v1") == attributed)
+    check("attribution_schema", attribution_shape_held,
+          f"sampler_format={sampler_format or '-'} attributed_columns="
+          f"{'yes' if attributed else 'no'}")
     check("footer_cardinality", len(footer_lines) == 1, f"footers={len(footer_lines)}")
     footer = parse_key_values(footer_lines[0].lstrip("# ")) if len(footer_lines) == 1 else {}
-    footer_complete = all(key in footer and footer[key].lstrip("-").isdigit() for key in FOOTER_KEYS)
+    required_footer_keys = (FOOTER_KEYS + ATTRIBUTION_FOOTER_KEYS
+                            if attributed else FOOTER_KEYS)
+    footer_complete = all(key in footer and footer[key].lstrip("-").isdigit()
+                          for key in required_footer_keys)
     check("footer_fields", footer_complete, f"present={','.join(sorted(footer))}")
     if not footer_complete:
         print("clock_sidecar=refused")
@@ -684,8 +719,9 @@ def main():
     if rows and row_arity:
         bad_cells = sorted({
             expected_columns[index] for row in rows
-            for index in [0, 6] + sensor_indices
-            if (not row[index].isdigit() if index in (0, 6)
+            for index in ([0, 6] + sensor_indices
+                          + ([8, 9] if attributed else []))
+            if (not row[index].isdigit() if index in (0, 6, 8, 9)
                 else not decimal_or_unavailable(row[index]))})
         check("cell_values", not bad_cells,
               f"nonnumeric_columns={','.join(bad_cells) or '-'}")
@@ -722,6 +758,43 @@ def main():
               f" max_cost_ns={derived_max_cost} footer_max_cost_ns={max_cost}")
     else:
         print("footer_derived=not_run rows=%d" % len(rows))
+    if attributed and rows and row_arity:
+        scheduler_delays = [int(row[8]) for row in rows]
+        unattributed_elapsed = [int(row[9]) for row in rows]
+        attribution_rows_held = all(
+            scheduler_delay <= cost
+            and residual == cost - scheduler_delay
+            for cost, scheduler_delay, residual in
+            zip(costs, scheduler_delays, unattributed_elapsed))
+        check("scheduler_attribution_rows", attribution_rows_held,
+              f"rows={len(rows)} invalid="
+              f"{sum(1 for cost, delay, residual in zip(costs, scheduler_delays, unattributed_elapsed) if delay > cost or residual != cost - delay)}")
+        derived_scheduler_mean = sum(scheduler_delays) // len(scheduler_delays)
+        derived_scheduler_max = max(scheduler_delays)
+        derived_unattributed_mean = (sum(unattributed_elapsed)
+                                     // len(unattributed_elapsed))
+        derived_unattributed_max = max(unattributed_elapsed)
+        attribution_footer_held = (
+            derived_scheduler_mean
+            == int(footer["mean_scheduler_runqueue_delay_lower_bound_ns"])
+            and derived_scheduler_max
+            == int(footer["max_scheduler_runqueue_delay_lower_bound_ns"])
+            and derived_unattributed_mean
+            == int(footer["mean_unattributed_elapsed_ns"])
+            and derived_unattributed_max
+            == int(footer["max_unattributed_elapsed_ns"])
+        )
+        check("scheduler_attribution_footer", attribution_footer_held,
+              f"scheduler_mean_ns={derived_scheduler_mean}"
+              f" scheduler_max_ns={derived_scheduler_max}"
+              f" unattributed_mean_ns={derived_unattributed_mean}"
+              f" unattributed_max_ns={derived_unattributed_max}")
+    elif attributed:
+        print("scheduler_attribution_rows=not_run rows=%d" % len(rows))
+        print("scheduler_attribution_footer=not_run rows=%d" % len(rows))
+    else:
+        print("scheduler_attribution_rows=not_run legacy record")
+        print("scheduler_attribution_footer=not_run legacy record")
     lower = requested_period_ns * (1.0 - args.period_tolerance)
     upper = requested_period_ns * (1.0 + args.period_tolerance)
     check("achieved_period", lower <= derived_achieved <= upper,

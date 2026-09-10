@@ -149,6 +149,15 @@ outside it.
   its complete terminal, sidecars, controls, and admission verdict remain in
   the same evidence directory. A refused replacement closes the new tuple and
   authorizes neither candidate timing nor an unchanged retry.
+- Prepared input: `evidence/q8-attribution/sampler-cost-attribution/` binds
+  the refused and proposed sampler tuples. The proposed broker mode records
+  the task schedstat runqueue-delay lower bound and exact unattributed residual
+  beside the unchanged wall-clock `sample_cost_ns`; the runner binds that mode
+  into the acquisition contract. A disabled or malformed schedstat facility
+  refuses before an arm or output directory starts, and neither runner nor
+  broker enables it. Focused producer, validator, and runner fixtures pass.
+  The preparation carries no execution authority, so the one replacement
+  calibration and Q8 candidate timing remain unrun.
 - Withheld candidate: `evidence/q8-attribution/q8-kernel-delta-design.md`
   registers the bracket but carries no execution authority under the refused
   calibration. The shape split in

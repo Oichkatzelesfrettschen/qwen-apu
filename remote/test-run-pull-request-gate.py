@@ -72,6 +72,37 @@ assert (
 assert (
     MODULE.classify_paths(
         [
+            "docs/frontier.md",
+            "evidence/SHA256SUMS",
+            "evidence/q8-attribution/sampler-cost-attribution/README.md",
+            "remote/telemetry-broker.c",
+            "remote/validate-clock-sidecar.py",
+            "remote/test-telemetry-broker.sh",
+        ]
+    )
+    == "q8-sampler-attribution"
+)
+assert (
+    MODULE.classify_paths(
+        [
+            "remote/telemetry-broker.c",
+            "evidence/q8-attribution/unrelated-result/README.md",
+        ]
+    )
+    == "full"
+)
+assert (
+    MODULE.classify_paths(
+        [
+            "remote/telemetry-broker.c",
+            "remote/merged-pr-gate-reuse.py",
+        ]
+    )
+    == "full"
+)
+assert (
+    MODULE.classify_paths(
+        [
             "remote/browser-driver-preflight.py",
             "evidence/unrelated-result/README.md",
         ]
@@ -135,6 +166,27 @@ assert (
     "remote/repository-quality-gates.sh",
     "remote/test-repository-gate-cells.sh",
 ) in gate_infrastructure_commands
+q8_sampler_commands = MODULE.selected_checks(
+    [
+        "remote/run-raven2-vulkan-kernel-census.sh",
+        "remote/test-telemetry-broker.sh",
+        "remote/validate-clock-sidecar.py",
+    ],
+    "q8-sampler-attribution",
+)
+assert (
+    "shellcheck",
+    "-S",
+    "warning",
+    "remote/run-raven2-vulkan-kernel-census.sh",
+    "remote/test-telemetry-broker.sh",
+) in q8_sampler_commands
+assert ("sh", "remote/test-telemetry-broker.sh") in q8_sampler_commands
+assert ("python3", "remote/test-census-controls.py") in q8_sampler_commands
+assert (
+    "sh",
+    "remote/test-run-raven2-vulkan-kernel-census.sh",
+) in q8_sampler_commands
 assert ("remote/test-repository-gate-cells.sh",) in gate_infrastructure_commands
 assert (
     "remote/repository-quality-gates.sh",

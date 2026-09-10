@@ -39,8 +39,8 @@
  * survives the reduction. The `# sample_rates` header line carries the
  * interval the run actually used.
  *
- * The record carries one column sample-clock-sidecar.py does not:
- * sclk_actual_mhz, the graphics frequency the hwmon freq1_input attribute
+ * The record carries three columns sample-clock-sidecar.py does not. The first
+ * is sclk_actual_mhz, the graphics frequency the hwmon freq1_input attribute
  * reports, read on the same tenth-period channel as the DPM steps. It is the
  * delivered clock where pp_dpm_sclk_selected_mhz is the requested step, and
  * the two separate under a forced power_dpm_force_performance_level: a level
@@ -52,11 +52,26 @@
  * flag, since the flags feed samples_with_unavailable_sensor and the
  * validator compares that count against the five sensor columns alone; a
  * hwmon without freq1_input therefore reads `unavailable` in the eighth
- * column and leaves the footer where it stands.
+ * column and leaves the sensor footer count where it stands.
  *
- * The emitted record is otherwise byte-compatible with
- * sample-clock-sidecar.py: validate-clock-sidecar.py reads the same header
- * keys, the same first seven columns, and the same footer keys. The four slow columns hold their own
+ * The ninth column measures runnable-but-unscheduled nanoseconds. The broker
+ * reads the current task's cumulative delay counter from
+ * /proc/self/task/PID/schedstat before and after each sampling iteration, and
+ * the row carries the counter delta. The enclosing CLOCK_MONOTONIC interval
+ * remains sample_cost_ns, including both schedstat reads, all sensor reads,
+ * and parsing. The tenth column is the arithmetic residual between those two
+ * measured values. The schedstat delta is a lower bound because descheduling
+ * can occur after the outer wall clock starts but before the first counter
+ * read, or after the second counter read but before the wall clock ends. The
+ * unattributed residual therefore includes sensor service, parsing, schedstat
+ * reads, and any delay in those endpoint windows. `--scheduler-attribution schedstat` selects
+ * this ten-column format and requires kernel.sched_schedstats=1, because a
+ * readable counter held at zero by a disabled facility supplies no scheduler
+ * attribution. Omitting the option preserves the legacy eight-column format.
+ *
+ * The emitted record preserves sample-clock-sidecar.py's first seven columns
+ * and footer meanings. validate-clock-sidecar.py reads the producer format
+ * before admitting the appended attribution fields. The four slow columns hold their own
  * places, so a row between two reads of a channel repeats that channel's last
  * reading and the row shape is unchanged. MemAvailable and pswpin hold no
  * column, so they are emitted as their own `# meminfo` lines interleaved with
@@ -79,6 +94,7 @@
  *
  * usage: telemetry-broker OUTPUT_TSV --period-ms N --cpu LIST
  *        --drm-device DIR [--hwmon DIR] [--control FIFO]
+ *        [--scheduler-attribution schedstat]
  */
 #define _GNU_SOURCE
 
@@ -114,6 +130,7 @@
 #define SYSFS_BUFFER_BYTES 4096u
 #define PROC_BUFFER_BYTES 16384u
 #define CONTROL_BUFFER_BYTES 512u
+#define SCHEDSTAT_BUFFER_BYTES 256u
 /* The DPM attributes and the die temperature share the tenth-period channel,
  * which is 100 ms at the appliance's 10 ms period. */
 #define DPM_PERIOD_MULTIPLE 10u
@@ -144,6 +161,12 @@
 
 #define NANOSECONDS_PER_SECOND INT64_C(1000000000)
 
+#ifdef TELEMETRY_BROKER_FIXTURE_SCHEDSTATS_ENABLED_PATH
+#define SCHEDSTATS_ENABLED_PATH TELEMETRY_BROKER_FIXTURE_SCHEDSTATS_ENABLED_PATH
+#else
+#define SCHEDSTATS_ENABLED_PATH "/proc/sys/kernel/sched_schedstats"
+#endif
+
 /* A sensor value of -1 is the unavailable reading; every real surface here is
  * a non-negative integer. */
 #define VALUE_UNAVAILABLE INT32_C(-1)
@@ -162,6 +185,11 @@ struct sample_record {
 
 _Static_assert(sizeof(struct sample_record) == 40,
                "the sample record is the ring's fixed width");
+
+struct attribution_record {
+    uint64_t scheduler_runqueue_delay_lower_bound_ns;
+    uint64_t unattributed_elapsed_ns;
+};
 
 struct mark_record {
     uint64_t monotonic_ns;
@@ -191,10 +219,12 @@ struct broker {
     int vmstat_fd;
     int loadavg_fd;
     int ksm_sharing_fd;
+    int schedstat_fd;
     int control_read_fd;
     int control_keep_fd;
 
     struct sample_record *samples;
+    struct attribution_record *attribution;
     uint64_t sample_count;
     bool ring_full_reported;
 
@@ -217,10 +247,12 @@ struct broker {
     char sysfs_buffer[SYSFS_BUFFER_BYTES];
     char proc_buffer[PROC_BUFFER_BYTES];
     char control_buffer[CONTROL_BUFFER_BYTES];
+    char schedstat_buffer[SCHEDSTAT_BUFFER_BYTES];
     size_t control_length;
 
     bool paused;
     bool resume_requested;
+    bool acquisition_failed;
 };
 
 static volatile sig_atomic_t stop_requested;
@@ -247,7 +279,8 @@ static void usage(const char *program)
 {
     fprintf(stderr,
             "usage: %s OUTPUT_TSV --period-ms N --cpu LIST"
-            " --drm-device DIR [--hwmon DIR] [--control FIFO]\n",
+            " --drm-device DIR [--hwmon DIR] [--control FIFO]"
+            " [--scheduler-attribution schedstat]\n",
             program);
     exit(2);
 }
@@ -267,6 +300,45 @@ static ssize_t read_snapshot(int descriptor, char *buffer, size_t capacity)
     }
     buffer[count] = '\0';
     return count;
+}
+
+/* Linux schedstat exposes runtime, runnable-but-unscheduled delay, and
+ * timeslices as three decimal integers. The second field is cumulative for
+ * this task, so its delta across one enclosing wall interval measures time
+ * the sampler was runnable while the host scheduler kept it off-CPU. */
+static bool read_scheduler_delay(struct broker *broker, uint64_t *delay_ns)
+{
+    ssize_t count = read_snapshot(broker->schedstat_fd,
+                                  broker->schedstat_buffer,
+                                  sizeof(broker->schedstat_buffer));
+    const char *cursor;
+    uint64_t fields[3];
+    size_t field_index;
+
+    if (count <= 0) {
+        return false;
+    }
+    cursor = broker->schedstat_buffer;
+    for (field_index = 0; field_index < 3; field_index++) {
+        char *end = NULL;
+        uintmax_t value;
+
+        while (*cursor == ' ' || *cursor == '\t') {
+            cursor++;
+        }
+        if (*cursor < '0' || *cursor > '9') {
+            return false;
+        }
+        errno = 0;
+        value = strtoumax(cursor, &end, 10);
+        if (errno != 0 || end == cursor || value > UINT64_MAX) {
+            return false;
+        }
+        fields[field_index] = (uint64_t)value;
+        cursor = end;
+    }
+    *delay_ns = fields[1];
+    return true;
 }
 
 static int32_t parse_leading_integer(const char *text, size_t length)
@@ -600,7 +672,7 @@ static const char *format_value(int32_t value, char *buffer, size_t capacity)
 static int write_record(const struct broker *broker, const char *output_path,
                         uint64_t period_ns, const char *drm_device,
                         const char *hwmon, const char *cpu_affinity,
-                        int nice_value)
+                        int nice_value, bool scheduler_attribution)
 {
     FILE *out = fopen(output_path, "w");
     uint64_t sample_index = 0;
@@ -609,6 +681,10 @@ static int write_record(const struct broker *broker, const char *output_path,
     uint64_t host_index = 0;
     uint64_t cost_total = 0;
     uint64_t cost_max = 0;
+    uint64_t scheduler_delay_total = 0;
+    uint64_t scheduler_delay_max = 0;
+    uint64_t unattributed_total = 0;
+    uint64_t unattributed_max = 0;
     uint64_t unavailable_rows = 0;
     uint64_t first_ns = 0;
     uint64_t last_ns = 0;
@@ -644,11 +720,21 @@ static int write_record(const struct broker *broker, const char *output_path,
                  " sclk_actual_mhz is the delivered graphics frequency from hwmon"
                  " freq1_input, which a forced performance level pins where the"
                  " selected step states only what was requested\n");
-    fprintf(out, "# sampler_pid=%d nice=%d cpu_affinity=%s\n",
+    fprintf(out, "# sampler_pid=%d nice=%d cpu_affinity=%s",
             (int)getpid(), nice_value, cpu_affinity);
+    if (scheduler_attribution) {
+        fprintf(out, " sampler_format=broker-schedstat-v1"
+                     " scheduler_source=proc-self-task-schedstat");
+    }
+    fputc('\n', out);
     fprintf(out, "monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz"
                  "\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees"
-                 "\tsample_cost_ns\tsclk_actual_mhz\n");
+                 "\tsample_cost_ns\tsclk_actual_mhz");
+    if (scheduler_attribution) {
+        fprintf(out, "\tscheduler_runqueue_delay_lower_bound_ns"
+                     "\tunattributed_elapsed_ns");
+    }
+    fputc('\n', out);
 
     /* Four arrays each hold their own instants in order, so one merge places
      * every mark, memory reading, and host reading between the rows it fell
@@ -726,7 +812,8 @@ static int write_record(const struct broker *broker, const char *output_path,
             if ((sample->unavailable_flags & SAMPLE_DPM_FRESH) != 0) {
                 fprintf(out, "# dpm_read=%" PRIu64 "\n", sample->monotonic_ns);
             }
-            fprintf(out, "%" PRIu64 "\t%s\t%s\t%s\t%s\t%s\t%" PRIu32 "\t%s\n",
+            fprintf(out, "%" PRIu64 "\t%s\t%s\t%s\t%s\t%s\t%" PRIu32
+                         "\t%s",
                     sample->monotonic_ns,
                     format_value(sample->sclk_mhz, sclk, sizeof(sclk)),
                     format_value(sample->mclk_mhz, mclk, sizeof(mclk)),
@@ -736,12 +823,37 @@ static int write_record(const struct broker *broker, const char *output_path,
                                  sizeof(temperature)),
                     sample->cost_ns,
                     format_value(sample->sclk_actual_mhz, actual, sizeof(actual)));
+            if (scheduler_attribution) {
+                const struct attribution_record *attribution =
+                    &broker->attribution[sample_index];
+
+                fprintf(out, "\t%" PRIu64 "\t%" PRIu64,
+                        attribution->scheduler_runqueue_delay_lower_bound_ns,
+                        attribution->unattributed_elapsed_ns);
+            }
+            fputc('\n', out);
             if ((sample->unavailable_flags & UNAVAILABLE_SENSOR_MASK) != 0) {
                 unavailable_rows++;
             }
             cost_total += sample->cost_ns;
             if (sample->cost_ns > cost_max) {
                 cost_max = sample->cost_ns;
+            }
+            if (scheduler_attribution) {
+                const struct attribution_record *attribution =
+                    &broker->attribution[sample_index];
+
+                scheduler_delay_total +=
+                    attribution->scheduler_runqueue_delay_lower_bound_ns;
+                if (attribution->scheduler_runqueue_delay_lower_bound_ns >
+                    scheduler_delay_max) {
+                    scheduler_delay_max =
+                        attribution->scheduler_runqueue_delay_lower_bound_ns;
+                }
+                unattributed_total += attribution->unattributed_elapsed_ns;
+                if (attribution->unattributed_elapsed_ns > unattributed_max) {
+                    unattributed_max = attribution->unattributed_elapsed_ns;
+                }
             }
             if (sample_index == 0) {
                 first_ns = sample->monotonic_ns;
@@ -763,10 +875,24 @@ static int write_record(const struct broker *broker, const char *output_path,
     }
 
     fprintf(out, "# samples=%" PRIu64 " achieved_period_ns=%" PRIu64
-                 " mean_sample_cost_ns=%" PRIu64 " max_sample_cost_ns=%" PRIu64
-                 " samples_with_unavailable_sensor=%" PRIu64
+                 " mean_sample_cost_ns=%" PRIu64 " max_sample_cost_ns=%" PRIu64,
+            broker->sample_count, achieved_ns, mean_cost_ns, cost_max);
+    if (scheduler_attribution) {
+        fprintf(out, " mean_scheduler_runqueue_delay_lower_bound_ns=%" PRIu64
+                     " max_scheduler_runqueue_delay_lower_bound_ns=%" PRIu64
+                     " mean_unattributed_elapsed_ns=%" PRIu64
+                     " max_unattributed_elapsed_ns=%" PRIu64,
+                (broker->sample_count > 0)
+                    ? scheduler_delay_total / broker->sample_count
+                    : UINT64_C(0),
+                scheduler_delay_max,
+                (broker->sample_count > 0)
+                    ? unattributed_total / broker->sample_count
+                    : UINT64_C(0),
+                unattributed_max);
+    }
+    fprintf(out, " samples_with_unavailable_sensor=%" PRIu64
                  " first_sample_ns=%" PRIu64 " last_sample_ns=%" PRIu64 "\n",
-            broker->sample_count, achieved_ns, mean_cost_ns, cost_max,
             unavailable_rows, first_ns, last_ns);
 
     if (fclose(out) != 0) {
@@ -782,15 +908,30 @@ static int write_record(const struct broker *broker, const char *output_path,
     fprintf(stderr, "telemetry_broker=drained samples=%" PRIu64
                     " marks=%" PRIu64 " memory_readings=%" PRIu64
                     " host_readings=%" PRIu64
-                    " mean_sample_cost_ns=%" PRIu64 " max_sample_cost_ns=%" PRIu64
-                    " fast_path_surfaces=gpu_busy_percent"
+                    " mean_sample_cost_ns=%" PRIu64 " max_sample_cost_ns=%" PRIu64,
+            broker->sample_count, broker->mark_count, broker->memory_count,
+            broker->host_count, mean_cost_ns, cost_max);
+    if (scheduler_attribution) {
+        fprintf(stderr,
+                " mean_scheduler_runqueue_delay_lower_bound_ns=%" PRIu64
+                " max_scheduler_runqueue_delay_lower_bound_ns=%" PRIu64
+                " mean_unattributed_elapsed_ns=%" PRIu64
+                " max_unattributed_elapsed_ns=%" PRIu64,
+                (broker->sample_count > 0)
+                    ? scheduler_delay_total / broker->sample_count
+                    : UINT64_C(0),
+                scheduler_delay_max,
+                (broker->sample_count > 0)
+                    ? unattributed_total / broker->sample_count
+                    : UINT64_C(0),
+                unattributed_max);
+    }
+    fprintf(stderr, " fast_path_surfaces=gpu_busy_percent"
                     " fast_path_samples=%" PRIu64
                     " fast_path_mean_cost_ns=%" PRIu64
                     " fast_path_max_cost_ns=%" PRIu64
                     " marks_rejected=%" PRIu64 " ring_full=%d\n",
-            broker->sample_count, broker->mark_count, broker->memory_count,
-            broker->host_count,
-            mean_cost_ns, cost_max, broker->fast_path_samples,
+            broker->fast_path_samples,
             (broker->fast_path_samples > 0)
                 ? broker->fast_path_cost_total / broker->fast_path_samples
                 : UINT64_C(0),
@@ -871,6 +1012,7 @@ int main(int argc, char **argv)
     const char *drm_device = NULL;
     const char *hwmon = NULL;
     const char *control_path = NULL;
+    bool scheduler_attribution = false;
     const char *cpu_list = NULL;
     double period_ms = 5.0;
     /* Every measurement process on the appliance runs at nice 19, so the
@@ -882,6 +1024,10 @@ int main(int argc, char **argv)
     struct sigaction action;
     struct timespec deadline;
     char affinity_string[512];
+    char schedstat_path[PATH_MAX];
+    char schedstats_enabled_buffer[32];
+    uint64_t schedstat_preflight_delay_ns;
+    int schedstats_enabled_fd;
     int applied_nice;
     int argument;
     int status;
@@ -916,6 +1062,12 @@ int main(int argc, char **argv)
             hwmon = argv[argument];
         } else if (strcmp(option, "--control") == 0) {
             control_path = argv[argument];
+        } else if (strcmp(option, "--scheduler-attribution") == 0) {
+            if (strcmp(argv[argument], "schedstat") != 0) {
+                fprintf(stderr, "scheduler attribution must be schedstat\n");
+                return 2;
+            }
+            scheduler_attribution = true;
         } else {
             usage(argv[0]);
         }
@@ -953,11 +1105,16 @@ int main(int argc, char **argv)
 
     memset(&broker, 0, sizeof(broker));
     broker.samples = calloc(SAMPLE_CAPACITY, sizeof(*broker.samples));
+    if (scheduler_attribution) {
+        broker.attribution = calloc(SAMPLE_CAPACITY,
+                                    sizeof(*broker.attribution));
+    }
     broker.marks = calloc(MARK_CAPACITY, sizeof(*broker.marks));
     broker.memory = calloc(MEMORY_CAPACITY, sizeof(*broker.memory));
     broker.host = calloc(HOST_CAPACITY, sizeof(*broker.host));
     if (broker.samples == NULL || broker.marks == NULL || broker.memory == NULL ||
-        broker.host == NULL) {
+        broker.host == NULL ||
+        (scheduler_attribution && broker.attribution == NULL)) {
         fprintf(stderr, "cannot allocate the sample ring\n");
         return 2;
     }
@@ -965,6 +1122,10 @@ int main(int argc, char **argv)
      * land inside a sample. Touching it here moves that cost to startup and
      * mlockall keeps it resident where the privilege allows it. */
     memset(broker.samples, 0, (size_t)SAMPLE_CAPACITY * sizeof(*broker.samples));
+    if (scheduler_attribution) {
+        memset(broker.attribution, 0,
+               (size_t)SAMPLE_CAPACITY * sizeof(*broker.attribution));
+    }
     memset(broker.marks, 0, (size_t)MARK_CAPACITY * sizeof(*broker.marks));
     memset(broker.memory, 0, (size_t)MEMORY_CAPACITY * sizeof(*broker.memory));
     memset(broker.host, 0, (size_t)HOST_CAPACITY * sizeof(*broker.host));
@@ -983,6 +1144,40 @@ int main(int argc, char **argv)
      * attribute reports the column unavailable on every host line. */
     broker.ksm_sharing_fd = open("/sys/kernel/mm/ksm/pages_sharing",
                                  O_RDONLY | O_CLOEXEC);
+    broker.schedstat_fd = -1;
+    if (scheduler_attribution) {
+#ifdef TELEMETRY_BROKER_FIXTURE_SCHEDSTAT_PATH
+        snprintf(schedstat_path, sizeof(schedstat_path), "%s",
+                 TELEMETRY_BROKER_FIXTURE_SCHEDSTAT_PATH);
+#else
+        snprintf(schedstat_path, sizeof(schedstat_path),
+                 "/proc/self/task/%d/schedstat", (int)getpid());
+#endif
+        schedstats_enabled_fd = open(SCHEDSTATS_ENABLED_PATH,
+                                     O_RDONLY | O_CLOEXEC);
+        if (schedstats_enabled_fd < 0 ||
+            read_snapshot(schedstats_enabled_fd, schedstats_enabled_buffer,
+                          sizeof(schedstats_enabled_buffer)) <= 0 ||
+            parse_scalar(schedstats_enabled_buffer) != 1) {
+            fprintf(stderr,
+                    "sampler scheduler statistics are unavailable or disabled\n");
+            if (schedstats_enabled_fd >= 0) {
+                close(schedstats_enabled_fd);
+            }
+            return 2;
+        }
+        close(schedstats_enabled_fd);
+        broker.schedstat_fd = open(schedstat_path, O_RDONLY | O_CLOEXEC);
+        if (broker.schedstat_fd < 0 ||
+            !read_scheduler_delay(&broker, &schedstat_preflight_delay_ns)) {
+            fprintf(stderr,
+                    "cannot read the sampler schedstat delay counter: %s\n",
+                    (broker.schedstat_fd < 0) ? strerror(errno)
+                                              : "malformed record");
+            return 2;
+        }
+        (void)schedstat_preflight_delay_ns;
+    }
     broker.control_read_fd = -1;
     broker.control_keep_fd = -1;
 
@@ -1016,10 +1211,14 @@ int main(int argc, char **argv)
     }
 
     fprintf(stderr, "telemetry_broker=ready pid=%d period_ns=%" PRIu64
-                    " nice=%d cpu_affinity=%s ring_samples=%u ring_bytes=%zu\n",
+                    " nice=%d cpu_affinity=%s scheduler_attribution=%s"
+                    " ring_samples=%u ring_bytes=%zu\n",
             (int)getpid(), period_ns, applied_nice, affinity_string,
+            scheduler_attribution ? "schedstat" : "none",
             (unsigned)SAMPLE_CAPACITY,
-            (size_t)SAMPLE_CAPACITY * sizeof(struct sample_record));
+            (size_t)SAMPLE_CAPACITY *
+                (sizeof(struct sample_record) +
+                 (scheduler_attribution ? sizeof(struct attribution_record) : 0)));
     fflush(stderr);
 
     {
@@ -1039,6 +1238,10 @@ int main(int argc, char **argv)
         while (stop_requested == 0) {
             uint64_t begin;
             uint64_t end;
+            uint64_t scheduler_delay_before;
+            uint64_t scheduler_delay_after;
+            uint64_t scheduler_delay_delta;
+            uint64_t sample_cost;
             uint32_t flags = 0;
             int32_t busy;
             int64_t memory_available = INT64_C(-1);
@@ -1049,6 +1252,13 @@ int main(int argc, char **argv)
             bool host_read = false;
 
             begin = monotonic_nanoseconds();
+            if (scheduler_attribution &&
+                !read_scheduler_delay(&broker, &scheduler_delay_before)) {
+                broker.acquisition_failed = true;
+                fprintf(stderr,
+                        "telemetry_broker=acquisition_failed reason=schedstat_begin\n");
+                break;
+            }
 
             busy = (read_snapshot(broker.busy_fd, broker.sysfs_buffer,
                                   SYSFS_BUFFER_BYTES) < 0)
@@ -1115,7 +1325,37 @@ int main(int argc, char **argv)
                 host_read = true;
             }
 
+            if (scheduler_attribution &&
+                !read_scheduler_delay(&broker, &scheduler_delay_after)) {
+                broker.acquisition_failed = true;
+                fprintf(stderr,
+                        "telemetry_broker=acquisition_failed reason=schedstat_end\n");
+                break;
+            }
             end = monotonic_nanoseconds();
+            sample_cost = end - begin;
+            scheduler_delay_delta = 0;
+            if (scheduler_attribution &&
+                scheduler_delay_after < scheduler_delay_before) {
+                broker.acquisition_failed = true;
+                fprintf(stderr,
+                        "telemetry_broker=acquisition_failed reason=schedstat_regressed\n");
+                break;
+            }
+            if (scheduler_attribution) {
+                scheduler_delay_delta = (scheduler_delay_after
+                                         - scheduler_delay_before);
+            }
+            if (sample_cost > UINT32_MAX || scheduler_delay_delta > sample_cost) {
+                broker.acquisition_failed = true;
+                fprintf(stderr,
+                        "telemetry_broker=acquisition_failed"
+                        " reason=attribution_interval"
+                        " sample_cost_ns=%" PRIu64
+                        " scheduler_runqueue_delay_lower_bound_ns=%" PRIu64 "\n",
+                        sample_cost, scheduler_delay_delta);
+                break;
+            }
 
             if (last_sclk == VALUE_UNAVAILABLE) {
                 flags |= UNAVAILABLE_SCLK;
@@ -1142,9 +1382,18 @@ int main(int argc, char **argv)
                 record->fclk_mhz = last_fclk;
                 record->busy_percent = busy;
                 record->temperature_millidegrees = last_temperature;
-                record->cost_ns = (uint32_t)(end - begin);
+                record->cost_ns = (uint32_t)sample_cost;
                 record->unavailable_flags = flags;
                 record->sclk_actual_mhz = last_sclk_actual;
+                if (scheduler_attribution) {
+                    struct attribution_record *attribution =
+                        &broker.attribution[broker.sample_count];
+
+                    attribution->scheduler_runqueue_delay_lower_bound_ns =
+                        scheduler_delay_delta;
+                    attribution->unattributed_elapsed_ns =
+                        sample_cost - scheduler_delay_delta;
+                }
                 broker.sample_count++;
                 if (!usable_sample_reported && last_sclk_actual > 0 &&
                     (flags & (UNAVAILABLE_SENSOR_MASK & ~UNAVAILABLE_FCLK)) == 0) {
@@ -1242,6 +1491,9 @@ int main(int argc, char **argv)
 
     status = write_record(&broker, output_path, period_ns, drm_device,
                           (hwmon != NULL) ? hwmon : "-", affinity_string,
-                          applied_nice);
+                          applied_nice, scheduler_attribution);
+    if (status == 0 && broker.acquisition_failed) {
+        return 2;
+    }
     return status;
 }

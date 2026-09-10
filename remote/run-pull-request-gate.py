@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the bounded pull-request gate for documentation and Web UI changes."""
+"""Run the bounded pull-request gate for registered change scopes."""
 
 from __future__ import annotations
 
@@ -41,6 +41,24 @@ BROWSER_PREFLIGHT_PATHS = {
     "remote/test-qwen-home.sh",
 }
 BROWSER_PREFLIGHT_EVIDENCE_PREFIX = "evidence/image-quality-browser-interpreter/"
+Q8_SAMPLER_ATTRIBUTION_PATHS = {
+    "docs/frontier.md",
+    "evidence/SHA256SUMS",
+    "remote/build-telemetry-broker.sh",
+    "remote/run-raven2-vulkan-kernel-census.sh",
+    "remote/telemetry-broker.c",
+    "remote/test-census-controls.py",
+    "remote/test-run-raven2-vulkan-kernel-census.sh",
+    "remote/test-telemetry-broker.sh",
+    "remote/validate-clock-sidecar.py",
+}
+Q8_SAMPLER_ATTRIBUTION_EVIDENCE_PREFIX = (
+    "evidence/q8-attribution/sampler-cost-attribution/"
+)
+Q8_SAMPLER_ATTRIBUTION_ROUTE_SUPPORT_PATHS = {
+    "remote/run-pull-request-gate.py",
+    "remote/test-run-pull-request-gate.py",
+}
 CI_ROUTING_PYTHON_PATHS = tuple(
     sorted(path for path in CI_ROUTING_PATHS if path.endswith(".py"))
 )
@@ -114,6 +132,21 @@ def classify_paths(paths: Sequence[str]) -> str:
         and browser_preflight_paths
     ):
         return "browser-preflight"
+    q8_sampler_attribution_paths = [
+        path
+        for path in checked
+        if path in Q8_SAMPLER_ATTRIBUTION_PATHS
+        or path.startswith(Q8_SAMPLER_ATTRIBUTION_EVIDENCE_PREFIX)
+    ]
+    if (
+        all(
+            path in Q8_SAMPLER_ATTRIBUTION_ROUTE_SUPPORT_PATHS
+            or path in q8_sampler_attribution_paths
+            for path in checked
+        )
+        and q8_sampler_attribution_paths
+    ):
+        return "q8-sampler-attribution"
     if any(not is_safe_path(path) for path in checked):
         return "full"
     if all(path == "README.md" or path.startswith("docs/") for path in checked):
@@ -123,6 +156,37 @@ def classify_paths(paths: Sequence[str]) -> str:
 
 def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
     checks = list(ALWAYS_CHECKS)
+    if scope == "q8-sampler-attribution":
+        changed_shell = sorted(path for path in paths if path.endswith(".sh"))
+        if changed_shell:
+            checks.append(("shellcheck", "-S", "warning", *changed_shell))
+        checks.extend(
+            (
+                (
+                    "ruff",
+                    "check",
+                    "remote/run-pull-request-gate.py",
+                    "remote/test-census-controls.py",
+                    "remote/test-run-pull-request-gate.py",
+                    "remote/validate-clock-sidecar.py",
+                ),
+                (
+                    "python3",
+                    "-m",
+                    "py_compile",
+                    "remote/run-pull-request-gate.py",
+                    "remote/test-census-controls.py",
+                    "remote/test-run-pull-request-gate.py",
+                    "remote/validate-clock-sidecar.py",
+                ),
+                ("sh", "remote/test-telemetry-broker.sh"),
+                ("python3", "remote/test-census-controls.py"),
+                ("sh", "remote/test-run-raven2-vulkan-kernel-census.sh"),
+                ("python3", "remote/test-run-pull-request-gate.py"),
+                ("remote/repository-quality-gates.sh", "--declarations"),
+            )
+        )
+        return checks
     if scope == "browser-preflight":
         changed_shell = sorted(path for path in paths if path.endswith(".sh"))
         if changed_shell:
