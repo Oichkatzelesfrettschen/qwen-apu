@@ -30,6 +30,17 @@ GATE_INFRASTRUCTURE_PATHS = {
     "remote/test-repository-gate-cells.sh",
 }
 GATE_INFRASTRUCTURE_EVIDENCE_PREFIX = "evidence/ci-gate-driver-scope-reuse/"
+BROWSER_PREFLIGHT_PATHS = {
+    "evidence/SHA256SUMS",
+    "remote/browser-driver-preflight.py",
+    "remote/qwen-home.sh",
+    "remote/qwen_home.py",
+    "remote/repository-quality-gates.sh",
+    "remote/run-browser-driver.sh",
+    "remote/test-browser-driver-preflight.py",
+    "remote/test-qwen-home.sh",
+}
+BROWSER_PREFLIGHT_EVIDENCE_PREFIX = "evidence/image-quality-browser-interpreter/"
 CI_ROUTING_PYTHON_PATHS = tuple(
     sorted(path for path in CI_ROUTING_PATHS if path.endswith(".py"))
 )
@@ -89,6 +100,20 @@ def classify_paths(paths: Sequence[str]) -> str:
         if gate_infrastructure_paths:
             return "gate-infrastructure"
         return "ci-routing"
+    browser_preflight_paths = [
+        path
+        for path in checked
+        if path in BROWSER_PREFLIGHT_PATHS
+        or path.startswith(BROWSER_PREFLIGHT_EVIDENCE_PREFIX)
+    ]
+    if (
+        all(
+            path in CI_ROUTING_PATHS or path in browser_preflight_paths
+            for path in checked
+        )
+        and browser_preflight_paths
+    ):
+        return "browser-preflight"
     if any(not is_safe_path(path) for path in checked):
         return "full"
     if all(path == "README.md" or path.startswith("docs/") for path in checked):
@@ -98,6 +123,38 @@ def classify_paths(paths: Sequence[str]) -> str:
 
 def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
     checks = list(ALWAYS_CHECKS)
+    if scope == "browser-preflight":
+        changed_shell = sorted(path for path in paths if path.endswith(".sh"))
+        if changed_shell:
+            checks.append(("shellcheck", "-S", "warning", *changed_shell))
+        checks.extend(
+            (
+                (
+                    "ruff",
+                    "check",
+                    "remote/browser-driver-preflight.py",
+                    "remote/test-browser-driver-preflight.py",
+                ),
+                (
+                    "ruff",
+                    "format",
+                    "--check",
+                    "remote/browser-driver-preflight.py",
+                    "remote/test-browser-driver-preflight.py",
+                ),
+                (
+                    "mypy",
+                    "--strict",
+                    "remote/browser-driver-preflight.py",
+                    "remote/test-browser-driver-preflight.py",
+                ),
+                ("python3", "remote/test-browser-driver-preflight.py"),
+                ("remote/test-qwen-home.sh",),
+                ("remote/test-feature-roster.sh",),
+                ("remote/repository-quality-gates.sh", "--declarations"),
+            )
+        )
+        return checks
     if scope == "gate-infrastructure":
         changed_shell = sorted(path for path in paths if path.endswith(".sh"))
         if changed_shell:
