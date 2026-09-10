@@ -1,0 +1,16 @@
+field	failed_required_retrieval	successful_required_retrieval
+profile	web-open	web-open
+source_scope	English Wikipedia	docs.python.org
+request	Search English Wikipedia for the Python programming language, fetch the matching Wikipedia article, and state only the organization where Python was developed. Base the answer on the fetched article.	Search the official Python documentation for the Python tutorial, fetch the matching docs.python.org page, and state only the title of the fetched page. Base the answer on the fetched page.
+search_proposal	observed	observed
+search_approval	approved_once	approved_once
+fetch_proposal	observed	observed
+fetch_execution	failed_or_unusable_for_required_source	completed
+application_outcome	Source retrieval is incomplete. No source-grounded answer was produced.	source-grounded response produced
+observed_answer	-	The Python Tutorial
+format_observation	-	response included explanatory text beyond the requested title
+browser_terminal	accepted	accepted
+browser_cleanup	browser completed and profile disposed	browser completed and profile disposed
+terminal_sha256	1fb2a38454063992b2ccc28f3ce60903ecc87e461f7cba8ae9dc54706bffebf7	e0e9d684fc56b9aef45e4d037766ccc76245384a58d663b6ccc5773541ce3678
+snapshot_sha256	6933cfb9497c70c431eeca47b89bcb7df85c173e788aea44e99a7a25d7b640f3	36670d0dae9e10ec47afae6467a1221712cfe52b815dd8e72568b07116ce1ea0
+private_runtime_root	$HOME/Github/qwen-apu/.runtime	$HOME/Github/qwen-apu/.runtime

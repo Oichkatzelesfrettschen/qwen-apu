@@ -35,10 +35,13 @@ executable, bundle, model, or serving policy.
 | Submitted fox command SHA-256 | `9206a4580f59fff46db362beae5678c7650cdea72efbab31593eb20cafc0b216` |
 
 The private acquisition binds the runtime records by the digests in
-`source-derivative.tsv`. Browser logs, session status, service addresses,
-credentials, authorization-bearing URLs, and generated image bytes remain
-under the declared runtime root. The stopped quality protocol produced no
-image bytes.
+`source-derivative.tsv`. `web-retrieval-outcomes.tsv` retains the bounded
+request, search, fetch, application-outcome, and cleanup fields for both
+retrievals. `web-source-success-qualification.json` retains the successful
+qualification object. Browser logs, session status, service addresses,
+credentials, authorization-bearing URLs, result handles, and generated image
+bytes remain under the declared runtime root. The stopped quality protocol
+produced no image bytes.
 
 ## Product qualification outcomes
 
@@ -47,7 +50,7 @@ image bytes.
 | Mixed-turn image tool execution | `completed` | One image call after the failed Wikipedia retrieval |
 | Canonical artifact controls | `verified` | Open and Download resolved verified blob URLs; Remove and Review remained application-owned card actions |
 | Fabricated model URL | `contained` | The prose URL remained under the unverified warning and never replaced the card identity |
-| Successful required retrieval | `completed` | One `web-open` search and fetch against `docs.python.org` produced the requested grounded answer |
+| Successful required retrieval | `completed` | One `web-open` search and fetch against `docs.python.org` produced grounded content containing the requested title; the response also included unrequested explanatory text |
 | Failed required retrieval | `incomplete_source` | One Wikipedia search/fetch sequence ended without a source-grounded answer |
 | Browser cleanup for completed turns | `completed` | Each retained terminal reports browser completion and disposable-profile removal |
 | Post-quality service health | `accepted` | Authenticated router, broker, and artifact health returned HTTP 200 |
@@ -85,9 +88,11 @@ quality or reviewer-correctness observation.
 ## Sanitized derivative
 
 `remote/sanitize-capture.py` transformed the bounded private source summary
-into `source-derivative.tsv`. The source summary contains identities and
-outcomes only; the sanitizer replaced the private host and home prefix. The
-transformation record binds the input, output, and sanitizer bytes.
+into `source-derivative.tsv`, `web-retrieval-outcomes.tsv`, and
+`web-source-success-qualification.json`. The sources contain bounded identities
+and outcomes rather than raw browser records; the sanitizer replaced private
+host and home fields. The transformation record binds every input, output, and
+sanitizer byte sequence.
 
 ## Boundaries
 

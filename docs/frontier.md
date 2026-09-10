@@ -127,7 +127,9 @@ outside it.
   Q8-specific experiment is a kernel-delta bracket inside the Q8_0 mat-vec
   body, where reaching a 50 ms token asks a 19.6% local reduction of that
   family.
-- Admission: held. A later calibration arm `09-P` retained 748 sampler rows
+- Admission: held. The retained
+  `evidence/q8-attribution/calibration-20260908/` acquisition analysis binds a
+  later calibration arm `09-P` with 748 sampler rows
   with an integer-floor mean cost of `1,038,085 ns`, above the registered
   `1,000,000 ns` limit. The request-window diagnostic mean was `427,521 ns`,
   but diagnostics do not replace the full denominator. Accepted arms also

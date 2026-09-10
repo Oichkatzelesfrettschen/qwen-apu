@@ -123,7 +123,10 @@ The serving bundle and inference executable remain fixed during this UI work.
 Q8 timing remains held independently of product qualification: calibration arm
 `09-P` measured `1,038,085 ns` across its full 748-row sampler denominator,
 above the registered `1,000,000 ns` limit. The unchanged calibration and
-candidate timing remain withheld until a registered input changes. Historical
+candidate timing remain withheld until a registered input changes. The retained
+analysis is
+[`evidence/q8-attribution/calibration-20260908/`](evidence/q8-attribution/calibration-20260908/).
+Historical
 throughput figures are observations from particular runs, not promised response
 rates for a busy laptop.
 
