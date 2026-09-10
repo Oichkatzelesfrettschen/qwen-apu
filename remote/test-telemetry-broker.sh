@@ -75,12 +75,33 @@ finish() {
 
 # Build
 
-broker=$work_directory/telemetry-broker
-if sh "$script_directory/build-telemetry-broker.sh" "$broker" >"$work_directory/build.log" 2>&1; then
+production_broker=$work_directory/telemetry-broker-production
+if sh "$script_directory/build-telemetry-broker.sh" "$production_broker" >"$work_directory/build.log" 2>&1; then
     report build accepted
 else
     cat "$work_directory/build.log" >&2
     report build refused
+    finish
+fi
+
+# The workstation may deliberately leave kernel.sched_schedstats disabled.
+# The integration fixture compiles the same source with two fixed test files,
+# so CI proves the acquisition path without changing a host-wide kernel knob.
+fixture_schedstats_enabled=$work_directory/sched_schedstats
+fixture_schedstat=$work_directory/schedstat
+printf '1\n' >"$fixture_schedstats_enabled"
+printf '0 0 0\n' >"$fixture_schedstat"
+broker=$work_directory/telemetry-broker
+compiler=${CC:-cc}
+if "$compiler" -O2 -Wall -Wextra -Werror -std=c11 \
+    "-DTELEMETRY_BROKER_FIXTURE_SCHEDSTATS_ENABLED_PATH=\"$fixture_schedstats_enabled\"" \
+    "-DTELEMETRY_BROKER_FIXTURE_SCHEDSTAT_PATH=\"$fixture_schedstat\"" \
+    "$script_directory/telemetry-broker.c" -o "$broker" \
+    >"$work_directory/fixture-build.log" 2>&1; then
+    report fixture_build accepted
+else
+    cat "$work_directory/fixture-build.log" >&2
+    report fixture_build refused
     finish
 fi
 
@@ -100,6 +121,35 @@ printf '62000\n' >"$hwmon/temp1_input"
 # the selected step the fixture stars at 400 MHz, so the two columns are read
 # apart rather than assumed equal.
 printf '1100000000\n' >"$hwmon/freq1_input"
+
+# A disabled scheduler counter or malformed task record refuses before the
+# ready marker and before an output record is created. The acquisition never
+# runs under an instrument that would report every descheduling delta as zero.
+for refusal_case in disabled malformed; do
+    refusal_record=$work_directory/refusal-$refusal_case.tsv
+    refusal_stderr=$work_directory/refusal-$refusal_case.err
+    if [ "$refusal_case" = disabled ]; then
+        printf '0\n' >"$fixture_schedstats_enabled"
+        printf '0 0 0\n' >"$fixture_schedstat"
+    else
+        printf '1\n' >"$fixture_schedstats_enabled"
+        printf 'malformed\n' >"$fixture_schedstat"
+    fi
+    refusal_status=0
+    "$broker" "$refusal_record" --period-ms 10 \
+        --drm-device "$drm_device" --hwmon "$hwmon" \
+        --scheduler-attribution schedstat \
+        >/dev/null 2>"$refusal_stderr" || refusal_status=$?
+    if [ "$refusal_status" -eq 2 ] && [ ! -e "$refusal_record" ] && \
+        ! grep -q '^telemetry_broker=ready ' "$refusal_stderr"; then
+        report "schedstat_${refusal_case}_preflight" accepted
+    else
+        report "schedstat_${refusal_case}_preflight" \
+            "refused status=$refusal_status record=$([ -e "$refusal_record" ] && echo present || echo absent)"
+    fi
+done
+printf '1\n' >"$fixture_schedstats_enabled"
+printf '0 0 0\n' >"$fixture_schedstat"
 
 cpu_count=$(nproc 2>/dev/null || echo 1)
 cpu_list=0
@@ -132,6 +182,7 @@ run_arm() {
     mkfifo "$arm_control"
     "$broker" "$arm_record" --period-ms 10 --cpu "$cpu_list" \
         --drm-device "$drm_device" --hwmon "$hwmon" --control "$arm_control" \
+        --scheduler-attribution schedstat \
         >/dev/null 2>"$arm_stderr" &
     arm_pid=$!
 
@@ -354,18 +405,37 @@ printf 'observation sclk_values=%s\n' "$distinct_sclk"
 # carrying 1100 in the eighth column and 400 in the second proves the column is
 # the sensor rather than a copy of the step.
 column_line=$(awk '/^#/ { next } { print; exit }' "$record")
-if [ "$column_line" = "$(printf 'monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees\tsample_cost_ns\tsclk_actual_mhz')" ]; then
+if [ "$column_line" = "$(printf 'monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees\tsample_cost_ns\tsclk_actual_mhz\tscheduler_runqueue_delay_ns\tnon_scheduler_elapsed_ns')" ]; then
     report record_columns accepted
 else
     report record_columns "refused columns=$column_line"
 fi
 actual_rows=$(awk -F'\t' '
     /^#/ { next }
-    $1 ~ /^[0-9]+$/ && NF == 8 && $8 == "1100" && $2 == "400" { rows++ }
+    $1 ~ /^[0-9]+$/ && NF == 10 && $8 == "1100" && $2 == "400" { rows++ }
     END { print rows + 0 }' "$record")
 total_rows=$(awk -F'\t' '/^#/ { next } $1 ~ /^[0-9]+$/ { rows++ } END { print rows + 0 }' \
     "$record")
 verdict "$total_rows" "$actual_rows" sclk_actual_in_every_row
+
+# The scheduler counter is read on both sides of the same wall interval whose
+# cost remains column seven. Every row must partition that cost exactly; the
+# validator independently checks the same identity and the four footer totals.
+attribution_bad_rows=$(awk -F'\t' '
+    /^#/ { next }
+    $1 ~ /^[0-9]+$/ &&
+        ($9 !~ /^[0-9]+$/ || $10 !~ /^[0-9]+$/ || $9 > $7 || $10 != $7 - $9) {
+        rows++
+    }
+    END { print rows + 0 }' "$record")
+verdict 0 "$attribution_bad_rows" scheduler_attribution_partition
+sampler_format=$(awk '/^# sampler_pid=/ {
+    for (field = 1; field <= NF; field++) {
+        if (index($field, "sampler_format=") == 1) {
+            print substr($field, index($field, "=") + 1)
+        }
+    } }' "$record")
+verdict broker-schedstat-v1 "$sampler_format" scheduler_attribution_format
 
 # The DPM channel reads once every tenth tick and the nine rows between repeat
 # the cached value, so the record marks the rows that carried a read and
@@ -450,6 +520,12 @@ nice_header=$(awk '/^# sampler_pid=/ {
         if (index($field, "nice=") == 1) { print substr($field, 6) }
     } }' "$nice_record" 2>/dev/null || true)
 verdict 19 "$nice_header" absolute_nice_reached
+legacy_columns=$(awk '/^#/ { next } { print; exit }' "$nice_record")
+if [ "$legacy_columns" = "$(printf 'monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees\tsample_cost_ns\tsclk_actual_mhz')" ]; then
+    report default_legacy_columns accepted
+else
+    report default_legacy_columns "refused columns=$legacy_columns"
+fi
 
 # mark_before_term_is_kept: a MARK line written to the control FIFO with no
 # sleep before the TERM that follows it must still reach the drained record.
@@ -469,6 +545,7 @@ while [ "$mark_race_attempt" -le 10 ]; do
     mkfifo "$race_control"
     "$broker" "$race_record" --period-ms 10 --cpu "$cpu_list" \
         --drm-device "$drm_device" --hwmon "$hwmon" --control "$race_control" \
+        --scheduler-attribution schedstat \
         >/dev/null 2>"$race_stderr" &
     race_pid=$!
 

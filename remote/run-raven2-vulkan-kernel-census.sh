@@ -290,6 +290,9 @@ set -eu
 #                                    sampler, default ../build/telemetry-broker,
 #                                    built by build-telemetry-broker.sh where it is
 #                                    absent or records another source
+#   QWEN_CENSUS_SCHEDULER_ATTRIBUTION none (default) or schedstat; schedstat appends
+#                                    per-row runnable-but-unscheduled time and
+#                                    requires kernel.sched_schedstats=1
 #   QWEN_CENSUS_MCLK_BELOW_FRACTION  admitted share of window samples below the
 #                                    fabric floor under a forced policy, default 0.01
 #   QWEN_CENSUS_PRINT_CONTRACT       1 prints the calibration contract and its digest, then exits
@@ -920,6 +923,8 @@ done
 # beside the digests of the broker executable and the source it was built
 # from, so a record is attributed to the sampler that produced it.
 census_sampler=${QWEN_CENSUS_SAMPLER:-broker}
+sidecar_scheduler_attribution=${QWEN_CENSUS_SCHEDULER_ATTRIBUTION:-none}
+sidecar_scheduler_argument=''
 sidecar_binary_sha256=-
 sidecar_source_sha256=-
 broker=''
@@ -936,6 +941,21 @@ case $census_sampler in
         ;;
     *)
         printf 'QWEN_CENSUS_SAMPLER must be broker or python: %s\n' "$census_sampler" >&2
+        exit 2
+        ;;
+esac
+case $sidecar_scheduler_attribution in
+    none) ;;
+    schedstat)
+        if [ "$census_sampler" != broker ]; then
+            printf 'schedstat attribution requires QWEN_CENSUS_SAMPLER=broker\n' >&2
+            exit 2
+        fi
+        sidecar_scheduler_argument='--scheduler-attribution schedstat'
+        ;;
+    *)
+        printf 'QWEN_CENSUS_SCHEDULER_ATTRIBUTION must be none or schedstat: %s\n' \
+            "$sidecar_scheduler_attribution" >&2
         exit 2
         ;;
 esac
@@ -1275,6 +1295,10 @@ write_acquisition_contract() {
         printf 'sidecar_max_lost_fraction\t%s\n' "$sidecar_max_lost_fraction"
         printf 'sidecar_implementation\t%s\nsidecar_binary_sha256\t%s\nsidecar_source_sha256\t%s\n' \
             "$sidecar_implementation" "$sidecar_binary_sha256" "$sidecar_source_sha256"
+        if [ "$sidecar_scheduler_attribution" != none ]; then
+            printf 'sidecar_scheduler_attribution\t%s\n' \
+                "$sidecar_scheduler_attribution"
+        fi
         printf 'sidecar_bound\t%s\ncompile_bound\t%s\ncollect_bound\t%s\noverlap_threshold\t%s\n' \
             "$sidecar_bound" "$compile_bound" "$collect_bound" "$overlap_threshold"
         # The band and the share threshold decide which pairs a control is
@@ -1414,6 +1438,20 @@ if [ "$census_mode" = attribution ]; then
     esac
 fi
 rm -f -- "$contract_scratch" "$analysis_scratch"
+
+# The attributed tuple requires a live cumulative runqueue-delay counter. The
+# print-contract route exits above this read, so workstation preregistration
+# can derive the tuple without device contact. A real acquisition refuses
+# before creating its output directory or starting an arm when the kernel
+# facility is absent or disabled; the runner never changes the kernel knob.
+if [ "$sidecar_scheduler_attribution" = schedstat ]; then
+    schedstats_enabled_path=/proc/sys/kernel/sched_schedstats
+    if [ ! -r "$schedstats_enabled_path" ] || \
+        [ "$(cat "$schedstats_enabled_path" 2>/dev/null)" != 1 ]; then
+        printf 'schedstat attribution requires kernel.sched_schedstats=1\n' >&2
+        exit 2
+    fi
+fi
 
 # The input closure of a brick is what its arms consumed: the acquisition
 # contract every arm runs under, the brick's own identity and arm list, and,
@@ -1996,6 +2034,8 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$drm_device" "${sidecar_allowed_unavailable:--}"
     printf 'sidecar_implementation\t%s\nsidecar_binary_sha256\t%s\nsidecar_source_sha256\t%s\n' \
         "$sidecar_implementation" "$sidecar_binary_sha256" "$sidecar_source_sha256"
+    printf 'sidecar_scheduler_attribution\t%s\n' \
+        "$sidecar_scheduler_attribution"
     printf 'sidecar_hwmon\t%s\n' "${sidecar_hwmon:--}"
     printf 'production_server\t%s\nproduction_server_sha256\t%s\nproduction_server_bytes\t%s\n' \
         "${production_server:--}" "$production_sha256" "$production_bytes"
@@ -2323,6 +2363,7 @@ for arm in $execution_arms; do
             --period-ms "$sidecar_period_ms" --cpu "$sidecar_cpu" \
             --drm-device "$drm_device" \
             ${sidecar_hwmon:+--hwmon "$sidecar_hwmon"} \
+            $sidecar_scheduler_argument \
             2>"$arm_directory/clock-sidecar.stderr" &
         sidecar_pid=$!
         # The record is formatted at drain, so the file proves nothing while

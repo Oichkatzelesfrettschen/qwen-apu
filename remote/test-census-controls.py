@@ -50,6 +50,9 @@ COLUMNS = ("monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz"
 # telemetry-broker.c appends the delivered graphics frequency, so a record is
 # seven or eight columns wide and the validator reads both.
 WIDE_COLUMNS = COLUMNS + "\tsclk_actual_mhz"
+ATTRIBUTION_COLUMNS = (WIDE_COLUMNS
+                       + "\tscheduler_runqueue_delay_ns"
+                       + "\tnon_scheduler_elapsed_ns")
 
 
 def write(name, text):
@@ -64,7 +67,8 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
                    footers=1, hole_after=None, hole_ns=0, achieved_period_ns=None,
                    actual_mhz=None, mclk="933", mclk_low_rows=(), mclk_low="400",
                    max_cost_ns=None, dpm_period_ns=None, dpm_read_stride=None,
-                   backward_row=None):
+                   backward_row=None, sampler_format=None,
+                   scheduler_delay_ns=None, non_scheduler_elapsed_ns=None):
     """Write one synthetic record; hole_ns is the delay inserted after hole_after.
 
     A hole shifts every later row by hole_ns, so the gap it opens is the period
@@ -85,7 +89,8 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
     lines = [
         f"# clock=CLOCK_MONOTONIC period_ns={header_period or period_ns} drm_device=/fake hwmon=/fake/hwmon0",
         "# interpretation: pp_dpm_sclk_selected_mhz is the selected graphics clock step",
-        "# sampler_pid=4242 nice=10 cpu_affinity=1",
+        ("# sampler_pid=4242 nice=10 cpu_affinity=1"
+         + (f" sampler_format={sampler_format}" if sampler_format else "")),
     ]
     if dpm_period_ns is not None:
         lines.append(f"# sample_rates: gpu_busy_percent_period_ns={period_ns}"
@@ -100,6 +105,11 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
         row = f"{instant}\t400\t{row_mclk}\t{fclk}\t37\t61000\t{cost_ns}"
         if actual_mhz is not None:
             row += f"\t{actual_mhz}"
+        if scheduler_delay_ns is not None:
+            residual = (cost_ns - scheduler_delay_ns
+                        if non_scheduler_elapsed_ns is None
+                        else non_scheduler_elapsed_ns)
+            row += f"\t{scheduler_delay_ns}\t{residual}"
         if dpm_read_stride is not None and index % dpm_read_stride == 0:
             lines.append(f"# dpm_read={instant}")
         lines.append(row)
@@ -111,7 +121,14 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
         f" mean_sample_cost_ns={cost_ns}"
         f" max_sample_cost_ns={max_cost_ns or cost_ns}"
         f" samples_with_unavailable_sensor={len(unavailable_rows)}"
-        f" first_sample_ns={first} last_sample_ns={last}")
+        f" first_sample_ns={first} last_sample_ns={last}"
+        + (f" mean_scheduler_runqueue_delay_ns={scheduler_delay_ns}"
+           f" max_scheduler_runqueue_delay_ns={scheduler_delay_ns}"
+           f" mean_non_scheduler_elapsed_ns="
+           f"{cost_ns - scheduler_delay_ns if non_scheduler_elapsed_ns is None else non_scheduler_elapsed_ns}"
+           f" max_non_scheduler_elapsed_ns="
+           f"{cost_ns - scheduler_delay_ns if non_scheduler_elapsed_ns is None else non_scheduler_elapsed_ns}"
+           if scheduler_delay_ns is not None else ""))
     lines.extend([footer_line] * footers)
     return "\n".join(lines) + "\n"
 
@@ -284,6 +301,56 @@ result = validate(wide)
 assert result.returncode == 0, result.stdout
 assert "columns=accepted" in result.stdout and "width=8" in result.stdout, result.stdout
 assert "row_arity=accepted columns=8" in result.stdout, result.stdout
+
+# The attributed broker format keeps the original cost denominator and appends
+# a measured runnable-but-unscheduled delta plus its arithmetic residual. The
+# reader proves both row and footer identities and refuses either field without
+# inferring scheduler delay from a large wall-clock cost.
+attributed = sidecar_record(
+    columns=ATTRIBUTION_COLUMNS,
+    actual_mhz=1100,
+    sampler_format="broker-schedstat-v1",
+    scheduler_delay_ns=10_000,
+)
+result = validate(attributed)
+assert result.returncode == 0, result.stdout
+assert "columns=accepted" in result.stdout and "width=10" in result.stdout, result.stdout
+assert "attribution_schema=accepted" in result.stdout, result.stdout
+assert "scheduler_attribution_rows=accepted rows=100 invalid=0" in result.stdout, result.stdout
+assert "scheduler_attribution_footer=accepted scheduler_mean_ns=10000" in result.stdout, result.stdout
+refused(attributed.replace("\t10000\t20000\n", "\t10000\t19000\n", 1),
+        "scheduler_attribution_rows")
+refused(sidecar_record(columns=ATTRIBUTION_COLUMNS, actual_mhz=1100,
+                       scheduler_delay_ns=10_000), "attribution_schema")
+refused(sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1100,
+                       sampler_format="broker-schedstat-v1"),
+        "attribution_schema")
+stale_attribution_footer = attributed.replace(
+    "mean_scheduler_runqueue_delay_ns=10000",
+    "mean_scheduler_runqueue_delay_ns=9999",
+)
+refused(stale_attribution_footer, "scheduler_attribution_footer")
+long_wall_without_scheduler_delay = sidecar_record(
+    columns=ATTRIBUTION_COLUMNS,
+    cost_ns=900_000,
+    actual_mhz=1100,
+    sampler_format="broker-schedstat-v1",
+    scheduler_delay_ns=0,
+)
+result = validate(long_wall_without_scheduler_delay)
+assert result.returncode == 0, result.stdout
+assert "scheduler_attribution_footer=accepted scheduler_mean_ns=0" in result.stdout, result.stdout
+refused(sidecar_record(columns=ATTRIBUTION_COLUMNS, cost_ns=30_000,
+                       actual_mhz=1100,
+                       sampler_format="broker-schedstat-v1",
+                       scheduler_delay_ns=30_001,
+                       non_scheduler_elapsed_ns=0),
+        "scheduler_attribution_rows")
+refused(attributed.replace("\t10000\t20000\n",
+                           "\tunavailable\t20000\n", 1),
+        "cell_values")
+print("sidecar_scheduler_attribution=accepted")
+
 result = validate(wide, required="1100")
 assert result.returncode == 0, result.stdout
 assert ("clock_invariant=held samples_at_required=71 samples_below_required=0"

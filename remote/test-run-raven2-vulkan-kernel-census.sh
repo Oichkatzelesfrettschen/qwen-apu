@@ -559,6 +559,44 @@ if ! printf '%s\n' "$contract_output" | grep -q "^sidecar_source_sha256	$broker_
 fi
 printf 'sampler_default_broker=accepted binary=%s\n' "$broker_stub_sha256"
 
+# Scheduler attribution is an explicit acquisition tuple field. The default
+# contract keeps its historical row set, while the proposed schedstat tuple
+# carries one additional row and therefore another digest. Print mode ends
+# before the live kernel preflight, so preregistration needs no device access.
+if printf '%s\n' "$contract_output" | grep -q '^sidecar_scheduler_attribution'; then
+    printf 'the default acquisition contract gained an attribution row\n' >&2
+    exit 1
+fi
+active_fixture=sampler_schedstat_contract
+schedstat_contract_output=$(env -i \
+    PATH="$execution_path" \
+    HOME="$home_directory" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+    QWEN_DRM_DEVICE="$drm_empty" \
+    QWEN_CENSUS_BROKER="$broker_stub" \
+    QWEN_CENSUS_SCHEDULER_ATTRIBUTION=schedstat \
+    QWEN_CENSUS_PRINT_CONTRACT=1 \
+    "$runner" "$model_id" "$temporary_directory/out-contract-schedstat")
+if ! printf '%s\n' "$schedstat_contract_output" \
+    | awk -F'\t' '$1 == "sidecar_scheduler_attribution" && $2 == "schedstat" { found = 1 }
+        END { exit found ? 0 : 1 }'; then
+    printf 'the schedstat contract carries no attribution row\n' >&2
+    exit 1
+fi
+schedstat_contract_sha256=$(printf '%s\n' "$schedstat_contract_output" \
+    | awk -F'\t' '$1 == "acquisition_contract_sha256" { print $2 }')
+if [ -z "$schedstat_contract_sha256" ] || \
+    [ "$schedstat_contract_sha256" = "$acquisition_sha256" ]; then
+    printf 'schedstat attribution did not change the acquisition contract\n' >&2
+    exit 1
+fi
+printf 'sampler_schedstat_contract=accepted acquisition=%s\n' \
+    "$schedstat_contract_sha256"
+
 # QWEN_CENSUS_SAMPLER=python restores the invocation the runner carried
 # before the broker: the row shape holds and both digests read `-`, since a
 # Python sampler is the reader the analysis contract already names.
@@ -960,6 +998,22 @@ run_runner mode_name 'QWEN_CENSUS_MODE must be calibration, attribution, or cana
 
 run_runner sampler_name 'QWEN_CENSUS_SAMPLER must be broker or python' \
     QWEN_CENSUS_SAMPLER=bogus
+
+run_runner scheduler_attribution_name \
+    'QWEN_CENSUS_SCHEDULER_ATTRIBUTION must be none or schedstat' \
+    QWEN_CENSUS_SCHEDULER_ATTRIBUTION=wall-clock-guess
+
+run_runner scheduler_attribution_requires_broker \
+    'schedstat attribution requires QWEN_CENSUS_SAMPLER=broker' \
+    QWEN_CENSUS_SAMPLER=python \
+    QWEN_CENSUS_SCHEDULER_ATTRIBUTION=schedstat
+
+# The test host leaves sched_schedstats disabled. The attributed tuple refuses
+# before the output directory and arm loop, while print mode above remains a
+# read-only way to derive its contract digest.
+run_runner scheduler_attribution_disabled \
+    'schedstat attribution requires kernel.sched_schedstats=1' \
+    QWEN_CENSUS_SCHEDULER_ATTRIBUTION=schedstat
 
 # The quiescence deadline decides the campaign, so a value await-quiescence.sh
 # would refuse as a usage error is refused here instead: a poller ending at
@@ -2209,7 +2263,8 @@ printf 'brick_reuse_zero_arms=accepted root=%s\n' "$brick_root_sha256"
 active_fixture=sampler_broker_inputs
 for sampler_row in "sidecar_implementation	telemetry-broker" \
     "sidecar_binary_sha256	$broker_stub_sha256" \
-    "sidecar_source_sha256	$broker_source_sha256"; do
+    "sidecar_source_sha256	$broker_source_sha256" \
+    "sidecar_scheduler_attribution	none"; do
     if ! grep -qxF -- "$sampler_row" "$brick_output/inputs.tsv"; then
         printf 'inputs.tsv carries no row %s\n' "$sampler_row" >&2
         exit 1
