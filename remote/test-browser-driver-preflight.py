@@ -12,12 +12,25 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import venv
 from collections.abc import Callable
 from typing import Any, cast
 
 SCRIPT_DIRECTORY = pathlib.Path(__file__).resolve().parent
 RUNNER = SCRIPT_DIRECTORY / "run-browser-driver.sh"
+
+
+def load_runner_module() -> types.ModuleType:
+    """Load the runner for focused semantic fixtures."""
+    specification = importlib.util.spec_from_file_location(
+        "browser_driver_preflight_fixture",
+        SCRIPT_DIRECTORY / "browser-driver-preflight.py",
+    )
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
 
 
 def make_environment(root: pathlib.Path, dependency: bool) -> pathlib.Path:
@@ -349,13 +362,7 @@ def run_start_failure_fixture(runtime_root: pathlib.Path) -> int:
     driver.write_text("raise SystemExit(0)\n", encoding="utf-8")
     firefox = runtime_root / "firefox-fixture"
     make_executable(firefox, "#!/bin/sh\nexit 0\n")
-    specification = importlib.util.spec_from_file_location(
-        "browser_driver_preflight_fixture",
-        SCRIPT_DIRECTORY / "browser-driver-preflight.py",
-    )
-    assert specification is not None and specification.loader is not None
-    module = importlib.util.module_from_spec(specification)
-    specification.loader.exec_module(module)
+    module = load_runner_module()
     setattr(
         module,
         "interpreter_identity",
@@ -420,6 +427,10 @@ with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporar
         accepted_public["identities"]["browser_python"]["role"]
         == "browser_environment_python"
     )
+    assert (
+        accepted_public["identities"]["browser_dependency"]["digest_algorithm"]
+        == "distribution-manifest-path-content-sha256-v1"
+    )
     accepted_dependency_digest = accepted_public["identities"]["browser_dependency"][
         "sha256"
     ]
@@ -458,9 +469,34 @@ with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporar
     assert refused_public == {
         "driver_execution": "not_started",
         "failure_stage": "dependency_import",
-        "schema": "qwen-browser-driver-preflight-v1",
+        "schema": "qwen-browser-driver-preflight-v2",
         "status": "refused",
     }
+
+    unreadable_root = temporary_root / "unreadable-dependency"
+    (unreadable_root / "results").mkdir(parents=True)
+    make_environment(unreadable_root, dependency=True)
+    unreadable_support = next(
+        (unreadable_root / "opt" / "browser-venv" / "lib").glob(
+            "python*/site-packages/marionette_driver/support.py"
+        )
+    )
+    unreadable_support.chmod(0)
+    try:
+        unreadable = run_fixture(unreadable_root, "unreadable-record")
+        assert unreadable.returncode == 2, unreadable.stderr
+        unreadable_public = json.loads(
+            (
+                unreadable_root
+                / "results"
+                / "unreadable-record"
+                / "preflight-public.json"
+            ).read_text()
+        )
+        assert unreadable_public["failure_stage"] == "dependency_identity"
+        assert unreadable_public["driver_execution"] == "not_started"
+    finally:
+        unreadable_support.chmod(0o644)
 
     foreign_root = temporary_root / "foreign"
     (foreign_root / "results").mkdir(parents=True)
@@ -614,8 +650,40 @@ with tempfile.TemporaryDirectory(prefix="browser-driver-preflight-") as temporar
     )
     assert start_failure_public["driver_execution"] == "not_started"
     assert start_failure_public["failure_stage"] == "driver_start"
-    assert start_failure_public["schema"] == "qwen-browser-driver-preflight-v1"
+    assert start_failure_public["schema"] == "qwen-browser-driver-preflight-v2"
     assert start_failure_public["status"] == "refused"
     assert "identities" in start_failure_public
 
-print("browser_driver_preflight=accepted checks=12")
+    runner_module = load_runner_module()
+    final_status = cast(
+        Callable[[int, int | None, str], int],
+        getattr(runner_module, "final_driver_status"),
+    )
+    assert final_status(0, signal.SIGTERM, "already_exited") == 128 + signal.SIGTERM
+
+    zombie = subprocess.Popen(
+        [sys.executable, "-c", "raise SystemExit(0)"], start_new_session=True
+    )
+    try:
+        zombie_stat = pathlib.Path("/proc") / str(zombie.pid) / "stat"
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                if (
+                    zombie_stat.read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
+                    == "Z"
+                ):
+                    break
+            except FileNotFoundError:
+                pass
+            time.sleep(0.01)
+        else:
+            raise AssertionError("fixture process did not become a zombie")
+        group_lives = cast(
+            Callable[[int], bool], getattr(runner_module, "process_group_lives")
+        )
+        assert not group_lives(zombie.pid)
+    finally:
+        zombie.wait(timeout=5)
+
+print("browser_driver_preflight=accepted checks=15")

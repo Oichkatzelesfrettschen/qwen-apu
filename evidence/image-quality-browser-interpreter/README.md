@@ -20,12 +20,17 @@ The preflight fingerprints four roles: browser-environment Python, the complete
 installed-file manifest of the `marionette_driver` distribution, the
 acquisition driver, and the intended Firefox executable. Every manifest entry
 must resolve inside the declared environment, and the imported module must be
-one of those entries. `preflight-private.json` retains their paths under the
-new result directory. `preflight-public.json` carries role names, versions, and
-SHA-256 identities while omitting paths. A dependency or identity failure
-writes both records with `driver_execution=not_started` and exits 2. The runner
-owns and injects the driver's `--firefox-bin` argument, so the fingerprinted
-executable and the executable handed to the driver are one identity.
+one of those entries. Schema `qwen-browser-driver-preflight-v2` identifies the
+dependency digest as
+`distribution-manifest-path-content-sha256-v1`; the algorithm hashes each
+environment-relative manifest path with the file's content digest.
+`preflight-private.json` retains paths under the new result directory.
+`preflight-public.json` carries role names, versions, algorithms, and SHA-256
+identities while omitting paths. An unreadable or disappearing manifest file
+becomes a retained `dependency_identity` refusal rather than an incomplete
+directory. The runner owns and injects the driver's `--firefox-bin` argument,
+so the fingerprinted executable and the executable handed to the driver are
+one identity.
 
 The entry point declares and reuses the existing private browser environment;
 the preparation neither provisions another environment nor installs a browser
@@ -54,17 +59,20 @@ runner exits. Additional arms show that a non-imported distribution file moves
 the dependency digest, `nan` and `inf` timeouts refuse, SIGHUP retains status
 129 after group cleanup, a driver that exits before its child still triggers
 child cleanup, and a process-creation error retains a `driver_start` refusal.
+Process-group liveness excludes zombies because they cannot continue an
+acquisition. A signal captured while the driver wait or cleanup returns still
+overrides a natural status 0 with status 128 plus the signal number.
 
 `environment-preflight.json` is the role-only derivative from a workstation
 preflight through the declared existing environment. It reports Python 3.14.7,
 `marionette_driver` 3.7.1, the acquisition-driver identity, and the intended
 Firefox-executable identity with `driver_execution=withheld_preflight_only`.
 `transformation.tsv` binds the retained private source digest, public derivative
-digest, and its original producer digest. The retained derivative predates the
-complete-distribution and terminal-cleanup additions and is not reclassified as
-their proof. The successor acquisition runs the stronger preflight before any
-driver or Firefox startup. The retained preflight started neither the driver
-nor Firefox.
+digest, and its original producer digest. That retained derivative uses schema
+`qwen-browser-driver-preflight-v1`; it predates the complete-distribution and
+terminal-cleanup additions and is not reclassified as their proof. The
+successor acquisition runs the stronger v2 preflight before any driver or
+Firefox startup. The retained preflight started neither the driver nor Firefox.
 
 ## Successor acquisition
 
