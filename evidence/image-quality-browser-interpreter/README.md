@@ -102,3 +102,14 @@ judgment, direct inspection, and their agreement. Image bytes and records
 carrying paths, credentials, addresses, result handles, or authorization stay
 under the runtime root. A sanitized derivative may publish role identities,
 digests, criteria, scores, and bounded observations after acquisition review.
+
+## Successor result
+
+Authorization `image-quality-successor-20260910-01` was consumed once. The fox
+row generated and retained one image, and its reviewer completed. Direct
+inspection passed two of five constraints while the reviewer passed its single
+subject constraint, so reviewer/direct agreement is false. The broker refused
+the cube row after application approval because the client still held one
+outstanding image grant. The stopping rule left the exact-text row `not_run`.
+The separate retained result is
+[`evidence/image-quality-successor-broker-grant-stop/`](../image-quality-successor-broker-grant-stop/).

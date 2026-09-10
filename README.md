@@ -117,6 +117,11 @@ model prose stayed labeled unverified. Generated-image prose can remain
 unreliable; Open, Download, Review, and Remove are application-owned controls.
 The bounded record is
 [`evidence/ui-tool-qualification-20260909/`](evidence/ui-tool-qualification-20260909/).
+A separately authorized image-quality successor produced one fox image and one
+review, then stopped when the broker refused the cube row's second outstanding
+image grant. The exact-text row remained unrun. The bounded quality and
+reviewer-correctness result is
+[`evidence/image-quality-successor-broker-grant-stop/`](evidence/image-quality-successor-broker-grant-stop/).
 A merged change alone does not change the laptop's running page.
 
 The serving bundle and inference executable remain fixed during this UI work.
