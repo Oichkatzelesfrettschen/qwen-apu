@@ -39,8 +39,9 @@ import struct
 import subprocess
 import time
 import zlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from http.client import HTTPConnection, HTTPException, HTTPResponse
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -89,6 +90,9 @@ VISION_PROMPT = "Name the tallest bar in this chart."
 # thing that is missing. `tools/document_worker.py` imports pypdf at call time,
 # so a venv without it names the distribution in the refusal.
 MISSING_EXTRACTOR_MARKER = "pypdf"
+
+# The one media type long enough to earn a name of its own.
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 # The identifier the imported page transcript carries. `web/conversations.py`
 # admits 32 hexadecimal characters and nothing else, because an identifier is
@@ -1233,28 +1237,97 @@ class AcceptanceRun:
 
     # -- the whole run ---------------------------------------------------
 
-    def run(self) -> list[CheckResult]:
-        self.check_unauthenticated_refusal()
-        self.check_pairing()
-        self.check_roster_join()
-        for model in self.request.text_models:
-            self.check_text_turn(model)
-        for model in self.request.vision_models:
-            self.check_vision_consumes_image(model)
-        self.check_midstream_cancel()
-        self.check_calculator()
-        self.check_file_search()
-        self.check_document("text.pdf", "application/pdf", ("page",))
-        self.check_document(
-            "two-paragraphs.docx",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            ("paragraph",),
+    def check_origin_reachable(self) -> bool:
+        """Whether the origin answers at all, decided before any claim is read.
+
+        An origin that refuses the connection makes every live check fail for
+        one reason, and a driver that let the first `ConnectionRefusedError`
+        leave the process would write no report at all. This answers once, and a
+        refusal short-circuits the live phase into one named skip rather than
+        thirty copies of the same sentence.
+        """
+        started = time.monotonic()
+        try:
+            answer = self.client.exchange("GET", "/api/health", authenticated=False)
+        except (OSError, HTTPException) as error:
+            self.record(
+                "origin_reachable",
+                FAIL,
+                f"{self.request.base} answered nothing: {error}",
+                {"base": self.request.base},
+                started,
+            )
+            return False
+        self.record("origin_reachable", PASS, "", {"status": answer.status}, started)
+        return True
+
+    def guarded(self, name: str, check: Callable[[], None]) -> None:
+        """Run one check, and turn a transport failure into that check's own failure.
+
+        A socket that refuses, resets, or half-answers mid-run is a finding
+        about the gateway rather than an end to the run, so it lands as this
+        item's failure and the remaining items still report.
+        """
+        try:
+            check()
+        except (OSError, HTTPException) as error:
+            self.record(name, FAIL, f"the exchange refused: {error}", {})
+
+    def live_checks(self) -> tuple[tuple[str, Callable[[], None]], ...]:
+        """Every check the live phase runs, named so a short-circuit can list them."""
+        checks: list[tuple[str, Callable[[], None]]] = [
+            ("unauthenticated_refusal", self.check_unauthenticated_refusal),
+            ("pairing", self.check_pairing),
+            ("roster_join", self.check_roster_join),
+        ]
+        checks.extend(
+            (f"text_turn:{model}", partial(self.check_text_turn, model))
+            for model in self.request.text_models
         )
-        self.check_web_lane()
-        self.check_image_lane()
-        self.check_browser_history_import()
-        self.open_conversations()
-        self.check_history_across_restart()
+        checks.extend(
+            (f"vision_consumes_image:{model}", partial(self.check_vision_consumes_image, model))
+            for model in self.request.vision_models
+        )
+        checks.extend(
+            [
+                ("midstream_cancel", self.check_midstream_cancel),
+                ("calculator", self.check_calculator),
+                ("file_search", self.check_file_search),
+                (
+                    "document_extraction:text.pdf",
+                    partial(self.check_document, "text.pdf", "application/pdf", ("page",)),
+                ),
+                (
+                    "document_extraction:two-paragraphs.docx",
+                    partial(
+                        self.check_document,
+                        "two-paragraphs.docx",
+                        DOCX_MEDIA_TYPE,
+                        ("paragraph",),
+                    ),
+                ),
+                ("web_search_then_fetch", self.check_web_lane),
+                ("image_generate", self.check_image_lane),
+                ("browser_history_import", self.check_browser_history_import),
+                ("conversation_open", self.open_conversations),
+                ("history_survives_restart", self.check_history_across_restart),
+            ]
+        )
+        return tuple(checks)
+
+    def run(self) -> list[CheckResult]:
+        live = self.live_checks()
+        if self.check_origin_reachable():
+            for name, check in live:
+                self.guarded(name, check)
+        else:
+            for name, _check in live:
+                self.record(
+                    name,
+                    SKIPPED,
+                    f"the origin {self.request.base} answered nothing, so no live claim was read",
+                    {},
+                )
         self.run_teardown()
         return self.results
 

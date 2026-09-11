@@ -238,6 +238,12 @@ def build_parser() -> argparse.ArgumentParser:
     canary_run.add_argument("--prompt", default=canary.DEFAULT_PROMPT)
     canary_run.add_argument("--tokens", type=int, default=canary.DEFAULT_TOKENS)
     canary_run.add_argument("--model", default="")
+    canary_run.add_argument(
+        "--readiness-deadline-s",
+        type=float,
+        default=canary.DEFAULT_READINESS_DEADLINE_SECONDS,
+        help="how long each arm may take to report /health ok before it refuses",
+    )
     for name, help_text in (
         ("legacy-start", "one argv word of the legacy launch"),
         ("legacy-stop", "one argv word of the legacy teardown"),
@@ -583,6 +589,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         start=tuple(args.python_start), stop=tuple(args.python_stop)
                     ),
                     sysfs=canary.sysfs_from_request(args.sysfs),
+                    readiness_deadline_s=args.readiness_deadline_s,
                 ),
             )
         if args.command == "gateway":
