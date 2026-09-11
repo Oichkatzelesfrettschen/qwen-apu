@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -30,6 +32,7 @@ from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime.deployment import ActiveDeployment
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.policy import PolicyError, preset_sections, router_preflight_subject
+from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
 
 TREE = Path(__file__).resolve().parents[1]
 REMOTE = TREE / "remote"
@@ -342,3 +345,64 @@ def test_the_single_model_plan_expects_the_alias_its_argv_names(
     assert plan.expected_models == (serving.ROUTER_ALIAS,)
     assert plan.required_models == (serving.ROUTER_ALIAS,)
     assert f"--alias {serving.ROUTER_ALIAS}" in " ".join(plan.argv)
+
+
+# ---------------------------------------------------------------------------
+# The detached launch's own wait
+# ---------------------------------------------------------------------------
+
+
+def test_the_daemon_wait_passes_over_the_previous_run_s_record(tmp_path: Path) -> None:
+    """A stale `stopped` record is the previous supervisor's, not this launch's.
+
+    The detached supervisor spends its interpreter startup before it publishes
+    anything, so the first reads land on whatever the last run left. After a
+    clean stop that record is terminal, and a wait acting on it would report a
+    failure while the new supervisor loads a model behind it. The wait passes
+    over every record still naming the superseded pid.
+    """
+    paths = RuntimePaths(tree=TREE, root=tmp_path / "runtime")
+    paths.lay_out()
+    record = RuntimeRecord(path=paths["qwen_home_runtime_state"])
+    record.write(
+        RuntimeState(
+            state="stopped",
+            supervisor_pid=4242,
+            supervisor_start_time=11,
+            primary_failure=None,
+        )
+    )
+
+    def publish_after_a_delay() -> None:
+        time.sleep(0.3)
+        record.write(
+            RuntimeState(
+                state="loading",
+                supervisor_pid=4343,
+                supervisor_start_time=12,
+                server_pid=4344,
+                server_start_time=13,
+            )
+        )
+
+    publisher = threading.Thread(target=publish_after_a_delay)
+    publisher.start()
+    try:
+        assert serving._await_ownership(paths, 20.0, 4242) == 0
+    finally:
+        publisher.join(timeout=10.0)
+
+
+def test_the_daemon_wait_reports_a_launch_that_failed(tmp_path: Path) -> None:
+    """A terminal record from this launch's own supervisor is the failure to report."""
+    paths = RuntimePaths(tree=TREE, root=tmp_path / "runtime")
+    paths.lay_out()
+    RuntimeRecord(path=paths["qwen_home_runtime_state"]).write(
+        RuntimeState(
+            state="failed",
+            supervisor_pid=4343,
+            supervisor_start_time=12,
+            primary_failure="readiness_refused pid 4344 left before readiness",
+        )
+    )
+    assert serving._await_ownership(paths, 5.0, 4242) == 1

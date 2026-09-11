@@ -241,7 +241,7 @@ def plan_to_json(plan: supervisor.SupervisionPlan) -> dict[str, object]:
     }
 
 
-def _await_ownership(paths: RuntimePaths, deadline_s: float) -> int:
+def _await_ownership(paths: RuntimePaths, deadline_s: float, superseded_pid: int) -> int:
     """Watch the record until the detached supervisor owns a child, or fails.
 
     `--daemon` returns as soon as the relaunch is a session leader, which is
@@ -251,19 +251,29 @@ def _await_ownership(paths: RuntimePaths, deadline_s: float) -> int:
     -- lands in a log file nobody reads. The wait ends at the first record
     naming an owned child, which is exactly the claim `--daemon` makes, and the
     model load continues behind it.
+
+    `superseded_pid` is the supervisor the record named before this launch. The
+    detached child spends its interpreter startup before it publishes anything,
+    so the first reads land on the previous run's record: after a clean stop
+    that record reads `stopped`, and a wait that acted on it would report a
+    failure while the new supervisor loads a model behind it. Every record still
+    naming that pid is therefore the previous run's and is passed over.
     """
     record = RuntimeRecord(path=paths["qwen_home_runtime_state"])
     deadline = time.monotonic() + deadline_s
     seen: list[str] = []
     while time.monotonic() < deadline:
         current = record.read()
-        if current is not None and (not seen or seen[-1] != current.state):
+        if current is None or (superseded_pid and current.supervisor_pid == superseded_pid):
+            time.sleep(OWNERSHIP_POLL_SECONDS)
+            continue
+        if not seen or seen[-1] != current.state:
             seen.append(current.state)
             print(f"state={current.state}")
-        if current is not None and current.is_terminal:
+        if current.is_terminal:
             print(f"primary_failure={current.primary_failure or '-'}")
             return 1
-        if current is not None and current.server_pid and current.state != "starting":
+        if current.server_pid and current.state != "starting":
             print(f"server_pid={current.server_pid} start_time={current.server_start_time}")
             return 0
         time.sleep(OWNERSHIP_POLL_SECONDS)
@@ -317,10 +327,12 @@ def serve(paths: RuntimePaths, request: ServeRequest) -> int:
         # The foreground form is the supervise loop itself, so it reaches
         # `ready` and stays there until the service ends.
         return supervisor.main(argv)
+    previous = RuntimeRecord(path=paths["qwen_home_runtime_state"]).read()
+    superseded_pid = previous.supervisor_pid if previous is not None else 0
     code = supervisor.main([*argv, "--daemon"])
     if code != 0:
         return code
-    return _await_ownership(paths, request.ownership_deadline_s)
+    return _await_ownership(paths, request.ownership_deadline_s, superseded_pid)
 
 
 def stop(paths: RuntimePaths) -> int:
