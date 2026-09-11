@@ -368,12 +368,8 @@ pairs through `POST /api/pair`, counts a text attachment through
 shape `web/browser_import.py` reads. `tests/webui/` runs under `node --test`
 in the hosted workflow and `tests/test_static_page.py` proves the served
 page against the policy; `all.mjs` enrolls every test file by directory
-listing. Recorded gaps: `GET /api/tools` answers the static registry rather
-than a per-model offering, so the web and image lanes route on an unproven
-row until a 403 excludes it; the review button stays hidden until a claim
-ledger names a review model; image cancel and `/api/tools/image/review`
-have no route; the ten `remote/test-fallback-webui-*.mjs` and
-`webui/index.html` leave with their gate cells at the cutover.
+listing. Recorded gap: the ten `remote/test-fallback-webui-*.mjs` and
+`webui/index.html` leave with their gate cells in Phase 10.
 
 ## Phase 10: router-mode serving and the application supervisor
 
@@ -526,11 +522,40 @@ signal.
 - Router decode rates per section, which belong to a sweep rather than to this
   pass.
 
+## Phase 10: the tool matrix and the image workflow
+
+`GET /api/tools?model=ID` answers a typed matrix rather than the static
+registry: `qwen_apu.tools.matrix` joins the tool table against
+`remote/models.tsv`, `remote/web-profiles.tsv`, `remote/image-profiles.tsv`,
+the approval settings, and the filesystem, and states one of `available`,
+`available_through_helper`, `temporarily_unavailable`, `not_installed`, or
+`policy_refused` per tool beside the helper that runs it and the authority the
+state comes from. A profile this launch's broker does not sign for, a `refused`
+`execution_policy`, a quarantined tier, and `--tools all` each reach the page
+as a refusal rather than as a later 403.
+
+`qwen_apu.config.models.load_image_profiles` reads
+`remote/image-profiles.tsv` as a typed ledger, so `assemble` binds the
+reviewer the armed profile names instead of a default constant and a `-` there
+leaves the review route refusing. The image workflow gains
+`POST /api/tools/image/status`, `/cancel`, and `/remove` under the gateway
+session; review runs through the router and reports completion, schema
+validity, and judgment apart. `docs/handoff/gateway-inventory.md` carries the
+route table, the five states, and the derivations.
+
+Recorded gaps: `executeWebTool` posts to `POST /api/tools` and the gateway
+mounts no tool executor, so the web rows read `temporarily_unavailable` and a
+turn carries no web tool; a review of an artifact restored from saved history
+has no grant, so that card's review button stays hidden; the withheld and
+swapped review controls still have no route; and `remove` retracts the
+publication marker alone, since protocol version 1 admits three actions and
+`remote/image-service.py` implements no artifact deletion.
+
 ## Order of the remaining phases
 
 9. Shadow deployment on alternate loopback ports (first pass recorded in
-   `docs/handoff/shadow-deployment-20260911.md`; the split page and the
-   document routes need a second pass).
+   `docs/handoff/shadow-deployment-20260911.md`; the split page, the document
+   routes, and the tool matrix need a second pass).
 10. Router-mode serving, readiness states, the preflights, the application
     supervisor, and the roster join (recorded above).
 11. Cutover, shell deletion in batches, Makefile removal last.
