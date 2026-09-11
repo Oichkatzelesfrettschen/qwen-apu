@@ -303,7 +303,8 @@ export async function awaitRequest(harness, predicate, description, deadlineMs =
       ? new Promise(resolve => setTimeout(resolve, 1))
       : new Promise(resolve => setImmediate(resolve)));
   }
-  assert.fail(`missing request: ${description}`);
+  const issued = harness.pending.map(request => `${request.options?.method || 'GET'} ${request.url}`);
+  assert.fail(`missing request: ${description}; pending: [${issued.join(', ')}]`);
 }
 
 export function jsonResponse(payload, status = 200) {
