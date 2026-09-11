@@ -386,7 +386,7 @@ function durableConversationStore() {
   });
 }
 
-async function readConversationRecord(id) {
+export async function readConversationRecord(id) {
   try {
     return await (await conversationStore()).read(id);
   } catch {

@@ -27,7 +27,12 @@ import {
   serverTokenCount,
   writeBrowserStorage
 } from './api.js';
-import { attachments, composeUserContent, renderAttached } from './attachments.js';
+import {
+  attachments,
+  composeUserContent,
+  renderAttached,
+  selectedModelAcceptsImages
+} from './attachments.js';
 import { modelState } from './models.js';
 import { appendModelBadge } from './models.js';
 import {
@@ -689,7 +694,7 @@ export async function send() {
   // Clear just replaced.
   const turnGeneration = conversationState.generation;
   $('#input').value = '';
-  attachments = [];
+  attachments.length = 0;
   renderAttached();
 
   chatState.busy = true; $('#send').disabled = true;
