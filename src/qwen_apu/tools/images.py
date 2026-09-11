@@ -1,10 +1,36 @@
-"""The image generation and review tools, mounted on the gateway.
+"""The image workflow, mounted on the gateway.
 
-Two routes carry one grant. `POST /api/tools/image/generate` forwards an
-approved generation to the worker's control socket and answers with the
-artifact identity the worker named. `POST /api/tools/image/review` reads a
-published artifact, sends it to the registered vision reviewer through the
-router, and reports what came back.
+Five routes divide by what admits them. `POST /api/tools/image/generate` and
+`POST /api/tools/image/review` carry a grant: generate forwards an approved
+job to the worker's control socket and answers with the artifact identity the
+worker named, and review reads a published artifact, sends it to the
+registered vision reviewer through the router, and reports what came back.
+`POST /api/tools/image/status`, `POST /api/tools/image/cancel`, and
+`POST /api/tools/image/remove` carry the gateway session instead, because each
+names a job or an artifact the session already produced and describes no
+generation the frozen protocol would have to admit. The artifact bytes read
+through `GET /api/artifacts/<sha256>.png`, which `qwen_apu.web.artifacts`
+owns.
+
+Status and cancel are the two control actions `remote/image_protocol.py`
+freezes beside `image_generate`, and `remote/image-service.py`'s
+`handle_cancel` and `handle_status` implement both: a cancel names the running
+generation's own `request_id`, which `status` reports as `job_request_id`, and
+any other identifier meets `not_running` rather than stopping a job the caller
+does not own. Remove takes no control action at all: version 1's `ACTIONS`
+admits three names and the worker implements no artifact deletion, so removal
+retracts the publication marker through `ArtifactDirectory.retract` and leaves
+every payload byte to the worker's retention sweep.
+
+The Vulkan workload lease belongs to the worker, which acquires it around one
+job. The gateway holds none, so a generation that ends in a refusal, a
+failure, or a transport timeout sends one cancel naming its own `request_id`
+and reports the lease state the following `status` observes; the cancel is
+addressed by identifier, so a worker running some other job answers
+`not_running` and keeps it. The grant is different: it is single-use and is
+spent between admission and dispatch the way `remote/image-mcp/server.py`
+spends it, so a job that never reaches an artifact has burned it and the next
+generation takes a fresh human approval.
 
 Both routes require a `qwen-image-generate-v1` claim, the context
 `remote/web-mcp/image_grant.py` signs a single human approval under. Generate
@@ -49,6 +75,9 @@ from qwen_apu.web.http import Request, Response, Route
 
 GENERATE_ROUTE = "/api/tools/image/generate"
 REVIEW_ROUTE = "/api/tools/image/review"
+STATUS_ROUTE = "/api/tools/image/status"
+CANCEL_ROUTE = "/api/tools/image/cancel"
+REMOVE_ROUTE = "/api/tools/image/remove"
 IMAGE_CLAIM_CONTEXT = "qwen-image-generate-v1"
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
@@ -60,6 +89,30 @@ GENERATE_STRING_FIELDS = ("profile_id", "prompt", "negative_prompt", "authorizat
 # and the grant carry a value or the request is refused.
 GENERATE_EMPTY_ADMITTED = ("prompt", "negative_prompt")
 GENERATE_INTEGER_FIELDS = ("seed", "width", "height", "steps")
+
+# The identifier set and length bound `remote/image_protocol.py` applies to
+# every `request_id`, applied here so a malformed one is refused at the
+# boundary rather than inside the frame encoder.
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+# What a control reply reports beside the frame, from the protocol's own
+# OBSERVATION_FIELDS. The answer is built from this closed list, so a worker
+# that adds a key sends it to a reader that drops it rather than to a page
+# that renders it.
+OBSERVATION_KEYS: tuple[str, ...] = (
+    "state",
+    "job_id",
+    "job_request_id",
+    "profile_id",
+    "started_at",
+    "elapsed_seconds",
+    "cancel_requested",
+    "cancelled",
+    "lease_held",
+    "bytes",
+    "seconds",
+    "pid",
+)
 
 
 class ToolRefused(Exception):
@@ -120,6 +173,18 @@ def verify_grant_claim(token: str) -> Mapping[str, object]:
     return cast(Mapping[str, object], claim)
 
 
+def _session_refused(request: Request) -> bool:
+    """The default session check: an unwired mount admits no control call.
+
+    `web/auth.py` owns the cookie and the session table, and this module reads
+    the verdict alone, so the control routes test without that module and a
+    deployment that forgot to wire the gate refuses rather than exposing the
+    worker's state to any caller that reaches the port.
+    """
+    del request
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class ImageToolSettings:
     """The worker, the artifact directory, the reviewer, and the two verifiers."""
@@ -138,6 +203,10 @@ class ImageToolSettings:
     # ledger and refuses, so an assembly that forgets the ledger cannot serve
     # a replayable grant.
     spend_grant: Callable[[str, float], None] = field(default_factory=lambda: _ledger_absent)
+    # Status, cancel, and remove name a job or an artifact rather than
+    # describing a generation, so the gateway session admits them where a
+    # grant admits the other two.
+    session_admits: Callable[[Request], bool] = _session_refused
 
 
 def _router_absent(payload: Mapping[str, object]) -> object:
@@ -257,18 +326,46 @@ def _run_generation(
     `completed` alone is success. `accepted` is refused because this path is
     synchronous: a reply that opened a job and returned reaches the caller as a
     failure rather than as an image that never arrives.
+
+    Every outcome other than `completed`, and every transport failure, sends
+    one cancel naming this job's own `request_id` before the refusal reaches
+    the caller. The worker holds the Vulkan workload lease around a running
+    job, so a timeout that leaves this process with no reply would otherwise
+    leave that lease held until the job's own deadline; the cancel is
+    addressed by identifier, so a worker running any other job answers
+    `not_running` and keeps it.
     """
+    request_id = str(frame.get("request_id", ""))
     try:
         reply = settings.client.generate(frame)
     except ServiceUnreachable as error:
+        release_job(settings, request_id)
         raise ToolRefused(503, str(error)) from None
     except (ProtocolRefused, ImageControlError) as error:
+        release_job(settings, request_id)
         raise ToolRefused(502, str(error)) from None
     status = reply.get("status")
     if status != "completed":
+        release_job(settings, request_id)
         stated = clip_service_error(reply.get("error") or reply.get("reason"))
         raise ToolRefused(502, f"the image service {status} the generation: {stated}")
     return reply
+
+
+def release_job(settings: ImageToolSettings, request_id: str) -> dict[str, object] | None:
+    """Send one cancel for a job this gateway is abandoning, reporting nothing on failure.
+
+    The caller is already answering a refusal, so a worker that has departed,
+    a socket that has gone, and a reply that leaves the frozen schema all leave
+    this function silent: the outcome the caller reports is the generation's,
+    and a second failure here would replace it with a less useful one.
+    """
+    if not REQUEST_ID_PATTERN.match(request_id):
+        return None
+    try:
+        return settings.client.cancel(request_id)
+    except ImageControlError:
+        return None
 
 
 def _gateway_route(worker_route: object) -> str:
@@ -504,9 +601,120 @@ def _json(status: int, payload: object) -> Response:
     )
 
 
+def _session(settings: ImageToolSettings, request: Request) -> None:
+    """Refuse a control call that carries no gateway session."""
+    if not settings.session_admits(request):
+        raise ToolRefused(401, "the image control routes read the gateway session")
+
+
+def _request_id(body: Mapping[str, object]) -> str:
+    """Read one `request_id` under the protocol's own identifier rule."""
+    value = _string(body, "request_id")
+    if not REQUEST_ID_PATTERN.match(value):
+        raise ToolRefused(
+            400,
+            "a request_id holds 1 to 64 characters of the protocol identifier set",
+        )
+    return value
+
+
+def _observation(reply: Mapping[str, object]) -> dict[str, object]:
+    """The observation keys a control reply carries, from the protocol's closed set."""
+    return {key: reply[key] for key in OBSERVATION_KEYS if key in reply}
+
+
+def _control(settings: ImageToolSettings, action: str, request_id: str) -> Mapping[str, object]:
+    """One control exchange, reporting each boundary's failure as its own status."""
+    try:
+        if action == "cancel":
+            return settings.client.cancel(request_id)
+        return settings.client.status(request_id)
+    except ServiceUnreachable as error:
+        raise ToolRefused(503, str(error)) from None
+    except (ProtocolRefused, ImageControlError) as error:
+        raise ToolRefused(502, str(error)) from None
+
+
+def status(settings: ImageToolSettings, request: Request) -> Response:
+    """Report the worker's observation of itself: phase, job, lease, and pid."""
+    try:
+        _session(settings, request)
+        request_id = _request_id(_body(request))
+        reply = _control(settings, "status", request_id)
+    except ToolRefused as refusal:
+        return _json(refusal.status, {"error": refusal.message})
+    return _json(200, {"status": reply.get("status"), **_observation(reply)})
+
+
+def cancel(settings: ImageToolSettings, request: Request) -> Response:
+    """End the generation the caller names, then report the lease the worker observes.
+
+    The cancel reply states whether the worker accepted the request; the
+    `status` that follows states what the worker holds afterwards, which is
+    the only lease fact a process outside the worker can report. A cancel
+    naming a job that is not running answers `refused` with `not_running`,
+    which reaches the caller as a 200 carrying that term rather than as an
+    error, because a page that cancels a job which has already finished has
+    learned the truth it asked for.
+    """
+    try:
+        _session(settings, request)
+        request_id = _request_id(_body(request))
+        reply = _control(settings, "cancel", request_id)
+        observed = _control(settings, "status", request_id)
+    except ToolRefused as refusal:
+        return _json(refusal.status, {"error": refusal.message})
+    return _json(
+        200,
+        {
+            "request_id": request_id,
+            "status": reply.get("status"),
+            "reason": reply.get("reason", ""),
+            "cancelled": bool(reply.get("cancelled", False)),
+            "lease_held": bool(observed.get("lease_held", False)),
+            "state": observed.get("state", ""),
+        },
+    )
+
+
+def remove(settings: ImageToolSettings, request: Request) -> Response:
+    """Retract one artifact's publication marker, which unpublishes both files.
+
+    Version 1 of the frozen protocol admits `image_generate`, `cancel`, and
+    `status` alone, and `remote/image-service.py` implements no artifact
+    deletion, so this route reaches the worker at no point. It unlinks the
+    marker that commits the pair, which is the exact inverse of the worker's
+    own atomic publish: every later read of either digest answers 404 while
+    the payload bytes stay for the worker's retention sweep to reclaim.
+    """
+    try:
+        _session(settings, request)
+        digest = _string(_body(request), "sha256")
+        if not DIGEST_PATTERN.match(digest):
+            raise ToolRefused(400, "an artifact is named by 64 lowercase hex digits")
+        retracted = settings.artifacts.retract(digest)
+        if retracted is None:
+            raise ToolRefused(404, "no such artifact")
+    except ToolRefused as refusal:
+        return _json(refusal.status, {"error": refusal.message})
+    return _json(
+        200,
+        {
+            "removed": True,
+            "png_sha256": retracted.png_sha256,
+            "provenance_sha256": retracted.provenance_sha256,
+            "job_id": retracted.job_id,
+            "payload_retained": True,
+        },
+    )
+
+
 def routes(settings: ImageToolSettings) -> tuple[Route, ...]:
-    """The two tool routes, each gated by the grant its own claim carries."""
+    """The five workflow routes: two under a grant and three under the session."""
     return (
         Route.make("POST", GENERATE_ROUTE, lambda request: generate(settings, request)),
         Route.make("POST", REVIEW_ROUTE, lambda request: review(settings, request)),
+        Route.make("POST", STATUS_ROUTE, lambda request: status(settings, request)),
+        Route.make("POST", CANCEL_ROUTE, lambda request: cancel(settings, request)),
+        Route.make("POST", REMOVE_ROUTE, lambda request: remove(settings, request)),
     )

@@ -117,12 +117,13 @@ class FixedWindowLimiter:
 
 @dataclass(frozen=True, slots=True)
 class Publication:
-    """One atomic publication marker: the job and the two digests it commits."""
+    """One atomic publication marker: the job, the two digests it commits, its file."""
 
     job_id: str
     png_sha256: str
     provenance_sha256: str
     published_at: float
+    marker: str = ""
 
 
 class ArtifactDirectory:
@@ -167,7 +168,7 @@ class ArtifactDirectory:
             job = record.get("job_id")
             if not (isinstance(png, str) and isinstance(provenance, str) and isinstance(job, str)):
                 continue
-            found.append(Publication(job, png, provenance, published_at))
+            found.append(Publication(job, png, provenance, published_at, name))
         found.sort(key=lambda entry: (entry.published_at, entry.job_id))
         yield from found
 
@@ -203,6 +204,33 @@ class ArtifactDirectory:
         except OSError:
             return None
         return None if len(body) > ARTIFACT_BYTE_CAP else body
+
+    def retract(self, png_digest: str) -> Publication | None:
+        """Unlink the marker committing one PNG, leaving the payload to the worker.
+
+        Publication is one atomic write of `.publication-<job_id>.json`, and
+        `committed` requires that marker before either file of the pair reads,
+        so unlinking it is the exact inverse: the PNG and the provenance record
+        answer 404 through every route here from the next read onward. The
+        bytes stay, because the worker owns every payload write under this
+        directory -- the staging file, the two hard links, and the retention
+        sweep bounded by QWEN_IMAGE_ARTIFACT_MAX_COUNT and
+        QWEN_IMAGE_ARTIFACT_MAX_AGE_S -- and AGENTS.md routes a payload
+        removal through remote/check-deletion-plan.sh rather than through a
+        request. The sweep reclaims an unmarked pair on its own schedule.
+
+        Returns the retracted marker, or None where no marker commits the
+        digest and where the unlink fails, so a caller reports "no such
+        artifact" for both rather than claiming a removal it did not make.
+        """
+        publication = self.committed(png_digest, "png")
+        if publication is None or not publication.marker:
+            return None
+        try:
+            (self.directory / publication.marker).unlink()
+        except OSError:
+            return None
+        return publication
 
     def provenance_for_png(self, png_digest: str) -> dict[str, object] | None:
         """Return the provenance record the marker binds to one PNG digest.
