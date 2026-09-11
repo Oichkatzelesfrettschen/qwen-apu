@@ -182,12 +182,46 @@ image lane runs `real` mode alone, so the withheld and swapped review
 controls have no route yet; and the checked-in page still targets sibling
 broker and artifact origins through its meta tags, which Phase 8 retargets.
 
+## Phase 6: conversations in SQLite, a temporary mode
+
+`web/history.py` owns `state/qwen-apu.sqlite3` in WAL mode with numbered
+migrations, and `web/history_model.py` declares the conversation, message,
+tool-event, and attachment records the routes serialize. A temporary
+conversation lives in the process and in `tmp/conversations/<id>/`, so a
+stop of the gateway ends it and nothing of it reaches the database.
+`qwen-apu export` and `qwen-apu import` carry a conversation as JSON, and
+`import --browser` reads the page's IndexedDB export
+(`docs/handoff/browser-history-format.md`).
+
+## Phase 7: documents and deterministic tools
+
+`tools/calculator.py` evaluates an arithmetic expression over a closed
+grammar and `tools/files.py` searches declared roots (`gateway --file-root`)
+with symlink escapes refused. `tools/documents.py` accepts an upload under a
+size cap, extracts text in an owned worker process (`tools/document_worker.py`
+under its own process group, RLIMIT_CPU and RLIMIT_AS, a wall-clock deadline,
+and a user-plus-network namespace where the kernel admits one, recorded as
+`network_isolation` in every record), and stores the record under
+`artifacts/documents/<sha256>/` after a rename from a staging directory.
+Plain text, Markdown, CSV, JSON, OOXML, and PDF extract; pypdf is pinned at
+6.18.1 in `wheelhouse/requirements.lock` and imported at call time, so a
+venv without it extracts every other format. The routes are
+`POST /api/documents`, `GET /api/documents/<digest>`, and
+`POST /api/documents/<digest>/search`, each behind the session cookie.
+Recorded limits: RLIMIT_CPU is proven against a spin loop rather than an
+extractor, the search regular expression runs in the gateway process against
+stored chunks, and the upload size is checked after the body is read, so the
+server's body bound is the byte limit that matters.
+
+`bootstrap.py` installs the lock and links the source tree in sequence when
+a checkout carries both, since the lock holds the third-party dependencies
+and the link holds the package and its console script.
+
 ## Order of the remaining phases
 
-6. Conversations in SQLite with a Temporary mode.
-7. Documents, calculator, file search, artifact export.
 8. WebUI split into ES modules.
-9. Shadow deployment on alternate loopback ports.
+9. Shadow deployment on alternate loopback ports (first pass recorded in
+   `docs/handoff/shadow-deployment-20260911.md`).
 10. Cutover, shell deletion in batches, Makefile removal last.
 
 ## Size receipt at Phase 1 (scc)

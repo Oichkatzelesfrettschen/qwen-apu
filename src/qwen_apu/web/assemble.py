@@ -16,7 +16,7 @@ from pathlib import Path
 from qwen_apu.engines.image import ImageControlClient
 from qwen_apu.engines.llama import LlamaClient, binding_from_runtime
 from qwen_apu.runtime.paths import RuntimePaths
-from qwen_apu.tools import approvals, calculator, files, images, registry
+from qwen_apu.tools import approvals, calculator, documents, files, images, registry
 from qwen_apu.tools.ledger import Ledger
 from qwen_apu.web import artifacts, chat, conversations, status
 from qwen_apu.web.app import Gateway, GatewayConfig, RequestRefused
@@ -126,6 +126,17 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
                 files.FilesToolSettings(
                     search=files.FileSearchSettings(roots=file_roots),
                     session_admits=session_admits,
+                )
+            )
+        ),
+        _Providers(
+            documents.routes(
+                documents.DocumentService(
+                    documents.DocumentSettings(
+                        artifacts=paths["qwen_home_artifacts"],
+                        tmp=paths["qwen_home_tmp"],
+                        session_admits=session_admits,
+                    )
                 )
             )
         ),
