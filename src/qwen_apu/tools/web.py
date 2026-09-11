@@ -1256,8 +1256,16 @@ def run_search(settings: WebToolSettings, params: Mapping[str, object]) -> dict[
     started_at = time.monotonic()
     now = settings.now()
     query = approvals.require_string(params.get("query"), "query", QUERY_CHARACTER_CAP)
+    # The default narrows in both directions: `approvals.parse_search_request`
+    # signs an omitted count at RESULT_COUNT_DEFAULT, and the grant comparison
+    # refuses a resolved count above the granted one, so a profile admitting
+    # more than the default would refuse every search that named none.
     max_results = approvals.require_integer(
-        params.get("max_results"), "max_results", settings.max_results, 1, settings.max_results
+        params.get("max_results"),
+        "max_results",
+        min(RESULT_COUNT_DEFAULT, settings.max_results),
+        1,
+        settings.max_results,
     )
     constraints = _constraints(params)
     provider.refuse_unhonored_arguments(constraints)
@@ -1491,7 +1499,7 @@ def tool_definitions(settings: WebToolSettings) -> dict[str, dict[str, object]]:
                             "maximum": settings.max_results,
                             "description": (
                                 f"Result count, 1 to {settings.max_results}. Default "
-                                f"{settings.max_results}."
+                                f"{min(RESULT_COUNT_DEFAULT, settings.max_results)}."
                             ),
                         },
                         "include_domains": {
