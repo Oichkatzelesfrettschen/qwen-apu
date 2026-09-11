@@ -35,18 +35,20 @@ export const toolState = {
   generation: -1
 };
 
-// The web tools are named as llama-server composes them: an MCP server
-// configured as `web` produces `web_search_exa` and `web_fetch_exa`. The
-// schemas come from the server rather than from a copy kept here, so the
-// model reads the arguments the running wrapper validates. The per-turn
+// The gateway executes both tools itself (`src/qwen_apu/tools/web.py`) and
+// names them as `GET /api/tools` lists them, so one identifier spans the
+// matrix row, the request body, and the executor's own dispatch. The per-turn
 // toggle decides whether these reach the request at all, so a turn with the
 // toggle off offers the model no web surface to propose.
-export const WEB_SEARCH_TOOL_NAME = 'web_search_exa';
-export const WEB_FETCH_TOOL_NAME = 'web_fetch_exa';
+export const WEB_SEARCH_TOOL_NAME = 'web_search';
+export const WEB_FETCH_TOOL_NAME = 'read_url';
 export const WEB_TOOL_NAMES = [WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME];
-// The two matrix rows those names execute: `web_search` runs one approved
-// query and `read_url` redeems one signed Result ID that query issued.
-export const WEB_MATRIX_TOOL_IDS = ['web_search', 'read_url'];
+// The matrix rows those names execute are the same two identifiers, since the
+// executor dispatches on the row id the matrix states: `web_search` runs one
+// approved query and `read_url` redeems one signed Result ID that query
+// issued. The alias stays so a reader of either surface finds the name it
+// uses, and one edit moves both.
+export const WEB_MATRIX_TOOL_IDS = WEB_TOOL_NAMES;
 const WEB_RESULT_HANDLE_PATTERN = /^r_[0-9a-f]{24}$/;
 
 export function clearWebResultHandles() {
@@ -130,7 +132,7 @@ export function webToolDefinition(entry) {
 
      A row's `definition` is the OpenAI function object whichever executor runs
      the tool declares, and it travels as that executor emits it with one field
-     removed: `search_exa` advertises an `authorization` property, the gateway
+     removed: `web_search` advertises an `authorization` property, the gateway
      is the only issuer of a grant, and a model that reads the property can
      only author a token the served path refuses. A row that carries no
      definition composes nothing, which is how a state that admits no call
@@ -308,14 +310,14 @@ export async function resolveWebTools(selectedModel, generation) {
   /* Return the web tool definitions this turn may offer the model.
 
      The matrix is the authority for what the browser may later invoke, and it
-     carries a function schema only for a row this origin can execute. The web
-     rows carry none: `executeWebTool` posts to `POST /api/tools` and the
-     gateway serves no such route, so the matrix reports `web_search` and
-     `read_url` as temporarily unavailable and names the missing executor.
-     Composing a schema the page cannot run would put the refusal after the
-     proposal, which is the ordering the matrix exists to reverse, so a turn
-     under that state carries no web tool and the panel shows the row's own
-     reason.
+     carries a function schema only for a row this origin can execute. An
+     assembly that resolved a SearXNG instance mounts `src/qwen_apu/tools/web.py`
+     on `POST /api/tools`, so the matrix states both web rows as available and
+     carries the schema that executor advertises; one that resolved none states
+     them temporarily unavailable and carries no schema. Composing a schema the
+     page cannot run would put the refusal after the proposal, which is the
+     ordering the matrix exists to reverse, so a turn under that state carries
+     no web tool and the panel shows the row's own reason.
 
      The composition returns on its own the moment a row carries a definition,
      because this filter reads the state and the definition rather than a name
@@ -487,7 +489,7 @@ export function truncateSearchResult(text) {
 // leave the round budget for the answer.
 export const WEB_FETCH_BUDGET_PER_TURN = 2;
 
-// One completion can emit several `web_search_exa` calls in the same
+// One completion can emit several `web_search` calls in the same
 // assistant response, and CONTINUATION_CAP bounds only the round count, not
 // the calls inside one round: an unbounded inner loop would open one
 // approval dialog per proposed call and, on approval, spend one broker grant
@@ -634,7 +636,18 @@ export function approveWebSearch(fields, proposalModel) {
 
 
 export function webToolFailure(status, text) {
-  return { outcome: 'failure', status, evidence: {kind: 'none', usable: false}, text };
+  /* Return the record a call that produced no evidence carries.
+
+     `state` and `reason` are the two fields the gateway adds to
+     `qwen.web-tool-outcome`, so a failure the page itself decides -- a dropped
+     connection, an unreadable body, a handle that resolves to nothing -- reads
+     in the transcript exactly as an incomplete retrieval the executor
+     reported. */
+  return {
+    schema: 'qwen.web-tool-outcome', version: 1, outcome: 'failure',
+    state: 'incomplete', status, reason: text,
+    evidence: {kind: 'none', usable: false}, text
+  };
 }
 
 export async function executeWebTool(toolName, params, model, resultHandleTurn = null,
@@ -650,26 +663,31 @@ export async function executeWebTool(toolName, params, model, resultHandleTurn =
   } catch {
     return webToolFailure('transport_error', 'The tool could not reach the server.');
   }
-  let payload;
-  try { payload = await response.json(); } catch {
-    return webToolFailure('malformed_response', 'The tool returned an unreadable response.');
-  }
+  /* The gateway answers the execution record itself rather than wrapping it in
+     a router proxy envelope, so the body is the document. A retrieval that
+     failed arrives at HTTP 200 carrying `state: 'incomplete'` and a reason,
+     which is what keeps a failed page from reading as a turn that went quiet;
+     a refused call arrives at its own status carrying the same shape. */
   let result;
-  try {
-    result = JSON.parse(typeof payload.error === 'string'
-      ? payload.error : payload.plain_text_response);
-  } catch {
-    return webToolFailure('untyped_response', 'The tool returned no usable execution record.');
+  try { result = await response.json(); } catch {
+    return webToolFailure('malformed_response', 'The tool returned an unreadable response.');
   }
   if (result?.schema !== 'qwen.web-tool-outcome' || result.version !== 1 ||
       !['success', 'failure'].includes(result.outcome) ||
+      !['complete', 'incomplete'].includes(result.state) ||
       typeof result.status !== 'string' || typeof result.text !== 'string' ||
       typeof result.evidence?.usable !== 'boolean' ||
       !['none', 'search_snippets', 'fetched_page'].includes(result.evidence.kind)) {
     return webToolFailure('malformed_response', 'The tool returned an invalid execution record.');
   }
-  if (!response.ok || typeof payload.error === 'string' || result.outcome !== 'success') {
-    return {...result, outcome: 'failure', evidence: {kind: 'none', usable: false}};
+  if (!response.ok || result.outcome !== 'success' || result.state !== 'complete') {
+    return {
+      ...result,
+      outcome: 'failure',
+      state: 'incomplete',
+      reason: typeof result.reason === 'string' ? result.reason : result.text,
+      evidence: {kind: 'none', usable: false}
+    };
   }
   if (toolName === WEB_SEARCH_TOOL_NAME) {
     try {

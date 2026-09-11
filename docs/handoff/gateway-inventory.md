@@ -50,7 +50,10 @@ is what a call would actually meet. The selector is required: an absent
 Each row carries `tool_id`, `title`, `lane`, `approval`, `execution_path`,
 `state`, `helper`, and `reason`; the `image_generation` row also carries
 `bounds` (the armed profile's `max_dimension` and `max_steps`), which the page
-checks a proposal against before it opens the approval dialog.
+checks a proposal against before it opens the approval dialog. A row whose
+state admits a call also carries `definition`, the OpenAI function object the
+request body forwards; every refused row carries none, so the rows a page
+composes from and the rows it reads a state for are one set.
 
 The authorities each derivation reads:
 
@@ -58,9 +61,12 @@ The authorities each derivation reads:
   `remote/web-profiles.tsv` row. A profile other than the one this launch's
   broker signs for is `policy_refused` up front, since `POST /grant-image`
   refuses a foreign `profile_id`; `execution_policy: refused` is
-  `policy_refused`; a `searxng` provider with no instance URL and the absent
-  tool executor are `temporarily_unavailable`; a checkpoint no web profile
-  names is `not_installed`.
+  `policy_refused`; a `searxng` provider with no instance URL and an
+  unmounted tool executor are `temporarily_unavailable`; a checkpoint no web
+  profile names is `not_installed`. `web_search` and `read_url` read
+  `available` where the executor is mounted, since `tools/web.py` runs both
+  inside the gateway; `wikipedia_profile` reads `available_through_helper`,
+  because the engine profile lives in the instance's own `settings.yml`.
 - `image_interpretation`: the row's `projector` column. `required` is
   `available` and `none` is `not_installed`, because
   `remote/select-projector.sh` searches the checkpoint's own directory.
@@ -123,10 +129,7 @@ no artifact has burned it and the next generation takes a fresh approval; the
 review route verifies the claim and spends nothing, which is what lets the
 already-spent generation token prove which prompt a human approved.
 
-Recorded gaps. `executeWebTool` posts to `POST /api/tools` and this gateway
-mounts no such route, so the web rows read `temporarily_unavailable` and a
-turn carries no web tool; restoring the lane means serving the executor, not
-widening the matrix. A review of an artifact restored from saved history has
+Recorded gaps. A review of an artifact restored from saved history has
 no grant, because a conversation record keeps the digest and the provenance
 route rather than the token, so the review button on a restored card stays
 hidden. The withheld and swapped review controls still have no route.
@@ -136,6 +139,82 @@ Origin sets, HttpOnly session cookie from a one-time pairing), `web/chat.py`
 and `engines/llama.py` (streaming proxy to the router on loopback),
 `tools/approvals.py` and `tools/ledger.py` (the broker's gate chain and the
 shared ledger), `web/artifacts.py`, `engines/image.py`, and `tools/images.py`
-(the artifact rules and the worker's control socket). The MCP child
-`server.py` stays the router's stdio tool child until the router tools proxy
-is replaced by the gateway's own tool execution.
+(the artifact rules and the worker's control socket), and `tools/web.py` (the
+search and the page read the router tools proxy previously carried). The MCP
+child `server.py` stays the router's stdio tool child for a launch that still
+runs the router lane; the gateway executes both web tools itself.
+
+## The web executor: `POST /api/tools`
+
+`tools/web.py` answers `POST /api/tools` with two tools and `tools/matrix.py`
+answers `GET /api/tools?model=ID` beside it. `qwen_apu.web.http.match` keys a
+route on the method beside the compiled path, so the two share one path and
+neither shadows the other. Availability and the request schema are computed
+rather than declared: `web/assemble.py` passes the executor's two schemas to
+`MatrixSettings.web_definitions` where it resolved a `remote/web-profiles.tsv`
+row whose provider is `searxng` and whose `searxng_url` is set, and passes None
+otherwise. One field carries both facts, which is what keeps a row from
+reading `available` while carrying no object a request body could forward.
+
+One answer serves both readers. `static/js/tools.js` composes a turn's
+`body.tools` from the `tools` array of that `qwen.tool-matrix` document,
+filtering on `tool_id` and `state` and stripping the `authorization` property
+before a definition reaches a request; `static/js/models.js` reads the same
+document to decide whether a roster row can act on the Web toggle. The
+schema states what this executor serves rather than what the tool lane admits,
+so `published_after`, `published_before`, and `max_age_hours` are absent: the
+SearXNG JSON API carries no publication interval and
+`SearxngProvider.refuse_unhonored_arguments` refuses all three. The image
+lane's own listing in `static/js/artifacts.js` still reads the router's array
+shape, which is the one listing consumer this pass leaves on the MCP child.
+
+| Route | Body | Authority | Answer |
+| --- | --- | --- | --- |
+| `POST /api/tools` `tool: web_search` | `query`, `max_results`, `include_domains`, `exclude_domains`, `authorization` | the `search-authorization` grant `POST /api/tools/grant` signed, rebuilt through `approvals.authorization_claim` and compared field by field, then spent once through `Ledger.consume_grant` | the rendered result blocks, each carrying one signed Result ID |
+| `POST /api/tools` `tool: read_url` | `result_id`, `start_index`, `max_chars` | the Result ID the approved search signed, plus one unit of the fetch allowance `Ledger.open_search` opened and `Ledger.spend_fetch` spends | one `wrap_untrusted` frame over the window |
+
+The grant covers a query and signs no URL, so `read_url` carries the search's
+own signed reference rather than a second grant: one approval admits one
+search and as many of that search's own results as the profile's `max_fetches`
+names. A replayed grant meets the `grants` table's primary key, a Result ID
+naming a URL its search never returned meets the `search_results` rows, and an
+exhausted allowance answers `budget_exhausted`.
+
+Bounds, all ported from `remote/web-mcp/server.py` and carried by the profile
+row where the row states one:
+
+| Bound | Value | Authority |
+| --- | --- | --- |
+| Query | 512 characters | `web.QUERY_CHARACTER_CAP` |
+| Results | the profile's `max_results`, at most 10 | `web-profiles.tsv`, `web.RESULT_COUNT_CAP` |
+| Fetches per search | the profile's `max_fetches` | `web-profiles.tsv`, `Ledger.spend_fetch` |
+| Window | the profile's `max_chars_per_fetch`, at most 24000 | `web-profiles.tsv`, `web.WINDOW_CHARACTER_CAP` |
+| Document | 131072 characters | `web.DOCUMENT_CHARACTER_CAP` |
+| HTTP body | 4 MiB, read one byte past the cap | `web.HTTP_RESPONSE_BYTE_CAP` |
+| Request | 20 seconds on the socket | `web.REQUEST_TIMEOUT_SECONDS` |
+| Request body | 16384 bytes | `web.REQUEST_BODY_BYTE_CAP` |
+| Content types | `text/html`, `application/xhtml+xml`, `text/plain`, UTF-8 or ASCII | `web.DOCUMENT_CONTENT_TYPES` |
+
+Two properties differ from the predecessor by mechanism rather than by policy.
+The deadline lives on the socket rather than in a POSIX interval timer, because
+`signal.setitimer` belongs to the main thread and the gateway answers every
+request on a worker. Each ledger writer opens its own connection and closes it,
+because `sqlite3` binds a connection to its creating thread; `BEGIN IMMEDIATE`
+and the 10-second busy timeout serialize the writers.
+
+Every answer carries the one record `qwen.web-tool-outcome` names, with `state`
+and `provenance` added: `state` reads `complete` or `incomplete`, and the
+provenance names the operation, the query or the URL, the status term from the
+ledger's audit vocabulary, the provider bytes, the returned characters, the
+SHA-256 of the text the record holds, the UTC instant, and the latency. A
+retrieval that reached the network and failed answers HTTP 200 with `state` of
+`incomplete` and a reason, so the model reads that the page did not arrive;
+`static/js/chat.js` renders that state beside the turn. A refused call -- no
+session, an unverified or replayed grant, an argument outside a bound --
+answers its own status carrying the same document.
+
+Recorded scope cuts: the `content` snapshot table, so a second window of one
+document retrieves the source again rather than reading a stored copy; the Exa
+provider, so `searxng` is the one provider this executor reads; and the audit
+trail, which `Ledger.record` still serves for the approval routes while the
+executor writes no row of its own.

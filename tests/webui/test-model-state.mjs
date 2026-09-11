@@ -294,14 +294,12 @@ test('a search result reaches the model through handles alone', async () => {
   const generation = conversations.conversationState.generation;
   const handleTurn = tools.beginWebResultHandleTurn(MODEL_A, generation);
   const execution = tools.executeWebTool(
-    'web_search_exa', { query: 'Raven2' }, MODEL_A, handleTurn, generation);
+    'web_search', { query: 'Raven2' }, MODEL_A, handleTurn, generation);
   await flushPromises();
   (await page.take(request => request.url === '/api/tools' && request.options.method === 'POST',
     'search execution')).resolve(jsonResponse({
-      plain_text_response: JSON.stringify({
-        schema: 'qwen.web-tool-outcome', version: 1, outcome: 'success', status: 'ok',
-        evidence: { kind: 'search_snippets', usable: true }, text: searchResult
-      })
+      schema: 'qwen.web-tool-outcome', version: 1, outcome: 'success', state: 'complete',
+      status: 'success', evidence: { kind: 'search_snippets', usable: true }, text: searchResult
     }));
   const visible = (await execution).text;
   assert.ok(!visible.includes(signedResultId),
@@ -315,7 +313,7 @@ test('a search result reaches the model through handles alone', async () => {
   const handle = visible.match(/\nResult ID: (r_[0-9a-f]{24})\n/)[1];
   assert.ok(handle.length < signedResultId.length);
 
-  chat.answerCall('search-call', 'web_search_exa', visible, generation);
+  chat.answerCall('search-call', 'web_search', visible, generation);
   assert.ok(chat.history.at(-1).content.includes(handle));
   assert.ok(!chat.history.at(-1).content.includes(signedResultId),
     'the signed result id reached the model request history');
@@ -372,9 +370,9 @@ test('a fetch redeems the exact signed id and refuses every other reference', as
     'the executor did not receive the exact signed result id');
   assert.equal(body.params.start_index, 8000);
   assert.equal(body.params.max_chars, 1000);
-  post.resolve(jsonResponse({ plain_text_response: JSON.stringify({
-    schema: 'qwen.web-tool-outcome', version: 1, outcome: 'success', status: 'ok',
-    evidence: { kind: 'fetched_page', usable: true },
+  post.resolve(jsonResponse({
+    schema: 'qwen.web-tool-outcome', version: 1, outcome: 'success', state: 'complete',
+    status: 'success', evidence: { kind: 'fetched_page', usable: true },
     text: [
       'BEGIN UNTRUSTED WEB CONTENT [page1]',
       'Source: https://example.org/raven2',
@@ -385,7 +383,7 @@ test('a fetch redeems the exact signed id and refuses every other reference', as
       'page contents',
       'END UNTRUSTED WEB CONTENT [page1]'
     ].join('\n')
-  }) }));
+  }));
   const fetched = await fetching;
   assert.ok(fetched[0].content.includes('Source: https://example.org/raven2'));
   assert.ok(fetched[0].content.includes('Next Start Index: 9000'),
@@ -458,7 +456,7 @@ test('a failed source ends the turn on the missing-source notice', async () => {
   await answerListings(page);
   (await page.take(request => request.url === '/api/chat', 'first completion')).resolve(
     streamResponse([
-      toolCallEvent(MODEL_A, 'web_fetch_exa',
+      toolCallEvent(MODEL_A, 'read_url',
         JSON.stringify({ result_id: 'r_' + '0'.repeat(24) })),
       finishEvent(MODEL_A, 'tool_calls')
     ]));

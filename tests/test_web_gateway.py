@@ -35,6 +35,7 @@ from qwen_apu.runtime import preflight
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import read_start_time
 from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
+from qwen_apu.tools import matrix
 from qwen_apu.web import assemble as gateway_assembly
 from qwen_apu.web import auth as auth_module
 from qwen_apu.web.app import (
@@ -53,7 +54,7 @@ from qwen_apu.web.auth import (
     SessionGate,
 )
 from qwen_apu.web.chat import PICKER_TIERS, ChatService, quantization
-from qwen_apu.web.http import Request, Response, Route, StreamingResponse
+from qwen_apu.web.http import Request, Response, Route, StreamingResponse, match
 from qwen_apu.web.roster import LOADING, READY, REFUSED, UNAVAILABLE
 from qwen_apu.web.status import StatusService
 
@@ -1016,3 +1017,54 @@ def test_a_research_gateway_clears_the_deployment_requirement(tmp_path: Path) ->
     )
     assert len(report) == 1
     assert report[0].startswith("signing_key_preflight")
+
+
+def test_one_origin_answers_the_matrix_on_get_and_the_executor_on_post(
+    tmp_path: Path, leased_port: int
+) -> None:
+    """`GET /api/tools` states what a tool does and `POST /api/tools` runs it.
+
+    `qwen_apu.web.http.match` keys a route on the method beside the compiled
+    path, so the matrix and the executor share one path and neither shadows the
+    other. The pair is what the page reads and then posts to, so an assembly
+    that mounted one alone would let a composed turn propose a call this origin
+    answers 404 to.
+    """
+    paths = _assembly_root(tmp_path)
+    _write_key(paths, b"c0ffee\n")
+    gateway, _ = gateway_assembly.assemble(
+        paths, gateway_assembly.GatewayRequest(port=leased_port, require_deployment=False)
+    )
+    # `Gateway.shutdown` waits for the accept loop to report that it left, so
+    # the loop runs here the way a launch runs it.
+    serving = threading.Thread(target=gateway.serve_forever)
+    serving.start()
+    try:
+        methods = {
+            route.method
+            for route in gateway.routes
+            if route.pattern.pattern == f"^{matrix.MATRIX_PATH}$"
+        }
+        assert methods == {"GET", "POST"}
+        found = match(gateway.routes, "GET", matrix.MATRIX_PATH)
+        assert found is not None
+        answer = found[0].handler(
+            Request(
+                "GET",
+                matrix.MATRIX_PATH,
+                {"model": gateway_assembly.DEFAULT_WEB_PROFILE},
+                {"host": "127.0.0.1"},
+                b"",
+                "127.0.0.1",
+            )
+        )
+        assert isinstance(answer, Response)
+        payload = json.loads(answer.body.decode("utf-8"))
+        assert payload["schema"] == "qwen.tool-matrix"
+        rows = {row["tool_id"]: row for row in payload["tools"]}
+        for tool_id in ("web_search", "read_url"):
+            assert rows[tool_id]["state"] == "available"
+            assert rows[tool_id]["definition"]["function"]["name"] == tool_id
+    finally:
+        gateway.shutdown()
+        serving.join(timeout=EXCHANGE_DEADLINE_SECONDS)

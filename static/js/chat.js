@@ -308,15 +308,33 @@ export function answerCall(callId, toolName, content, turnGeneration) {
   void saveConversation();
 }
 
+export function renderIncompleteRetrieval(view, toolName, result) {
+  /* Name the retrieval that did not complete, in the turn it belongs to.
+
+     `state` is the executor's own word for a call that reached the network
+     and came back without evidence, so the note states the tool, the status
+     term the ledger's audit vocabulary carries, and the reason the executor
+     gave, rather than a generic failure the reader cannot act on. */
+  const root = view && view.turn && view.turn.root;
+  if (!root || typeof document === 'undefined') return;
+  const note = document.createElement('div');
+  note.className = 'meta bad';
+  note.textContent = `${toolName} returned an incomplete result (${result.status}): ` +
+    String(result.reason || result.text || 'the executor named no reason');
+  root.append(note);
+}
+
+
 export async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
                                  searchBudget, turnGeneration, proposalModel,
                                  webPermission, imagePermission, imageBudget, imageBounds,
                                  resultHandleTurn) {
   /* Execute this round's proposed calls and answer each one.
 
-     A proposed `web_search_exa` is shown to a human with the arguments it
-     would run under, the broker signs a grant over exactly those fields, and
-     the browser posts them to `POST /tools` with the grant inside `params`.
+     A proposed `web_search` is shown to a human with the arguments it would
+     run under, the approval route signs a grant over exactly those fields, and
+     the browser posts them to `POST /api/tools` with the grant inside
+     `params`.
      The grant lives in that one request body: `history` keeps the proposal it
      was signed over, while a search result enters `history` with short handles
      in place of its signed Result IDs. The transcript carries neither token.
@@ -331,6 +349,11 @@ export async function runProposedTools(calls, callIds, view, roundBudgetExhauste
       webFailed ||= result.outcome !== 'success' || !result.evidence.usable;
       if (result.outcome === 'success' && result.evidence.usable &&
           result.evidence.kind === 'fetched_page') (view.sourceEvidence ||= {fetched: false}).fetched = true;
+      /* A retrieval the executor reports as incomplete is a result rather than
+         an error, so the reason is rendered beside the turn: the model reads
+         it in the tool message and the human reads why the page is missing
+         from the answer. */
+      if (result.state === 'incomplete') renderIncompleteRetrieval(view, toolName, result);
       answerCall(callId, toolName, JSON.stringify(result), generation);
     } else {
       answerCall(callId, toolName, content, generation);
