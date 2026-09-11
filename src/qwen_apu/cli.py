@@ -22,7 +22,7 @@ from qwen_apu.config import models as registry
 from qwen_apu.config.native import load_native_builds
 from qwen_apu.install import build, doctor, native, source
 from qwen_apu.install import models as model_installer
-from qwen_apu.runtime import appliance, deployment, deployment_write
+from qwen_apu.runtime import appliance, application_deployment, deployment, deployment_write
 from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError, render_paths
 from qwen_apu.web import assemble as gateway_assembly
@@ -101,6 +101,21 @@ def build_parser() -> argparse.ArgumentParser:
     deployment_sub.add_parser("show", help="resolve the active bundle").add_argument(
         "--root", type=Path, default=None
     )
+    build_application = deployment_sub.add_parser(
+        "build-application",
+        help="bind the page, the package, the lock, and every ledger into one immutable unit",
+    )
+    build_application.add_argument("name")
+    build_application.add_argument("--root", type=Path, default=None)
+    verify_application = deployment_sub.add_parser(
+        "verify-application", help="re-digest every payload member and resolve every reference"
+    )
+    verify_application.add_argument("name")
+    verify_application.add_argument("--root", type=Path, default=None)
+    list_applications = deployment_sub.add_parser(
+        "list-applications", help="every application deployment the root holds"
+    )
+    list_applications.add_argument("--root", type=Path, default=None)
     serve = sub.add_parser("serve", help="run one llama-server under the supervisor")
     serve.add_argument(
         "--router",
@@ -322,6 +337,18 @@ def cmd_deployment(paths: RuntimePaths, args: argparse.Namespace) -> int:
             q4k_policy=args.q4k_policy,
         )
         print(f"bundle={identity.name} server_sha256={identity.server_sha256}")
+        return 0
+    if args.deployment_command == "build-application":
+        application = application_deployment.build_application(paths, args.name, root=args.root)
+        sys.stdout.write(application.render())
+        return 0
+    if args.deployment_command == "verify-application":
+        report = application_deployment.verify_application(paths, args.name, root=args.root)
+        sys.stdout.write(report.render())
+        return 0 if report.verified else 1
+    if args.deployment_command == "list-applications":
+        for name in application_deployment.applications(paths, args.root):
+            print(name)
         return 0
     if args.deployment_command == "show":
         sys.stdout.write(deployment.render(deployment.resolve_active(root)))
