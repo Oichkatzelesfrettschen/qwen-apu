@@ -273,6 +273,15 @@ class Supervisor:
         if not deployment_lock.parent.is_dir():
             raise SupervisorRefused(f"no deployment root: {deployment_lock.parent}")
 
+        try:
+            return self._run_locked(plan, deployment_lock)
+        except Exception as error:
+            # A refusal before the serve loop leaves the record naming the
+            # primary failure rather than a bare traceback in a log file.
+            self.record.transition("failed", primary_failure=f"{type(error).__name__}: {error}")
+            raise
+
+    def _run_locked(self, plan: SupervisionPlan, deployment_lock: Path) -> int:
         with ExitStack() as stack:
             stack.enter_context(hold(deployment_lock, exclusive=False, timeout=LOCK_WAIT_SECONDS))
             stack.enter_context(
@@ -473,7 +482,11 @@ class Supervisor:
         path = self.paths["qwen_home_control_socket"]
         _clear_stale_socket(path)
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        listener.bind(str(path))
+        address, directory = _short_socket_address(path)
+        try:
+            listener.bind(address)
+        finally:
+            os.close(directory)
         os.chmod(path, CONTROL_SOCKET_MODE)
         listener.listen(4)
         listener.settimeout(CONTROL_ACCEPT_TIMEOUT_SECONDS)
@@ -550,6 +563,18 @@ class _SignalHandlers:
         return handle
 
 
+def _short_socket_address(path: Path) -> tuple[str, int]:
+    """An AF_UNIX address for `path` that fits the 108-byte sun_path limit.
+
+    The address names the socket through `/proc/self/fd/<dirfd>/<name>`, so a
+    runtime root under a long path binds and connects the same file the
+    short form would. The caller closes the returned descriptor after the
+    bind or connect, since the kernel resolves the path at that call alone.
+    """
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    return f"/proc/self/fd/{directory}/{path.name}", directory  # appliance-path: named
+
+
 def _clear_stale_socket(path: Path) -> None:
     """Remove a socket leaf no supervisor still answers on.
 
@@ -564,7 +589,11 @@ def _clear_stale_socket(path: Path) -> None:
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         probe.settimeout(1.0)
-        probe.connect(str(path))
+        address, directory = _short_socket_address(path)
+        try:
+            probe.connect(address)
+        finally:
+            os.close(directory)
     except OSError:
         path.unlink(missing_ok=True)
         return
@@ -599,7 +628,11 @@ def stop(paths: RuntimePaths | None = None, *, timeout_s: float = STOP_WAIT_SECO
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             client.settimeout(5.0)
-            client.connect(str(socket_path))
+            address, directory = _short_socket_address(socket_path)
+            try:
+                client.connect(address)
+            finally:
+                os.close(directory)
             client.sendall(b"stop\n")
             client.recv(CONTROL_LINE_BYTES)
         except OSError as error:

@@ -40,6 +40,7 @@ from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
 from qwen_apu.runtime.supervisor import (
     HAZARD_PATTERN,
     KernelHazardWatcher,
+    _short_socket_address,
     status,
     stop,
 )
@@ -834,3 +835,29 @@ def test_terminate_ends_a_group_whose_leader_was_already_reaped(tmp_path: Path) 
         if read_start_time(grandchild) is not None:
             os.kill(grandchild, signal.SIGKILL)
         owned.close()
+
+
+def test_control_socket_binds_under_a_long_runtime_root(tmp_path: Path) -> None:
+    """`sun_path` holds 108 bytes; the socket binds through its directory descriptor."""
+    deep = tmp_path / ("d" * 60) / ("e" * 60) / "state"
+    deep.mkdir(parents=True)
+    target = deep / "control.sock"
+    assert len(str(target)) > 108
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    address, directory = _short_socket_address(target)
+    try:
+        listener.bind(address)
+    finally:
+        os.close(directory)
+    try:
+        assert target.is_socket()
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        address, directory = _short_socket_address(target)
+        try:
+            listener.listen(1)
+            client.connect(address)
+        finally:
+            os.close(directory)
+            client.close()
+    finally:
+        listener.close()
