@@ -26,6 +26,7 @@ from qwen_apu.runtime import (
     acceptance,
     appliance,
     application_deployment,
+    canary,
     deployment,
     deployment_write,
 )
@@ -223,6 +224,36 @@ def build_parser() -> argparse.ArgumentParser:
     acceptance_run.add_argument("--router-presets", type=Path, default=None)
     acceptance_run.add_argument("--document-fixtures", type=Path, default=None)
     acceptance_run.add_argument("--file-search-root", type=Path, default=None)
+    canary_parser = sub.add_parser(
+        "canary", help="the legacy and Python parity canary over one declared window"
+    )
+    canary_sub = canary_parser.add_subparsers(dest="canary_command", required=True)
+    canary_run = canary_sub.add_parser("run", help="alternate both arms and write the verdict")
+    canary_run.add_argument(
+        "--report", type=Path, required=True, help="JSON report path under the runtime root"
+    )
+    canary_run.add_argument("--repeats", type=int, default=canary.DEFAULT_REPEATS)
+    canary_run.add_argument("--ratio", type=float, default=canary.DEFAULT_RATIO)
+    canary_run.add_argument("--base", default=canary.DEFAULT_BASE)
+    canary_run.add_argument("--prompt", default=canary.DEFAULT_PROMPT)
+    canary_run.add_argument("--tokens", type=int, default=canary.DEFAULT_TOKENS)
+    canary_run.add_argument("--model", default="")
+    for name, help_text in (
+        ("legacy-start", "one argv word of the legacy launch"),
+        ("legacy-stop", "one argv word of the legacy teardown"),
+        ("python-start", "one argv word of the Python launch"),
+        ("python-stop", "one argv word of the Python teardown"),
+    ):
+        canary_run.add_argument(
+            f"--{name}", action="append", default=[], metavar="ARG", help=f"{help_text}; repeat"
+        )
+    canary_run.add_argument(
+        "--sysfs",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="one sysfs file the configuration snapshot reads; repeat",
+    )
     gateway = sub.add_parser("gateway", help="serve the one-origin browser gateway")
     gateway.add_argument("--port", type=int, default=gateway_assembly.DEFAULT_GATEWAY_PORT)
     gateway.add_argument(
@@ -532,6 +563,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                     router_presets=args.router_presets,
                     document_fixtures=args.document_fixtures,
                     file_search_root=args.file_search_root,
+                ),
+            )
+        if args.command == "canary":
+            return canary.run(
+                paths,
+                canary.CanaryRequest(
+                    report=args.report,
+                    repeats=args.repeats,
+                    ratio=args.ratio,
+                    base=args.base,
+                    prompt=args.prompt,
+                    tokens=args.tokens,
+                    model=args.model,
+                    legacy=canary.ArmCommands(
+                        start=tuple(args.legacy_start), stop=tuple(args.legacy_stop)
+                    ),
+                    python=canary.ArmCommands(
+                        start=tuple(args.python_start), stop=tuple(args.python_stop)
+                    ),
+                    sysfs=canary.sysfs_from_request(args.sysfs),
                 ),
             )
         if args.command == "gateway":
