@@ -13,6 +13,7 @@ from qwen_apu.ci.ratchet import (
     rewrite_baseline,
     rule_new_shell,
     rule_outside_root,
+    rule_secret_exposure,
     rule_shell_true,
     rule_string_command,
     rule_sudo,
@@ -294,3 +295,45 @@ def test_outside_root_rule_quiet_without_allowlist(tmp_path: Path) -> None:
 def test_real_worktree_is_clean() -> None:
     violations = run(TREE)
     assert violations == [], "\n".join(violation.render() for violation in violations)
+
+
+# -- secret-exposure -----------------------------------------------------
+
+
+def test_secret_exposure_rule_fires_on_a_traced_shell(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "src/qwen_apu/traced.py",
+        "import subprocess\nsubprocess.run(['/bin/sh', '-x', 'compare.sh'], check=True)\n",
+    )
+
+    violations = rule_secret_exposure(tmp_path)
+
+    assert [v.rule for v in violations] == ["shell-trace"]
+    assert violations[0].path == "src/qwen_apu/traced.py"
+
+
+def test_secret_exposure_rule_fires_on_an_environment_dump(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "src/qwen_apu/dumped.py",
+        "import json\nimport os\nprint(json.dumps(dict(os.environ)))\nprint(os.environ)\n",
+    )
+
+    violations = rule_secret_exposure(tmp_path)
+
+    assert {v.rule for v in violations} == {"environ-dump"}
+    assert len(violations) == 2
+
+
+def test_secret_exposure_rule_quiet_on_a_scrubbed_environment(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "src/qwen_apu/quiet.py",
+        "import os\nimport subprocess\n"
+        "env = {'PATH': os.environ['PATH']}\n"
+        "subprocess.run(['/bin/sh', 'plain.sh'], env=env, check=True)\n"
+        "print(sorted(env))\n",
+    )
+
+    assert rule_secret_exposure(tmp_path) == []

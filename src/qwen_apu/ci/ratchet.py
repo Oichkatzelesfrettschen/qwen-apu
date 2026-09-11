@@ -214,6 +214,77 @@ def rule_string_command(root: Path) -> list[Violation]:
     return violations
 
 
+_TRACE_FLAGS = frozenset({"-x", "-xv", "-vx", "-o", "xtrace"})
+_SHELL_NAMES = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
+_OUTPUT_CALL_NAMES = frozenset(
+    {
+        "print",
+        "dumps",
+        "dump",
+        "write",
+        "info",
+        "warning",
+        "error",
+        "debug",
+        "exception",
+        "critical",
+        "log",
+    }
+)
+
+
+def rule_secret_exposure(root: Path) -> list[Violation]:
+    """No argv in `src/**/*.py` or `bootstrap.py` traces a shell, and the whole
+    process environment never reaches an output call. A traced shell echoes
+    every expanded command line, and an environment dump carries every
+    variable, so either would print a bearer or a signing key into a log or a
+    tool transcript; the rotation receipt records the trace that did."""
+    violations = []
+    for rel, tree in _parsed_python_targets(root):
+        for call, name in _command_calls(tree):
+            if not call.args or not isinstance(call.args[0], (ast.List, ast.Tuple)):
+                continue
+            elements = call.args[0].elts
+            for index, element in enumerate(elements[:-1]):
+                if not (isinstance(element, ast.Constant) and isinstance(element.value, str)):
+                    continue
+                if element.value.rsplit("/", 1)[-1] not in _SHELL_NAMES:
+                    continue
+                flag = elements[index + 1]
+                if isinstance(flag, ast.Constant) and flag.value in _TRACE_FLAGS:
+                    violations.append(
+                        Violation(rel, call.lineno, "shell-trace", f"{name}(...) traces a shell")
+                    )
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or _call_name(node) not in _OUTPUT_CALL_NAMES:
+                continue
+            for argument in list(node.args) + [keyword.value for keyword in node.keywords]:
+                if _is_environ(argument):
+                    violations.append(
+                        Violation(
+                            rel,
+                            node.lineno,
+                            "environ-dump",
+                            "os.environ reaches an output call whole",
+                        )
+                    )
+    return violations
+
+
+def _is_environ(node: ast.expr) -> bool:
+    """`os.environ`, `environ`, `dict(os.environ)`, or `os.environ.copy()`."""
+    if isinstance(node, ast.Attribute) and node.attr == "environ":
+        return True
+    if isinstance(node, ast.Name) and node.id == "environ":
+        return True
+    if isinstance(node, ast.Call):
+        if _call_name(node) == "dict" and node.args and _is_environ(node.args[0]):
+            return True
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "copy":
+            return _is_environ(node.func.value)
+    return False
+
+
 def rule_sudo(root: Path) -> list[Violation]:
     """A string constant under `src/qwen_apu/` (excluding
     `src/qwen_apu/research_admin/`) names no `sudo` invocation, and
@@ -343,6 +414,7 @@ def run(root: Path) -> list[Violation]:
     violations.extend(rule_new_shell(resolved))
     violations.extend(rule_shell_true(resolved))
     violations.extend(rule_string_command(resolved))
+    violations.extend(rule_secret_exposure(resolved))
     violations.extend(rule_sudo(resolved))
     violations.extend(rule_outside_root(resolved))
     return sorted(violations)
