@@ -31,6 +31,15 @@ staging directory that loses a race by dropping its own copy.
 `POST /api/documents/<sha256>/search` sit behind the injectable session check
 that defaults to refused, the rule `tools/files.py` and `web/artifacts.py`
 both carry: a caller that wires no session authority serves nothing.
+
+The upload route reads its own body: `Route.make(..., streams=True)` hands it
+`Request.stream`, and `stage_body` copies that stream block by block into
+`<tmp>/documents/upload-<token>/` under `DocumentSettings.max_request_bytes`,
+refusing at the block that crosses the bound rather than after the body
+arrives. The bound is the route's own, so the gateway's one-mebibyte JSON cap
+decides nothing here and keeps deciding everywhere else. A multipart body
+stages whole and the file part's byte range copies out of it, so the peak
+memory is one block whatever the upload's size.
 """
 
 from __future__ import annotations
@@ -47,7 +56,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import IO, cast
 
 from qwen_apu.tools.document_worker import (
     Boundary,
@@ -67,7 +76,15 @@ STORE_DIRECTORY = "documents"
 JOB_TOKEN_BYTES = 8
 DEFAULT_DEADLINE_SECONDS = 120.0
 DEFAULT_MAX_UPLOAD_BYTES = 32 * 1024 * 1024
+# The request body the upload route admits, which carries the file plus the
+# multipart framing around it, so it sits above the file's own cap.
+DEFAULT_MAX_REQUEST_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_SEARCH_HITS = 200
+UPLOAD_BLOCK_BYTES = 64 * 1024
+# The multipart file part's own headers are read from this prefix of the
+# staged body, so a form whose fields precede the file by more than this
+# refuses by name rather than reading an unbounded head.
+MULTIPART_HEAD_BYTES = 64 * 1024
 PROBE_TIMEOUT_SECONDS = 10.0
 KILL_GRACE_SECONDS = 5.0
 EXCERPT_MAX_CHARS = 400
@@ -129,6 +146,7 @@ class DocumentSettings:
     limits: Limits = field(default_factory=Limits)
     deadline_seconds: float = DEFAULT_DEADLINE_SECONDS
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
+    max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES
     max_search_hits: int = DEFAULT_MAX_SEARCH_HITS
     worker_command: tuple[str, ...] = ()
     python_path: tuple[Path, ...] = ()
@@ -490,6 +508,116 @@ def _parse_multipart(content_type: str, body: bytes) -> Upload:
     raise DocumentRefused(400, "the multipart body carries no file part")
 
 
+def stage_body(
+    read: Callable[[int], bytes],
+    declared: int,
+    target: Path,
+    bound: int,
+    block: int = UPLOAD_BLOCK_BYTES,
+) -> int:
+    """Copy a request body into `target`, refusing at the bound while reading.
+
+    Two refusals meet the same bound from opposite sides. A Content-Length
+    past the bound refuses at constant cost, before one byte leaves the
+    socket. The running count refuses at the block that crosses the bound,
+    which is what answers a body whose declaration understates it: the copy
+    stops there, so the staged file holds at most `bound` bytes and the reader
+    is never asked for the rest.
+    """
+    if declared > bound:
+        raise DocumentRefused(
+            413, f"the request declares {declared} bytes, past the {bound}-byte upload bound"
+        )
+    written = 0
+    with target.open("wb") as handle:
+        while True:
+            data = read(block)
+            if not data:
+                break
+            written += len(data)
+            if written > bound:
+                raise DocumentRefused(413, f"the request body passes the {bound}-byte upload bound")
+            handle.write(data)
+    return written
+
+
+def _find_delimiter(handle: IO[bytes], start: int, delimiter: bytes) -> int:
+    """The offset of the first `CRLF--boundary` at or after `start`, or -1.
+
+    The window keeps one byte less than the needle across reads, so a
+    delimiter split across two blocks is found at the same offset a whole-file
+    search would report while the memory stays one block.
+    """
+    needle = b"\r\n" + delimiter
+    handle.seek(start)
+    offset = start
+    window = b""
+    while True:
+        data = handle.read(UPLOAD_BLOCK_BYTES)
+        if not data:
+            return -1
+        window += data
+        found = window.find(needle)
+        if found >= 0:
+            return offset + found
+        keep = len(needle) - 1
+        if len(window) > keep:
+            offset += len(window) - keep
+            window = window[-keep:]
+
+
+def _copy_range(source: Path, target: Path, start: int, end: int) -> None:
+    """Copy `[start, end)` of one file into another, one block at a time."""
+    remaining = end - start
+    with source.open("rb") as reader, target.open("wb") as writer:
+        reader.seek(start)
+        while remaining > 0:
+            data = reader.read(min(UPLOAD_BLOCK_BYTES, remaining))
+            if not data:
+                raise DocumentRefused(400, "the multipart body ends inside its file part")
+            writer.write(data)
+            remaining -= len(data)
+
+
+def stage_multipart_part(body: Path, content_type: str, target: Path) -> tuple[str, str]:
+    """Write the file part of a staged multipart body into `target`.
+
+    The part's own headers come from the head of the staged body and its
+    content ends at the next delimiter, found by a blockwise scan, so a form
+    carrying fields after the file keeps the file's exact bytes.
+    """
+    found = MULTIPART_BOUNDARY_PATTERN.search(content_type)
+    if not found:
+        raise DocumentRefused(400, "the multipart content type declares no boundary")
+    delimiter = b"--" + found.group(1).encode("utf-8")
+    with body.open("rb") as handle:
+        head = handle.read(MULTIPART_HEAD_BYTES)
+        position = head.find(delimiter)
+        while position >= 0:
+            end_of_headers = head.find(b"\r\n\r\n", position)
+            if end_of_headers < 0:
+                break
+            headers = _part_headers(head[position + len(delimiter) : end_of_headers])
+            name = DISPOSITION_FILENAME_PATTERN.search(headers.get("content-disposition", ""))
+            if name:
+                start = end_of_headers + 4
+                end = _find_delimiter(handle, start, delimiter)
+                if end < 0:
+                    raise DocumentRefused(
+                        400, "the multipart file part carries no closing boundary"
+                    )
+                _copy_range(body, target, start, end)
+                return (
+                    safe_filename(name.group(1)),
+                    headers.get("content-type", "").split(";")[0].strip(),
+                )
+            position = head.find(delimiter, end_of_headers)
+    raise DocumentRefused(
+        400,
+        f"the first {MULTIPART_HEAD_BYTES} bytes of the multipart body carry no file part",
+    )
+
+
 def _part_headers(head: bytes) -> dict[str, str]:
     headers: dict[str, str] = {}
     for line in head.decode("utf-8", errors="replace").splitlines():
@@ -521,29 +649,57 @@ def _body(request: Request) -> Mapping[str, object]:
     return cast(Mapping[str, object], parsed)
 
 
+def stage_upload(
+    settings: DocumentSettings, request: Request, directory: Path
+) -> tuple[Path, str, str]:
+    """Put the uploaded file in `directory` and name what it is.
+
+    A streamed request copies the socket into `body` under the request bound
+    and takes its name from the multipart part or from `X-Filename`. A request
+    whose body an in-process caller carries whole takes the same shape through
+    `parse_upload`, which is what keeps one code path serving both.
+    """
+    stream = request.stream
+    if stream is None:
+        upload = parse_upload(request)
+        if len(upload.data) > settings.max_request_bytes:
+            raise DocumentRefused(
+                413,
+                f"the request body is {len(upload.data)} bytes, past the "
+                f"{settings.max_request_bytes}-byte upload bound",
+            )
+        staged = directory / "body"
+        staged.write_bytes(upload.data)
+        return staged, upload.filename, upload.media_type
+    body = directory / "body"
+    written = stage_body(stream.read, stream.length, body, settings.max_request_bytes)
+    if written == 0:
+        raise DocumentRefused(400, "the request carries an empty body")
+    content_type = request.header("content-type")
+    if content_type.lower().startswith("multipart/form-data"):
+        part = directory / "part"
+        filename, media_type = stage_multipart_part(body, content_type, part)
+        body.unlink(missing_ok=True)
+        return part, filename, media_type
+    name = request.header("x-filename")
+    if not name:
+        raise DocumentRefused(400, "the request names no file through X-Filename")
+    return body, safe_filename(name), content_type.split(";")[0].strip()
+
+
 def handle_upload(service: DocumentService, request: Request) -> Response:
     """Store one uploaded document and answer with its record."""
     if not service.settings.session_admits(request):
         return _json(401, {"error": "the request carries no admitted session"})
-    scratch = service.settings.scratch()
-    staged: Path | None = None
+    job = service.settings.scratch() / f"upload-{secrets.token_hex(JOB_TOKEN_BYTES)}"
     try:
-        upload = parse_upload(request)
-        if len(upload.data) > service.settings.max_upload_bytes:
-            raise DocumentRefused(
-                413,
-                f"the upload is {len(upload.data)} bytes, past the "
-                f"{service.settings.max_upload_bytes}-byte cap",
-            )
-        scratch.mkdir(parents=True, exist_ok=True)
-        staged = scratch / f"upload-{secrets.token_hex(JOB_TOKEN_BYTES)}-{upload.filename}"
-        staged.write_bytes(upload.data)
-        record = service.extract(staged, upload.media_type, upload.filename)
+        job.mkdir(parents=True)
+        source, filename, media_type = stage_upload(service.settings, request, job)
+        record = service.extract(source, media_type, filename)
     except DocumentRefused as refusal:
         return _json(refusal.status, {"error": refusal.message})
     finally:
-        if staged is not None:
-            staged.unlink(missing_ok=True)
+        shutil.rmtree(job, ignore_errors=True)
     return _json(201, record.to_json())
 
 
@@ -580,7 +736,12 @@ def handle_search(service: DocumentService, request: Request) -> Response:
 def routes(service: DocumentService) -> tuple[Route, ...]:
     """The upload, record, and search routes, each gated by the settings' session check."""
     return (
-        Route.make("POST", DOCUMENTS_ROUTE, lambda request: handle_upload(service, request)),
+        Route.make(
+            "POST",
+            DOCUMENTS_ROUTE,
+            lambda request: handle_upload(service, request),
+            streams=True,
+        ),
         Route.make("POST", DOCUMENT_SEARCH_ROUTE, lambda request: handle_search(service, request)),
         Route.make("GET", DOCUMENT_ROUTE, lambda request: handle_record(service, request)),
     )
@@ -603,4 +764,7 @@ __all__ = [
     "probe_network_isolation",
     "routes",
     "safe_filename",
+    "stage_body",
+    "stage_multipart_part",
+    "stage_upload",
 ]

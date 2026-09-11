@@ -19,8 +19,11 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import zipfile
+from collections.abc import Callable, Iterator
+from http.client import HTTPConnection
 from pathlib import Path
 
 import pytest
@@ -47,11 +50,13 @@ from qwen_apu.tools.document_worker import (
     resolve_format,
 )
 from qwen_apu.tools.documents import (
+    DEFAULT_MAX_REQUEST_BYTES,
     DIGEST_PATTERN,
     DOCUMENT_ROUTE,
     DOCUMENT_SEARCH_ROUTE,
     DOCUMENTS_ROUTE,
     NETWORK_ISOLATION_NAMESPACED,
+    UPLOAD_BLOCK_BYTES,
     DocumentRefused,
     DocumentService,
     DocumentSettings,
@@ -63,7 +68,9 @@ from qwen_apu.tools.documents import (
     probe_network_isolation,
     routes,
     safe_filename,
+    stage_body,
 )
+from qwen_apu.web.app import REQUEST_BODY_BYTE_CAP, Gateway, GatewayConfig
 from qwen_apu.web.http import Request, Response, match
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -921,3 +928,188 @@ def test_the_search_route_refuses_an_absent_query(service: DocumentService) -> N
         request("POST", "/api/documents/x/search", b"{}", digest=record.sha256),
     )
     assert response.status == 400
+
+
+# --- the upload bound ---------------------------------------------------------
+
+
+def _blocks_forever(limit: int) -> Callable[[int], bytes]:
+    """A reader that hands out blocks and fails the test where it is read past `limit`."""
+    handed = 0
+
+    def read(size: int) -> bytes:
+        nonlocal handed
+        if handed > limit:
+            raise AssertionError(f"the copy read {handed} bytes, past the {limit}-byte bound")
+        handed += size
+        return b"u" * size
+
+    return read
+
+
+def test_stage_body_refuses_at_the_bound_while_reading(tmp_path: Path) -> None:
+    """The running count stops the copy, so the reader is never asked for the rest.
+
+    The declaration states nothing here, which is the case a body longer than
+    its own Content-Length presents; the reader raises where the copy keeps
+    reading past the bound, so the refusal proves the copy stopped.
+    """
+    target = tmp_path / "body"
+    bound = 4 * UPLOAD_BLOCK_BYTES
+    with pytest.raises(DocumentRefused) as refusal:
+        stage_body(_blocks_forever(bound + UPLOAD_BLOCK_BYTES), 0, target, bound)
+    assert refusal.value.status == 413
+    assert f"passes the {bound}-byte upload bound" in refusal.value.message
+    assert target.stat().st_size <= bound
+
+
+def test_stage_body_refuses_a_declaration_past_the_bound(tmp_path: Path) -> None:
+    """A Content-Length past the bound refuses before one byte is read."""
+
+    def unread(size: int) -> bytes:
+        raise AssertionError("the copy read a body its declaration already refused")
+
+    with pytest.raises(DocumentRefused) as refusal:
+        stage_body(unread, 1 << 30, tmp_path / "body", 64)
+    assert refusal.value.status == 413
+    assert "declares 1073741824 bytes" in refusal.value.message
+
+
+def test_stage_body_writes_what_it_reads(tmp_path: Path) -> None:
+    source = io.BytesIO(b"a" * 5000)
+    target = tmp_path / "body"
+    written = stage_body(source.read, 5000, target, 1 << 20, block=512)
+    assert written == 5000
+    assert target.read_bytes() == b"a" * 5000
+
+
+class Serving:
+    """One gateway serving the document routes alone, on a port the bind decides."""
+
+    def __init__(self, settings: DocumentSettings, static_root: Path) -> None:
+        static_root.mkdir(parents=True, exist_ok=True)
+        (static_root / "index.html").write_text("<!doctype html>\n", encoding="utf-8")
+        self.gateway = Gateway(
+            GatewayConfig(static_root=static_root, port=0, bind_host="127.0.0.1"),
+            (_Mounted(routes(DocumentService(settings))),),
+        )
+        self.thread = threading.Thread(target=self.gateway.serve_forever)
+        self.thread.start()
+
+    def post(self, body: bytes, headers: dict[str, str]) -> tuple[int, dict[str, object]]:
+        connection = HTTPConnection("127.0.0.1", self.gateway.port, timeout=60.0)
+        try:
+            connection.request("POST", DOCUMENTS_ROUTE, body=body, headers=headers)
+            response = connection.getresponse()
+            answer = json.loads(response.read().decode("utf-8"))
+            assert isinstance(answer, dict)
+            return response.status, answer
+        finally:
+            connection.close()
+
+    def stop(self) -> None:
+        self.gateway.shutdown()
+        self.thread.join(timeout=60.0)
+
+
+class _Mounted:
+    def __init__(self, table: tuple[object, ...]) -> None:
+        self._table = table
+
+    def routes(self) -> tuple[object, ...]:
+        return self._table
+
+
+@pytest.fixture
+def serve(tmp_path: Path) -> Iterator[Callable[[int], Serving]]:
+    """A factory for one gateway per bound, torn down whatever the test asserts."""
+    running: list[Serving] = []
+
+    def start(bound: int) -> Serving:
+        served = Serving(
+            DocumentSettings(
+                artifacts=tmp_path / "artifacts",
+                tmp=tmp_path / "tmp",
+                max_request_bytes=bound,
+                python_path=EXTRA_PYTHON_PATH,
+                session_admits=admits_every_session,
+            ),
+            tmp_path / "static",
+        )
+        running.append(served)
+        return served
+
+    try:
+        yield start
+    finally:
+        for served in running:
+            served.stop()
+
+
+def test_the_upload_route_refuses_a_body_past_its_own_bound(
+    serve: Callable[[int], Serving],
+) -> None:
+    """The route's bound answers the request, and the general JSON cap decides nothing.
+
+    Content-Length is what the refusal reads, since the stream clamps every
+    read to it: a body longer than its own declaration reaches the copy's
+    running count, which `test_stage_body_refuses_at_the_bound_while_reading`
+    proves against a reader that keeps handing out bytes.
+    """
+    served = serve(16 * 1024)
+    status, answer = served.post(
+        b"z" * (48 * 1024),
+        {"Content-Type": "text/plain", "X-Filename": "large.txt"},
+    )
+    assert status == 413
+    assert "past the 16384-byte upload bound" in str(answer["error"])
+
+
+def test_the_upload_route_stores_a_body_the_gateway_cap_refuses(
+    serve: Callable[[int], Serving],
+) -> None:
+    """Two mebibytes reach the store, twice what a route reading its body whole admits."""
+    served = serve(DEFAULT_MAX_REQUEST_BYTES)
+    line = ("w" * (128 * 1024 - 1) + "\n").encode("utf-8")
+    body = line * 16
+    assert len(body) > REQUEST_BODY_BYTE_CAP
+    status, answer = served.post(body, {"Content-Type": "text/plain", "X-Filename": "long.txt"})
+    assert status == 201, answer
+    assert answer["sha256"] == hashlib.sha256(body).hexdigest()
+    assert answer["source_bytes"] == len(body)
+    assert answer["detected_format"] == "text"
+
+
+def test_a_streamed_multipart_upload_preserves_the_file_part(
+    serve: Callable[[int], Serving],
+) -> None:
+    """The part's byte range copies out of the staged body, digest for digest."""
+    served = serve(DEFAULT_MAX_REQUEST_BYTES)
+    data = fixture("two-paragraphs.docx")
+    boundary = "----qwenstreamboundary"
+    body = (
+        (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="note"\r\n\r\n'
+            "a field ahead of the file\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="two-paragraphs.docx"\r\n'
+            "Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "\r\n\r\n"
+        ).encode()
+        + data
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    status, answer = served.post(
+        body, {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    )
+    assert status == 201, answer
+    assert answer["sha256"] == hashlib.sha256(data).hexdigest()
+    assert answer["detected_format"] == "docx"
+
+
+def test_a_streamed_upload_naming_no_file_refuses(serve: Callable[[int], Serving]) -> None:
+    served = serve(DEFAULT_MAX_REQUEST_BYTES)
+    status, answer = served.post(b"a body with no name", {"Content-Type": "text/plain"})
+    assert status == 400
+    assert "X-Filename" in str(answer["error"])
