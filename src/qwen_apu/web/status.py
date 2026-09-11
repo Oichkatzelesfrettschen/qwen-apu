@@ -16,7 +16,7 @@ response no matter what a future record gains.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from qwen_apu.engines.llama import LlamaClient, UpstreamRefused, collect
@@ -44,6 +44,15 @@ REPORTED_STATE_FIELDS: tuple[str, ...] = (
 )
 
 
+def _start_time() -> int:
+    """This process's start time, the identity a teardown compares before a signal."""
+    try:
+        text = Path("/proc/self/stat").read_text(encoding="ascii")  # appliance-path: named
+    except OSError:
+        return 0
+    return int(text.rsplit(")", 1)[1].split()[19])
+
+
 class StatusService:
     """The gateway's own health and status routes."""
 
@@ -53,10 +62,14 @@ class StatusService:
         *,
         runtime_record: Path,
         session_gate: SessionGate | None = None,
+        approval_identity: Mapping[str, str] | None = None,
     ) -> None:
         self.client_factory = client_factory
         self.runtime_record = runtime_record
         self.session_gate = session_gate
+        # What the session script read from the broker's /health and failed
+        # the launch on: profile, image_profile, provider, signing_key_sha256.
+        self.approval_identity = dict(approval_identity or {})
 
     def routes(self) -> tuple[Route, ...]:
         return (
@@ -121,7 +134,12 @@ class StatusService:
             }
         return Response.json(
             {
-                "gateway": {"pid": os.getpid(), "pairing": pairing},
+                "gateway": {
+                    "pid": os.getpid(),
+                    "start_time": _start_time(),
+                    "pairing": pairing,
+                    "approvals": self.approval_identity,
+                },
                 "upstream": self.upstream_report(),
                 "runtime": reported,
             }

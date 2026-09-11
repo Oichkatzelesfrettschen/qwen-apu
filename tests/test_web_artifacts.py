@@ -621,10 +621,61 @@ def tool_settings(
         "artifacts": ArtifactDirectory(artifacts_directory),
         "review_model": REVIEW_MODEL,
         "verify_generation": lambda request: {"profile_id": request["profile_id"]},
-        "verify_grant": lambda token: {"prompt_hash": PROMPT_SHA256},
+        "verify_grant": lambda token: {
+            "prompt_hash": PROMPT_SHA256,
+            "grant_id": "g-" + token[:8],
+            "expiry": 4102444800.0,
+        },
+        "spend_grant": SpendRecorder(),
     }
     fields.update(overrides)
     return ImageToolSettings(**fields)  # type: ignore[arg-type]
+
+
+GENERATE_BODY: Mapping[str, object] = {
+    "profile_id": "image-sdxs-512-a",
+    "prompt": PROMPT,
+    "negative_prompt": "",
+    "seed": 7,
+    "width": 512,
+    "height": 256,
+    "steps": 4,
+    "authorization": "grant-token",
+}
+
+
+class SpendRecorder:
+    """A ledger stand-in: the first spend of a grant succeeds, a replay refuses."""
+
+    def __init__(self) -> None:
+        self.spent: list[tuple[str, float]] = []
+
+    def __call__(self, grant_id: str, expiry: float) -> None:
+        if any(seen == grant_id for seen, _ in self.spent):
+            raise RuntimeError(f"grant {grant_id} was already spent")
+        self.spent.append((grant_id, expiry))
+
+
+def test_generate_spends_the_grant_once_and_refuses_the_replay(
+    artifacts: Path, control: ControlFixture
+) -> None:
+    recorder = SpendRecorder()
+    settings = tool_settings(artifacts, control.path, spend_grant=recorder)
+    body = GENERATE_BODY
+    first = image_tools.generate(settings, tool_request("/api/tools/image/generate", body))
+    second = image_tools.generate(settings, tool_request("/api/tools/image/generate", body))
+    assert isinstance(first, Response) and first.status == 200, first.body
+    assert isinstance(second, Response) and second.status == 403
+    assert b"already spent" in second.body
+    assert len(recorder.spent) == 1
+
+
+def test_generate_refuses_without_a_ledger(artifacts: Path, control: ControlFixture) -> None:
+    settings = tool_settings(artifacts, control.path)
+    object.__setattr__(settings, "spend_grant", image_tools._ledger_absent)  # noqa: SLF001
+    reply = image_tools.generate(settings, tool_request("/api/tools/image/generate", GENERATE_BODY))
+    assert isinstance(reply, Response) and reply.status == 503
+    assert b"binds no ledger" in reply.body
 
 
 def test_generate_forwards_the_job_and_answers_on_the_gateway_mount(

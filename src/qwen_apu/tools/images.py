@@ -133,10 +133,19 @@ class ImageToolSettings:
     router: Callable[[Mapping[str, object]], object] = field(default_factory=lambda: _router_absent)
     verify_generation: Callable[[Mapping[str, object]], Mapping[str, object]] = verify_generation
     verify_grant: Callable[[str], Mapping[str, object]] = verify_grant_claim
+    # The grant's single use is spent here, between admission and the worker,
+    # the way remote/image-mcp/server.py spends it; the default binds no
+    # ledger and refuses, so an assembly that forgets the ledger cannot serve
+    # a replayable grant.
+    spend_grant: Callable[[str, float], None] = field(default_factory=lambda: _ledger_absent)
 
 
 def _router_absent(payload: Mapping[str, object]) -> object:
     raise ToolRefused(503, "the gateway names no router for the image reviewer")
+
+
+def _ledger_absent(grant_id: str, expiry: float) -> None:
+    raise ToolRefused(503, "the gateway binds no ledger to spend the image grant")
 
 
 def clip_service_error(value: object) -> str:
@@ -207,6 +216,7 @@ def generate(settings: ImageToolSettings, request: Request) -> Response:
         # generation arguments directly: an absent key reaches it as a KeyError
         # rather than as the denial the boundary reports.
         _admit(settings, frame)
+        _spend(settings, _claim(settings, cast(str, frame["authorization"])))
         reply = _run_generation(settings, frame)
     except ToolRefused as refusal:
         return _json(refusal.status, {"error": refusal.message})
@@ -305,6 +315,19 @@ def review(settings: ImageToolSettings, request: Request) -> Response:
     except ToolRefused as refusal:
         return _json(refusal.status, {"error": refusal.message})
     return _json(200, findings)
+
+
+def _spend(settings: ImageToolSettings, claim: Mapping[str, object]) -> None:
+    """Spend the grant once; a replay reaches the caller as a denial."""
+    grant_id, expiry = claim.get("grant_id"), claim.get("expiry")
+    if not isinstance(grant_id, str) or not isinstance(expiry, (int, float)):
+        raise ToolRefused(403, "the grant carries no usable grant_id or expiry")
+    try:
+        settings.spend_grant(grant_id, float(expiry))
+    except ToolRefused:
+        raise
+    except Exception as error:
+        raise ToolRefused(403, clip_service_error(str(error) or type(error).__name__)) from None
 
 
 def _claim(settings: ImageToolSettings, token: str) -> Mapping[str, object]:
