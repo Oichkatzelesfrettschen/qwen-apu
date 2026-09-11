@@ -30,9 +30,13 @@ resolved and compared against the identity its own authority sealed.
 The wheel is written with `zipfile` alone under PEP 427 -- `METADATA`, `WHEEL`,
 `entry_points.txt`, and `RECORD` in `qwen_apu-<version>.dist-info/` -- because a
 build backend would put a third-party dependency between a checkout and its own
-deployable form. Every member is stored sorted, at one fixed timestamp and one
-fixed mode, so two builds from one commit produce one digest; a wheel digest
-that moved with the build clock would identify the build rather than the source.
+deployable form. Every member is stored sorted, uncompressed, at one fixed
+timestamp and one fixed mode, so two builds from one commit produce one digest
+on any host. Deflate is what the uncompressed store replaces: zlib 1.3 on the
+appliance re-encodes bytes the workstation wrote to a different stream with
+identical content, so a deflated wheel would carry one digest per host and the
+manifest would name the machine that built it rather than the commit it came
+from.
 
 Immutability is the refusal: a build whose name already exists refuses before
 anything is written, the tree is assembled under a private staging directory,
@@ -270,9 +274,11 @@ def build_wheel(tree: Path, destination: Path) -> Path:
     """Write the pure-Python wheel of `src/qwen_apu` at `destination`.
 
     Determinism is the whole point of the fixed timestamp, the fixed external
-    attributes, and the sorted member order: the manifest states a wheel digest
-    as part of the application's identity, so two builds from one commit have to
-    agree on it or the identity names a build clock.
+    attributes, the sorted member order, and the uncompressed store: the manifest
+    states a wheel digest as part of the application's identity, so two builds
+    from one commit have to agree on it wherever they run. The store is what
+    carries that across hosts, since a deflate stream is an encoder's choice
+    rather than a specified one and two zlib builds disagree on the bytes.
     """
     project = _project_metadata(tree)
     version = str(project.get("version", __version__))
@@ -283,11 +289,11 @@ def build_wheel(tree: Path, destination: Path) -> Path:
     records: list[tuple[str, str, int]] = []
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_STORED) as archive:
 
         def write(arcname: str, payload: bytes) -> None:
             info = zipfile.ZipInfo(arcname, date_time=WHEEL_TIMESTAMP)
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = zipfile.ZIP_STORED
             info.external_attr = 0o644 << 16
             info.create_system = 3
             archive.writestr(info, payload)
@@ -305,7 +311,7 @@ def build_wheel(tree: Path, destination: Path) -> Path:
         record_rows = "".join(f"{name},{digest},{size}\n" for name, digest, size in sorted(records))
         record_rows += f"{dist_info}/RECORD,,\n"
         info = zipfile.ZipInfo(f"{dist_info}/RECORD", date_time=WHEEL_TIMESTAMP)
-        info.compress_type = zipfile.ZIP_DEFLATED
+        info.compress_type = zipfile.ZIP_STORED
         info.external_attr = 0o644 << 16
         info.create_system = 3
         archive.writestr(info, record_rows.encode("utf-8"))

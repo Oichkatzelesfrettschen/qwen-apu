@@ -44,6 +44,7 @@ from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import read_start_time
 from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
 from qwen_apu.web import assemble as gateway_assembly
+from qwen_apu.web.auth import PAIRING_CODE_FILENAME
 from test_web_gateway import _FakeUpstream
 
 TREE = Path(__file__).resolve().parents[1]
@@ -295,6 +296,10 @@ def test_a_whole_run_passes_every_reachable_check(gateway: Fixture) -> None:
     assert results["file_search"].status == PASS, results["file_search"].reason
     assert results["file_search_scope"].status == PASS
     assert results["document_extraction:two-paragraphs.docx"].status == PASS
+    pdf = results["document_extraction:text.pdf"]
+    assert pdf.status in (PASS, SKIPPED), pdf.reason
+    if pdf.status == SKIPPED:
+        assert "pypdf" in pdf.reason
     assert results["browser_history_import"].status == PASS
     assert results["conversation_open"].status == PASS
 
@@ -380,11 +385,17 @@ def test_the_report_writes_json_and_markdown_under_the_root(gateway: Fixture) ->
     assert code == (1 if document["counts"][FAIL] else 0)
 
 
-def test_a_report_outside_the_runtime_root_refuses(gateway: Fixture, tmp_path: Path) -> None:
-    outside = tmp_path / "elsewhere" / "report.json"
+@pytest.mark.parametrize("suffix", ("elsewhere", ""))
+def test_a_report_outside_the_runtime_root_refuses(
+    gateway: Fixture, tmp_path: Path, suffix: str
+) -> None:
+    """A sibling that prefixes the root's spelling is outside it all the same."""
+    parent = tmp_path / suffix if suffix else Path(str(gateway.paths.root) + "-scratch")
+    outside = parent / "report.json"
     with pytest.raises(acceptance.AcceptanceRefused, match="runtime root alone"):
         acceptance.run(gateway.paths, _request(gateway, report=outside))
     assert not outside.exists()
+    assert not parent.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -580,6 +591,43 @@ def test_a_temporary_conversation_that_survives_the_restart_fails(root: RuntimeP
     result = _by_name(run.results)["history_survives_restart"]
     assert result.status == FAIL
     assert "the temporary one ends" in result.reason
+
+
+def test_the_restart_pairs_with_the_code_the_restarted_gateway_minted(
+    root: RuntimePaths,
+) -> None:
+    """The code this run was given is dead; the live one comes from the state file."""
+    saved = "b" * 32
+    temporary = "c" * 32
+    minted = "the-code-the-restart-minted"
+    (root["qwen_home_state"] / PAIRING_CODE_FILENAME).write_text(f"{minted}\n", encoding="utf-8")
+    table = {
+        ("POST", "/api/pair"): _json_answer(200, {"paired": True}),
+        ("GET", "/api/health"): _json_answer(200, {"status": "ok"}),
+        ("GET", f"/api/conversations/{saved}"): _json_answer(200, {"conversation_id": saved}),
+        ("GET", f"/api/conversations/{temporary}"): _json_answer(404, {"error": "absent"}),
+    }
+    run = _scripted(
+        root, table, pairing_code="dead", restart_command=(sys.executable, "-c", "pass")
+    )
+    run.saved_conversation = saved
+    run.temporary_conversation = temporary
+    assert run._current_pairing_code() == minted
+    run.check_history_across_restart()
+    assert _by_name(run.results)["history_survives_restart"].status == PASS
+
+
+def test_a_refused_re_pair_after_the_restart_names_itself(root: RuntimePaths) -> None:
+    table = {
+        ("POST", "/api/pair"): _json_answer(401, {"error": "the code is dead"}),
+        ("GET", "/api/health"): _json_answer(200, {"status": "ok"}),
+    }
+    run = _scripted(root, table, restart_command=(sys.executable, "-c", "pass"))
+    run.saved_conversation = "b" * 32
+    run.check_history_across_restart()
+    result = _by_name(run.results)["history_survives_restart"]
+    assert result.status == FAIL
+    assert "pairing with the restarted gateway answered 401" in result.reason
 
 
 def test_a_restart_command_that_exits_non_zero_fails(root: RuntimePaths) -> None:

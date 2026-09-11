@@ -640,7 +640,10 @@ def render_markdown(document: Mapping[str, object]) -> str:
 
 def require_inside_root(paths: RuntimePaths, report: Path) -> Path:
     resolved = report if report.is_absolute() else (paths["qwen_home_results"] / report)
-    if not str(resolved.parent).startswith(str(paths.root)):
+    # `is_inside_root` resolves both sides and takes `relative_to`, which a
+    # string prefix test does not: `<root>-scratch` prefixes the root's own
+    # spelling while sitting beside it rather than under it.
+    if not paths.is_inside_root(resolved.parent):
         raise CanaryRefused(
             f"the canary report writes under the runtime root alone; {resolved} is outside "
             f"{paths.root}"
