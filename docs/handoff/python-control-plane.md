@@ -193,6 +193,62 @@ stop of the gateway ends it and nothing of it reaches the database.
 `import --browser` reads the page's IndexedDB export
 (`docs/handoff/browser-history-format.md`).
 
+`tests/test_conversation_lifecycle.py` drives `web/assemble.py` over a
+temporary runtime root through `http.client` rather than through
+`web.http.match`, which is what `tests/test_web_history.py`'s own route
+helper calls directly, and the HTTP-verb gap only the former reaches. The
+suite fixed four defects that gap had hidden and records the lifecycle
+guarantees the fixes now hold:
+
+- A gateway restart ends every live temporary conversation: `Gateway.shutdown`
+  takes `on_shutdown`, a sequence of hooks it runs after the listening socket
+  closes, and `assemble()` names `TemporaryConversations.shutdown` as one, so
+  a temporary conversation's `tmp/conversations/<id>/` directory is gone
+  before a second process opens the same root and a saved conversation and
+  its messages read back unchanged.
+- `_Handler` named `do_GET`, `do_POST`, `do_PUT`, `do_DELETE`, and
+  `do_OPTIONS` but no `do_PATCH`, so `BaseHTTPRequestHandler` answered every
+  PATCH with a bare 501 and the conversation rename route was unreachable
+  over the real listener; `do_PATCH` now forwards to `_dispatch` like every
+  other verb.
+- `append_message`, `delete`, `record_observation`, and `record_model_switch`
+  each issued an explicit `ROLLBACK` ahead of raising `UnknownConversation`
+  for an absent conversation row, inside a `try` whose own
+  `except BaseException` rolled back and re-raised again; the second
+  `ROLLBACK` met no open transaction and raised
+  `sqlite3.OperationalError: cannot rollback - no transaction is active`,
+  which replaced `UnknownConversation` as the exception every caller actually
+  saw. The absent-row check now raises once and the one shared handler rolls
+  back.
+- A database write that meets a read-only file, a directory with no create
+  permission, or a lock held past the busy timeout raises `sqlite3.Error`
+  past every named catch in `_answer`, which reached the HTTP server loop
+  uncaught and ended the connection with no response body. `_answer` now
+  answers 500 JSON naming the driver's own reason, so a caller reads a
+  status rather than losing the socket and being left unable to tell a
+  failed save from one the network merely interrupted.
+- A PATCH naming `mode` was already refused unconditionally -- mode is fixed
+  at creation, since a saved conversation lives in the database and a
+  temporary one lives in memory and under `tmp/conversations/`, so a mode
+  change is a move between stores rather than a field update -- but the
+  refusal answered 400, the status for a body the route cannot parse, though
+  the body parses fine. It now answers 409, naming the conflict between the
+  request and the conversation's fixed mode.
+- `ConversationStore.append_message` and `TemporaryConversations.append`
+  both check existence inside the same lock or transaction an insert would
+  use, so a delayed save task racing a delete or a `close` finds no row or
+  registry entry to attach to and raises `UnknownConversation` rather than
+  recreating one; this holds without any fix, and the suite pins it as a
+  regression test.
+
+Recorded gap: attachment and artifact reads answer a clean 404 for a digest
+with no backing bytes, at every route this phase wires up, but no route
+computes and returns a per-attachment availability field on a conversation
+read itself -- a message's `attachments` array carries the metadata a client
+would need to probe `GET /api/documents/<sha256>` or
+`GET /api/artifacts/<sha256>.<ext>` per entry, not an `available` flag baked
+into the conversation record.
+
 ## Phase 7: documents and deterministic tools
 
 `tools/calculator.py` evaluates an arithmetic expression over a closed
