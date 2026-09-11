@@ -662,6 +662,73 @@ def test_an_attachments_availability_is_computed_fresh_across_restart_and_loss(
         second.stop()
 
 
+def test_a_temporary_conversations_attachment_carries_no_availability_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A temporary attachment's bytes never reach the availability check.
+
+    They live under `tmp/conversations/<id>/`, not the content-addressed
+    document store `available` reads from, so the read route must not answer
+    `available: false` for bytes that are actually on disk -- that would be
+    a worse lie than carrying no field. The message references a digest with
+    real bytes staged in the conversation's own scratch directory, and the
+    read carries no `available` key at all.
+    """
+    paths = _runtime_paths(tmp_path, monkeypatch)
+    fixture = _start_gateway(paths, _static_root(tmp_path))
+    try:
+        cookie = _pair(fixture)
+        response, body = _exchange(
+            fixture,
+            "POST",
+            conversations_module.CONVERSATIONS_PATH,
+            body={"mode": "temporary", "title": "scratch upload"},
+            headers={"Cookie": cookie},
+        )
+        assert response.status == 201
+        conversation_id = _json(body)["conversation_id"]
+
+        digest = "a" * 64
+        directory = (
+            paths["qwen_home_tmp"] / conversations_module.TEMPORARY_DIRECTORY_NAME / conversation_id
+        )
+        assert directory.is_dir()
+        (directory / "note.txt").write_bytes(b"bytes really sit on disk here")
+
+        response, _ = _exchange(
+            fixture,
+            "POST",
+            f"{conversations_module.CONVERSATIONS_PATH}/{conversation_id}/messages",
+            body={
+                "role": "user",
+                "content": "see the attached note",
+                "created_utc": "2026-01-01T00:00:00Z",
+                "attachments": [
+                    {
+                        "name": "note.txt",
+                        "media_type": "text/plain",
+                        "sha256": digest,
+                        "byte_count": 30,
+                    }
+                ],
+            },
+            headers={"Cookie": cookie},
+        )
+        assert response.status == 201
+
+        response, body = _exchange(
+            fixture,
+            "GET",
+            f"{conversations_module.CONVERSATIONS_PATH}/{conversation_id}",
+            headers={"Cookie": cookie},
+        )
+        assert response.status == 200
+        attachment = _json(body)["messages"][0]["attachments"][0]  # type: ignore[index]
+        assert "available" not in attachment
+    finally:
+        fixture.stop()
+
+
 # ---------------------------------------------------------------------------
 # 5. A database write failure answers 5xx JSON; the client is never told the
 #    save succeeded.

@@ -247,22 +247,27 @@ whenever this module ran ahead of them in the same pytest process.
   recreating one; this holds without any fix, and the suite pins it as a
   regression test.
 
-`GET /api/conversations/<id>` decorates every attachment with `available`,
-computed at read time from `<artifacts>/documents/<sha256>/<sha256>.json`
-rather than from a flag frozen at `POST .../messages`, so a client reads one
-field per attachment rather than probing `GET /api/documents/<sha256>`
-itself; the digest answers `true` right after upload, `true` again after a
-gateway restart, and `false` the moment its bytes leave the store by any
-means, retention sweep included. `ConversationSettings.document_store` and
+`GET /api/conversations/<id>` decorates every attachment of a saved
+conversation with `available`, computed at read time from
+`<artifacts>/documents/<sha256>/<sha256>.json` rather than from a flag
+frozen at `POST .../messages`, so a client reads one field per attachment
+rather than probing `GET /api/documents/<sha256>` itself; the digest
+answers `true` right after upload, `true` again after a gateway restart,
+and `false` the moment its bytes leave the store by any means, retention
+sweep included. `ConversationSettings.document_store` and
 `conversations.build()`'s matching parameter carry the root in;
 `assemble()` names `paths["qwen_home_artifacts"] / "documents"`, and a
 caller that names none reports every attachment unavailable rather than
-raising. `artifacts` (a message's plain digest tuple naming a generated
-image rather than an upload) carries no matching flag: `GET
-/api/artifacts/<sha256>.<ext>` already answers a clean 404 for a digest no
-publication marker names, and widening that field to carry availability
-would change the tuple shape `browser_import.py` and the export document
-both already commit to.
+raising. A temporary conversation's read carries no `available` key at
+all: its uploads live under `tmp/conversations/<id>/`, a scratch tree with
+no digest-addressed layout to check, so decorating that branch the same
+way would answer `false` for bytes that are actually on disk, which is a
+worse lie than carrying no field. `artifacts` (a message's plain digest
+tuple naming a generated image rather than an upload) carries no matching
+flag either: `GET /api/artifacts/<sha256>.<ext>` already answers a clean
+404 for a digest no publication marker names, and widening that field to
+carry availability would change the tuple shape `browser_import.py` and
+the export document both already commit to.
 
 ## Phase 7: documents and deterministic tools
 

@@ -260,12 +260,16 @@ def _decorate_attachment_availability(
 ) -> dict[str, object]:
     """Add each attachment's live availability, computed fresh at read time.
 
-    The document store is content-addressed by digest, so `available`
-    answers from whatever the store holds right now rather than from a flag
-    written once at append time: a restart, a retention sweep, or bytes lost
-    to any other cause all read back honestly the next time this route runs,
-    and a message naming a digest the store never received answers
-    `available: false` rather than failing the read.
+    This runs on a saved conversation's read alone. The document store is
+    content-addressed by digest, so `available` answers from whatever the
+    store holds right now rather than from a flag written once at append
+    time: a restart, a retention sweep, or bytes lost to any other cause all
+    read back honestly the next time this route runs, and a message naming a
+    digest the store never received answers `available: false` rather than
+    failing the read. A temporary conversation's uploads live under
+    `tmp/conversations/<id>/`, a scratch tree with no digest-addressed
+    layout to check, so `_read` never calls this for one and its attachments
+    carry no `available` key at all.
     """
     messages = cast("list[dict[str, object]]", record.get("messages", []))
     for message in messages:
@@ -388,8 +392,13 @@ def _identifier(request: Request) -> str:
 def _read(settings: ConversationSettings, request: Request) -> Response:
     conversation_id = _identifier(request)
     if settings.temporary.holds(conversation_id):
-        record = conversation_to_json(settings.temporary.get(conversation_id))
-        return Response.json(_decorate_attachment_availability(settings, record))
+        # A temporary conversation's uploads live under
+        # tmp/conversations/<id>/, a scratch tree with no digest-addressed
+        # layout, and no upload route writes one yet: `document_store` names
+        # the saved store alone, so decorating here would answer `available:
+        # false` for bytes that sit on disk, which is worse than carrying no
+        # field at all.
+        return Response.json(conversation_to_json(settings.temporary.get(conversation_id)))
     conversation = settings.store.get(conversation_id)
     observations = settings.store.observations(conversation_id)
     record = conversation_to_json(conversation, observations)
