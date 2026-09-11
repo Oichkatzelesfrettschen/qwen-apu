@@ -141,6 +141,12 @@ assert (
 )
 assert (
     MODULE.classify_paths(
+        ["remote/readiness-driver.py", "remote/test-readiness-driver.py"]
+    )
+    == "readiness-driver"
+)
+assert (
+    MODULE.classify_paths(
         [
             "evidence/SHA256SUMS",
             "evidence/ngram-retrieval-screen/README.md",
@@ -167,6 +173,12 @@ assert (
         ]
     )
     == "ci-routing+q8-sampler-attribution"
+)
+assert (
+    MODULE.classify_paths(
+        ["remote/readiness-driver.py", "remote/run-pull-request-gate.py"]
+    )
+    == "ci-routing+readiness-driver"
 )
 assert (
     MODULE.classify_paths(
@@ -232,6 +244,32 @@ assert not any(
     for command in image_quality_commands
     for argument in command
 )
+readiness_driver_commands = MODULE.selected_checks(
+    ["remote/readiness-driver.py", "remote/test-readiness-driver.py"],
+    "readiness-driver",
+)
+assert (
+    "ruff",
+    "format",
+    "--check",
+    "remote/readiness-driver.py",
+    "remote/test-readiness-driver.py",
+) in readiness_driver_commands
+assert (
+    "mypy",
+    "--strict",
+    "remote/readiness-driver.py",
+    "remote/test-readiness-driver.py",
+) in readiness_driver_commands
+assert (
+    "python3",
+    "remote/test-readiness-driver.py",
+) in readiness_driver_commands
+assert (
+    "remote/repository-quality-gates.sh",
+    "--declarations",
+) in readiness_driver_commands
+assert ("python3", "remote/check-appliance-paths.py") in readiness_driver_commands
 assert not any(
     "telemetry" in argument
     for command in image_quality_commands
