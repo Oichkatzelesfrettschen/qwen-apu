@@ -344,6 +344,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802 -- BaseHTTPRequestHandler names the verb
         self._dispatch()
 
+    def do_PATCH(self) -> None:  # noqa: N802 -- BaseHTTPRequestHandler names the verb
+        self._dispatch()
+
     def do_DELETE(self) -> None:  # noqa: N802 -- BaseHTTPRequestHandler names the verb
         self._dispatch()
 
