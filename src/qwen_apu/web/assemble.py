@@ -16,9 +16,9 @@ from pathlib import Path
 from qwen_apu.engines.image import ImageControlClient
 from qwen_apu.engines.llama import LlamaClient, binding_from_runtime
 from qwen_apu.runtime.paths import RuntimePaths
-from qwen_apu.tools import approvals, images, registry
+from qwen_apu.tools import approvals, calculator, files, images, registry
 from qwen_apu.tools.ledger import Ledger
-from qwen_apu.web import artifacts, chat, status
+from qwen_apu.web import artifacts, chat, conversations, status
 from qwen_apu.web.app import Gateway, GatewayConfig, RequestRefused
 from qwen_apu.web.auth import SessionGate
 from qwen_apu.web.http import Request, Route
@@ -39,6 +39,8 @@ class GatewayRequest:
     provider: str = "searxng"
     review_model: str = DEFAULT_REVIEW_MODEL
     static_root: Path | None = None
+    # Read-only roots the file search may reach; empty admits nothing.
+    file_roots: tuple[Path, ...] = ()
 
 
 class _Providers:
@@ -113,8 +115,20 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         "provider": approval_settings.provider,
         "signing_key_sha256": approval_settings.signing_key_sha256,
     }
+    conversation_settings = conversations.build(state, paths["qwen_home_tmp"], session_check)
+    file_roots = tuple(root for root in request.file_roots if root.is_dir())
     providers = (
         session,
+        _Providers(conversations.routes(conversation_settings)),
+        _Providers(calculator.routes(calculator.CalculatorSettings(session_admits=session_admits))),
+        _Providers(
+            files.routes(
+                files.FilesToolSettings(
+                    search=files.FileSearchSettings(roots=file_roots),
+                    session_admits=session_admits,
+                )
+            )
+        ),
         chat.ChatService(client),
         status.StatusService(
             client,

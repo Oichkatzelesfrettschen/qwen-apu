@@ -26,11 +26,11 @@ from qwen_apu.runtime import deployment, deployment_write
 from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError, render_paths
 from qwen_apu.web import assemble as gateway_assembly
+from qwen_apu.web import browser_import
+from qwen_apu.web.history import ConversationStore
 
 UNPORTED: dict[str, str] = {
     "verify": "remote/runtime-root.sh verify-layout, verify-components, verify-live",
-    "export": "no shell predecessor; arrives with conversation persistence",
-    "import": "no shell predecessor; arrives with conversation persistence",
 }
 
 
@@ -127,12 +127,16 @@ def build_parser() -> argparse.ArgumentParser:
     gateway.add_argument("--web-profile", default=gateway_assembly.DEFAULT_WEB_PROFILE)
     gateway.add_argument("--image-profile", default="")
     gateway.add_argument("--static", type=Path, default=None)
+    gateway.add_argument("--file-root", type=Path, action="append", default=[])
     status = sub.add_parser("status", help="runtime root binding and declared paths")
     status.add_argument("--json", action="store_true")
     sub.add_parser("doctor", help="prerequisites a user-space installer can only detect")
     sub.add_parser("verify", help="layout, components, and live state")
-    sub.add_parser("export", help="export conversations")
-    sub.add_parser("import", help="import conversations")
+    export = sub.add_parser("export", help="write every saved conversation as one JSON document")
+    export.add_argument("output", type=Path)
+    imp = sub.add_parser("import", help="import a qwen-apu export or a browser history export")
+    imp.add_argument("input", type=Path)
+    imp.add_argument("--browser", action="store_true", help="the page's IndexedDB export")
     paths = sub.add_parser("paths", help="every declared runtime-root name and value")
     paths.add_argument(
         "--shell-only",
@@ -290,6 +294,34 @@ def cmd_deployment(paths: RuntimePaths, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(paths: RuntimePaths, output: Path) -> int:
+    store = ConversationStore(paths["qwen_home_state"])
+    document = store.export_all()
+    output.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    exported = document.get("conversations")
+    count = len(exported) if isinstance(exported, list) else 0
+    print(f"exported={count} path={output}")
+    return 0
+
+
+def cmd_import(paths: RuntimePaths, source: Path, browser: bool) -> int:
+    store = ConversationStore(paths["qwen_home_state"])
+    data = source.read_bytes()
+    if not browser:
+        imported = store.import_document(json.loads(data))
+        print(f"imported={len(imported)}")
+        return 0
+    report = browser_import.parse_export(data)
+    for conversation in report.conversations:
+        store.create(conversation.title, mode="saved", conversation_id=conversation.conversation_id)
+        for message in conversation.messages:
+            store.append_message(conversation.conversation_id, message)
+    for warning in report.warnings:
+        print(f"warning\t{warning}", file=sys.stderr)
+    print(f"imported={len(report.conversations)} warnings={len(report.warnings)}")
+    return 0
+
+
 def cmd_patches(stage: str | None) -> int:
     for member in registry.load_patch_series():
         if stage is None or member.stage == stage:
@@ -332,8 +364,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     web_profile=args.web_profile,
                     image_profile=args.image_profile,
                     static_root=args.static,
+                    file_roots=tuple(args.file_root),
                 ),
             )
+        if args.command == "export":
+            return cmd_export(paths, args.output)
+        if args.command == "import":
+            return cmd_import(paths, args.input, args.browser)
         if args.command == "doctor":
             return cmd_doctor(paths)
         if args.command == "paths":
@@ -361,7 +398,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except RuntimeRootError as error:
         print(f"qwen-apu: {error}", file=sys.stderr)
         return 2
-    except (ValueError, RuntimeError) as error:
+    except (ValueError, RuntimeError, browser_import.BrowserExportRefused) as error:
         print(f"qwen-apu: {error}", file=sys.stderr)
         return 1
     except subprocess.CalledProcessError as error:
