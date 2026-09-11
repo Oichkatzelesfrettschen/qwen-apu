@@ -15,6 +15,7 @@ from pathlib import Path
 
 from qwen_apu.engines.image import ImageControlClient
 from qwen_apu.engines.llama import LlamaClient, binding_from_runtime
+from qwen_apu.runtime import deployment, preflight
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.tools import approvals, calculator, documents, files, images, registry
 from qwen_apu.tools.ledger import Ledger
@@ -41,6 +42,10 @@ class GatewayRequest:
     static_root: Path | None = None
     # Read-only roots the file search may reach; empty admits nothing.
     file_roots: tuple[Path, ...] = ()
+    # The activated bundle is the roster's own authority, so the ordinary
+    # gateway requires one; a research gateway against an unsupervised server
+    # clears this and reads the upstream's roster alone.
+    require_deployment: bool = True
 
 
 class _Providers:
@@ -51,7 +56,45 @@ class _Providers:
         return self._routes
 
 
+def preflight_gateway(paths: RuntimePaths, request: GatewayRequest) -> tuple[str, ...]:
+    """Decide the gateway's two preconditions before it writes anything.
+
+    The signing key is the credential every grant is signed from, and the
+    approval settings read it at assembly, so a key that is absent, owned by
+    another user, group-readable, or not UTF-8 text refuses the launch here
+    rather than at the first approval a page asks for. The activated deployment
+    is the authority the roster joins against, so a gateway without one would
+    answer the registry's whole list as though the appliance served it, which is
+    the gap this pass closes.
+
+    `require_deployment` is the one arm that opts out: a research gateway
+    pointed at a server it did not supervise reads the upstream's own roster and
+    states that in the answer's `mode`.
+    """
+    report: list[str] = []
+    report.append(preflight.verify_signing_key(paths["qwen_home_web_token_key"]).render())
+    if request.require_deployment:
+        active = preflight.verify_deployment(paths["qwen_home_deployments"])
+        report.append(f"deployment_preflight name={active.name} directory={active.directory}")
+    return tuple(report)
+
+
+def active_router_presets(paths: RuntimePaths) -> Path | None:
+    """The current bundle's router preset, or None where no bundle names one.
+
+    The resolution runs per request rather than once at assembly, since an
+    activation replaces `deployment-current` under a running gateway and the
+    roster answers for the bundle that is current when the page asks.
+    """
+    try:
+        return deployment.resolve_active(paths["qwen_home_deployments"]).router_presets
+    except deployment.DeploymentError:
+        return None
+
+
 def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, SessionGate]:
+    for line in preflight_gateway(paths, request):
+        print(line, flush=True)
     state = paths["qwen_home_state"]
     state.mkdir(parents=True, exist_ok=True)
     state.chmod(0o700)
@@ -140,7 +183,11 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
                 )
             )
         ),
-        chat.ChatService(client),
+        chat.ChatService(
+            client,
+            runtime_record=paths["qwen_home_runtime_state"],
+            router_presets=lambda: active_router_presets(paths),
+        ),
         status.StatusService(
             client,
             runtime_record=paths["qwen_home_runtime_state"],

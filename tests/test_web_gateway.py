@@ -48,8 +48,9 @@ from qwen_apu.web.auth import (
     FixedWindowBucket,
     SessionGate,
 )
-from qwen_apu.web.chat import PICKER_TIERS, ChatService, quantization, roster
+from qwen_apu.web.chat import PICKER_TIERS, ChatService, quantization
 from qwen_apu.web.http import Route, StreamingResponse
+from qwen_apu.web.roster import LOADING, READY, REFUSED, UNAVAILABLE
 from qwen_apu.web.status import StatusService
 
 EXCHANGE_DEADLINE_SECONDS = 20.0
@@ -57,16 +58,22 @@ STREAM_FRAME_INTERVAL_SECONDS = 0.05
 SERVED_MODEL = "qwen38-2b-distill"
 BEARER_MARKER = "appliance-bearer-8f2c1d4a-never-in-a-response"
 
-SSE_FRAMES: tuple[bytes, ...] = tuple(
-    json.dumps(
-        {
-            "id": f"chatcmpl-{index}",
-            "model": SERVED_MODEL,
-            "choices": [{"index": 0, "delta": {"content": word}}],
-        }
-    ).encode("utf-8")
-    for index, word in enumerate(("one", " two", " three"))
-)
+
+def sse_frames(model: str = SERVED_MODEL) -> tuple[bytes, ...]:
+    """One frame per token, each naming the model the answer came from."""
+    return tuple(
+        json.dumps(
+            {
+                "id": f"chatcmpl-{index}",
+                "model": model,
+                "choices": [{"index": 0, "delta": {"content": word}}],
+            }
+        ).encode("utf-8")
+        for index, word in enumerate(("one", " two", " three"))
+    )
+
+
+SSE_FRAMES: tuple[bytes, ...] = sse_frames()
 
 INDEX_PAGE = """<!doctype html>
 <html lang="en">
@@ -114,12 +121,25 @@ class _FakeUpstream(BaseHTTPRequestHandler):
         if self.path != "/v1/chat/completions":
             self._json({"error": "no such endpoint"}, status=404)
             return
+        # `model_override` is the one knob a served-model mismatch needs: the
+        # deployed server states the model it actually loaded, and a fixture
+        # that always echoes the request could never disagree with it.
+        served = str(json.loads(body or b"{}").get("model_override") or SERVED_MODEL)
+        if json.loads(body or b"{}").get("stream") is False:
+            self._json(
+                {
+                    "id": "chatcmpl-whole",
+                    "model": served,
+                    "choices": [{"index": 0, "message": {"content": "one two three"}}],
+                }
+            )
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Connection", "close")
         self.end_headers()
         self.close_connection = True
-        for frame in SSE_FRAMES:
+        for frame in sse_frames(served):
             self.wfile.write(b"data: " + frame + b"\n\n")
             self.wfile.flush()
             time.sleep(STREAM_FRAME_INTERVAL_SECONDS)
@@ -217,7 +237,7 @@ def gateway(tmp_path: Path, upstream: ThreadingHTTPServer) -> Iterator[Fixture]:
 
     gate = SessionGate(state)
     code = gate.start()
-    chat = ChatService(client_factory)
+    chat = ChatService(client_factory, runtime_record=record_path)
     status = StatusService(client_factory, runtime_record=record_path, session_gate=gate)
     config = GatewayConfig(
         static_root=static_root,
@@ -558,21 +578,132 @@ def test_tokenize_counts_through_the_served_tokenizer(gateway: Fixture) -> None:
     assert unpaired.status == 401
 
 
-def test_models_roster_equals_the_registry_filter(gateway: Fixture) -> None:
+def test_models_roster_is_the_intersection_rather_than_the_registry(gateway: Fixture) -> None:
+    """The picker answers what this appliance serves, not what the registry admits.
+
+    The shadow pass read thirteen models against one served checkpoint, because
+    the roster came from `remote/models.tsv` alone. The answer here is the join:
+    the record names the launched checkpoint, the upstream's `/v1/models` names
+    the one it resident, and the registry supplies the row.
+    """
     paired, _ = _pair(gateway, gateway.code)
     cookie = _session_cookie(paired)
     rows = registry.load_models()
 
     response, body = _exchange(gateway, "GET", "/api/models", headers={"Cookie": cookie})
     assert response.status == 200
-    served = json.loads(body)["models"]
-    assert served == roster(rows, research=False)
-    assert {entry["tier"] for entry in served} <= set(PICKER_TIERS)
+    answer = json.loads(body)
+    assert answer["mode"] == "standalone"
+    assert answer["upstream_reachable"] is True
+    served = answer["models"]
+    assert [entry["id"] for entry in served] == [SERVED_MODEL]
+    assert served[0]["state"] == READY
+    assert served[0]["served_as"] == SERVED_MODEL
+    assert len(served) < len(rows)
 
     response, body = _exchange(gateway, "GET", "/api/models?research=1", headers={"Cookie": cookie})
     research = json.loads(body)["models"]
-    assert research == roster(rows, research=True)
-    assert {entry["id"] for entry in served} < {entry["id"] for entry in research}
+    assert {entry["id"] for entry in research} == {row.id for row in rows} | {SERVED_MODEL}
+    # Every registry row the launch did not serve states why it is absent from
+    # the ordinary answer rather than being silently listed beside the served one.
+    unserved = [entry for entry in research if entry["id"] != SERVED_MODEL]
+    assert {entry["state"] for entry in unserved} <= {REFUSED, "quarantined"}
+    assert {entry["tier"] for entry in served} <= set(PICKER_TIERS)
+
+
+def test_an_unadmitted_model_is_refused_before_the_upstream(gateway: Fixture) -> None:
+    """A model the live router does not admit meets 409 with the reason, not a completion."""
+    paired, _ = _pair(gateway, gateway.code)
+    cookie = _session_cookie(paired)
+    body = json.dumps(
+        {"model": "qwen38-9b-distill", "messages": [{"role": "user", "content": "x"}]}
+    )
+    response, payload = _exchange(
+        gateway,
+        "POST",
+        "/api/chat",
+        body=body.encode("utf-8"),
+        headers={"Content-Type": "application/json", "Cookie": cookie},
+    )
+    assert response.status == 409
+    assert "does not admit qwen38-9b-distill" in json.loads(payload)["error"]
+
+    response, payload = _exchange(
+        gateway,
+        "POST",
+        "/api/models/tokenize",
+        body=json.dumps({"model": "qwen38-9b-distill", "content": "one two"}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Cookie": cookie},
+    )
+    assert response.status == 409
+
+
+def test_the_admitted_model_reaches_the_upstream(gateway: Fixture) -> None:
+    paired, _ = _pair(gateway, gateway.code)
+    cookie = _session_cookie(paired)
+    response, payload = _exchange(
+        gateway,
+        "POST",
+        "/api/chat",
+        body=json.dumps(
+            {"model": SERVED_MODEL, "stream": False, "messages": [{"role": "user", "content": "x"}]}
+        ).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Cookie": cookie},
+    )
+    assert response.status == 200
+    assert json.loads(payload)["model"] == SERVED_MODEL
+
+
+def test_a_served_model_other_than_the_selected_one_is_an_error(gateway: Fixture) -> None:
+    """A wrong served model is surfaced rather than routed silently.
+
+    Both bodies are checked, because a streamed answer's model name arrives in
+    the first frame and a buffered one in the whole object; the streamed case
+    must refuse before any byte reaches the browser, since a started chunked
+    body leaves truncation as the only remaining signal.
+    """
+    paired, _ = _pair(gateway, gateway.code)
+    cookie = _session_cookie(paired)
+    for extra in ({"stream": False}, {}):
+        request = {
+            "model": SERVED_MODEL,
+            "model_override": "some-other-checkpoint",
+            "messages": [{"role": "user", "content": "x"}],
+            **extra,
+        }
+        response, payload = _exchange(
+            gateway,
+            "POST",
+            "/api/chat",
+            body=json.dumps(request).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Cookie": cookie},
+        )
+        assert response.status == 502, extra
+        assert "served some-other-checkpoint" in json.loads(payload)["error"]
+
+
+def test_an_unreachable_upstream_reports_unavailable_rather_than_ready(
+    gateway: Fixture, tmp_path: Path
+) -> None:
+    """Residency is unknown where the upstream answers nothing, and the state says so."""
+    # A directory the gateway fixture never wrote, so the record is absent
+    # and the binding falls back to a port nothing serves.
+    record = tmp_path / "unsupervised" / "runtime.json"
+    dead = ChatService(
+        lambda: LlamaClient(binding_from_runtime(record, fallback_port=1)),
+        runtime_record=record,
+    )
+    request = auth_module.Request(
+        method="GET",
+        path="/api/models",
+        query={},
+        headers={},
+        body=b"",
+        client_address="127.0.0.1",
+    )
+    answer = json.loads(dead.models(request).body)
+    assert answer["upstream_reachable"] is False
+    assert {entry["state"] for entry in answer["models"]} <= {UNAVAILABLE, REFUSED, LOADING}
 
 
 def test_quantization_reads_the_publishers_own_filenames() -> None:
