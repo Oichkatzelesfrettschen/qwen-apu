@@ -33,6 +33,7 @@ import os
 import sqlite3
 import stat
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -425,6 +426,86 @@ class Ledger:
                 "the authorization is spent; a grant admits one search and "
                 "the operator issues another"
             ) from None
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
+
+    def open_search(
+        self,
+        search_id: str,
+        profile: str,
+        provider: str,
+        *,
+        fetches_allowed: int,
+        expiry: float,
+        urls: Sequence[str],
+    ) -> None:
+        """Record the fetch allowance one approved search opens over its results.
+
+        A search returns URLs and signs a Result ID over each, and `read_url`
+        carries one of those references rather than a second grant, so this row
+        is the authority for how many of that search's results one approval
+        reads and the `search_results` rows are the authority for which URLs it
+        may name. The search insert replaces and each result insert ignores a
+        collision, so a repeated `search_id` -- 72 random bits, in a table
+        pruned by expiry -- rewrites the allowance rather than raising inside a
+        search that already reached the instance.
+        """
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            self.connection.execute(
+                "INSERT OR REPLACE INTO searches(search_id, profile, provider,"
+                " fetches_used, fetches_allowed, expiry) VALUES(?, ?, ?, 0, ?, ?)",
+                (search_id, profile, provider, int(fetches_allowed), int(expiry)),
+            )
+            for url in urls:
+                self.connection.execute(
+                    "INSERT OR IGNORE INTO search_results(search_id, canonical_url,"
+                    " provider_result_id) VALUES(?, ?, '')",
+                    (search_id, url),
+                )
+            self.connection.execute("COMMIT")
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
+
+    def spend_fetch(self, search_id: str, canonical_url: str, now: float) -> None:
+        """Spend one unit of a search's fetch allowance, or refuse the read.
+
+        The read of the counter and its increment run inside one
+        `BEGIN IMMEDIATE`, so two concurrent callers against an allowance of one
+        cannot both pass it. Three distinct refusals: the search is unknown or
+        its term has run out, the URL is one that search never returned, and the
+        allowance is spent. The last is a budget rather than an authorization,
+        which separates a caller who exhausted an approval from one who never
+        held it.
+        """
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.connection.execute(
+                "SELECT fetches_used, fetches_allowed, expiry FROM searches WHERE search_id = ?",
+                (search_id,),
+            ).fetchone()
+            if row is None or int(row[2]) <= int(now):
+                raise AuthorizationDenied(
+                    "the result_id names a search this ledger no longer holds, so the "
+                    "fetch allowance it was issued under has run out"
+                )
+            member = self.connection.execute(
+                "SELECT 1 FROM search_results WHERE search_id = ? AND canonical_url = ?",
+                (search_id, canonical_url),
+            ).fetchone()
+            if member is None:
+                raise AuthorizationDenied("the result_id names a URL its own search never returned")
+            if int(row[0]) >= int(row[1]):
+                raise BudgetExhausted(
+                    f"the approved search admits {int(row[1])} fetch(es), and every one is spent"
+                )
+            self.connection.execute(
+                "UPDATE searches SET fetches_used = fetches_used + 1 WHERE search_id = ?",
+                (search_id,),
+            )
+            self.connection.execute("COMMIT")
         except BaseException:
             self.connection.execute("ROLLBACK")
             raise

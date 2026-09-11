@@ -18,6 +18,13 @@ already approved -- reading one URL a granted search returned, reviewing an
 artifact that generation produced -- carries `model-suggested`, since the
 grant that admitted the first call bounds the second.
 
+Availability is computed for the two rows this package executes. `web_search`
+and `read_url` run in `qwen_apu.tools.web` against the SearXNG instance the
+resolved web profile names, so a gateway assembled without that profile mounts
+no executor and both rows read as planned; the same gateway with the profile
+mounted reads them as served. The remaining rows are fixed, since the artifact
+that executes each one either exists in this tree or is a plan.
+
 The read-only local set is `read_file`, `file_glob_search`, `grep_search`, and
 AGENTS.md fixes that boundary: `--tools all` grants shell execution and file
 writing to a prompt-injectable model, and a server holding that grant stays
@@ -29,7 +36,7 @@ no preset in this tree arms it.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 
 
@@ -65,26 +72,27 @@ TOOL_TABLE: tuple[ToolEntry, ...] = (
         tool_id="web_search",
         title="Web search",
         lane="web",
-        execution_path="remote/web-mcp/server.py",
+        execution_path="src/qwen_apu/tools/web.py",
         approval=Approval.USER_EXPLICIT,
-        availability=Availability.SERVED,
+        availability=Availability.PLANNED,
         summary=(
-            "search_exa runs one query against the configured provider under a "
+            "one query reaches the appliance's SearXNG instance under a "
             "search-authorization grant covering the query, the domain filters, "
-            "the publication window, the cached-age bound, and the result count"
+            "the publication window, the cached-age bound, and the result count, "
+            "and the grant's single use is spent in the ledger before the request"
         ),
     ),
     ToolEntry(
         tool_id="read_url",
         title="Read a URL",
         lane="web",
-        execution_path="remote/web-mcp/server.py",
+        execution_path="src/qwen_apu/tools/web.py",
         approval=Approval.MODEL_SUGGESTED,
-        availability=Availability.SERVED,
+        availability=Availability.PLANNED,
         summary=(
-            "fetch_exa redeems one signed Result ID the approved search issued, "
-            "so the per-search fetch allowance and the freshness policy the "
-            "approval carried bound which document it reads"
+            "one signed Result ID the approved search issued redeems one page, so "
+            "the per-search fetch allowance bounds how many of that search's "
+            "results one approval reads"
         ),
     ),
     ToolEntry(
@@ -206,28 +214,58 @@ TOOL_TABLE: tuple[ToolEntry, ...] = (
 )
 
 
-def entry(tool_id: str) -> ToolEntry:
+# The rows `src/qwen_apu/tools/web.py` executes. Their availability follows
+# whether that executor is mounted on this gateway, so it is computed in
+# `table` rather than frozen above.
+WEB_EXECUTOR_ROWS: tuple[str, ...] = ("web_search", "read_url")
+
+
+def table(*, web_executor_mounted: bool = False) -> tuple[ToolEntry, ...]:
+    """Return the table as this gateway serves it.
+
+    The two web rows name `src/qwen_apu/tools/web.py`, and that module answers
+    `POST /api/tools` only where the assembly resolved a web profile carrying a
+    SearXNG instance, so their availability is a property of the running
+    gateway rather than of the tree. A gateway that mounted no executor states
+    them as planned, which is what stops a page from routing a turn onto a row
+    whose first call would answer a refusal.
+    """
+    if not web_executor_mounted:
+        return TOOL_TABLE
+    return tuple(
+        replace(row, availability=Availability.SERVED) if row.tool_id in WEB_EXECUTOR_ROWS else row
+        for row in TOOL_TABLE
+    )
+
+
+def entry(tool_id: str, *, web_executor_mounted: bool = False) -> ToolEntry:
     """Return one row by its identifier."""
-    for candidate in TOOL_TABLE:
+    for candidate in table(web_executor_mounted=web_executor_mounted):
         if candidate.tool_id == tool_id:
             return candidate
     raise KeyError(tool_id)
 
 
-def served() -> tuple[ToolEntry, ...]:
-    """Return the rows whose execution path exists in this tree."""
-    return tuple(row for row in TOOL_TABLE if row.availability is Availability.SERVED)
+def served(*, web_executor_mounted: bool = False) -> tuple[ToolEntry, ...]:
+    """Return the rows whose execution path this gateway actually reaches."""
+    return tuple(
+        row
+        for row in table(web_executor_mounted=web_executor_mounted)
+        if row.availability is Availability.SERVED
+    )
 
 
-def as_payload() -> dict[str, object]:
+def as_payload(*, web_executor_mounted: bool = False) -> dict[str, object]:
     """Return the tool identity table, which carries no per-model state.
 
     `qwen_apu.tools.matrix` owns `GET /api/tools` and joins this table against
     the ledgers and the launch, so this function answers what a tool is while
-    that module answers what it does for one selection.
+    that module answers what it does for one selection. `web_executor_mounted`
+    is the one launch fact the identity table reads, because the artifact that
+    executes the two web rows is mounted rather than fixed by the tree.
     """
     return {
         "schema": "qwen.tool-registry",
         "version": 1,
-        "tools": [asdict(row) for row in TOOL_TABLE],
+        "tools": [asdict(row) for row in table(web_executor_mounted=web_executor_mounted)],
     }
