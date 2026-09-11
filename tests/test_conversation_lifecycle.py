@@ -16,14 +16,18 @@ temporary store, and the export/import document both read and write.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import socket
 import threading
+from collections.abc import Iterator
 from http.client import HTTPConnection, HTTPResponse
 from pathlib import Path
 
 import pytest
 
 from qwen_apu.runtime.paths import RuntimePaths
+from qwen_apu.tools import documents
 from qwen_apu.web import assemble as gateway_assembly
 from qwen_apu.web import browser_import
 from qwen_apu.web import conversations as conversations_module
@@ -32,6 +36,25 @@ from qwen_apu.web.history_model import Message
 
 TREE = Path(__file__).resolve().parents[1]
 EXCHANGE_DEADLINE_SECONDS = 20.0
+
+
+@pytest.fixture(autouse=True)
+def _restore_process_umask() -> Iterator[None]:
+    """Undo the umask `qwen_apu.tools.ledger.Ledger.__init__` leaves set.
+
+    `Ledger.__init__` runs `os.umask(0o077)` and never restores it, because
+    the mode it buys belongs to the rollback journal SQLite creates lazily at
+    write time rather than at open time; every test here assembles a gateway,
+    and a gateway builds one `Ledger`. `os.umask` is process-wide and this
+    file is the first in the suite to call `assemble()` at all, so without
+    this fixture the leaked `0o077` reaches whichever test happens to run
+    after this module in the same pytest process and narrows every mode it
+    asserts on a freshly created file.
+    """
+    previous = os.umask(0o022)
+    os.umask(previous)
+    yield
+    os.umask(previous)
 
 
 def _runtime_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RuntimePaths:
@@ -455,9 +478,17 @@ def test_browser_export_document_imports_with_warnings_for_unknown_fields(
 # ---------------------------------------------------------------------------
 
 
-def test_a_dangling_attachment_and_artifact_read_unavailable_rather_than_crash(
+def test_a_dangling_attachment_reads_unavailable_rather_than_crash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A message naming a digest the document store never received still reads.
+
+    `GET /api/conversations/<id>` decorates each attachment with `available`,
+    computed fresh from `<artifacts>/documents/<sha256>/<sha256>.json` at read
+    time rather than from a flag `POST .../messages` wrote once, so a digest
+    nothing backs answers `available: false` on the message and the same
+    clean 404 on the routes that would serve its bytes.
+    """
     paths = _runtime_paths(tmp_path, monkeypatch)
     fixture = _start_gateway(paths, _static_root(tmp_path))
     try:
@@ -495,8 +526,6 @@ def test_a_dangling_attachment_and_artifact_read_unavailable_rather_than_crash(
         )
         assert response.status == 201
 
-        # The read never touches the filesystem for the referenced bytes, so
-        # a conversation naming an attachment nothing backs still answers.
         response, body = _exchange(
             fixture,
             "GET",
@@ -504,8 +533,9 @@ def test_a_dangling_attachment_and_artifact_read_unavailable_rather_than_crash(
             headers={"Cookie": cookie},
         )
         assert response.status == 200
-        record = _json(body)
-        assert record["messages"][0]["attachments"][0]["sha256"] == missing_digest
+        attachment = _json(body)["messages"][0]["attachments"][0]  # type: ignore[index]
+        assert attachment["sha256"] == missing_digest
+        assert attachment["available"] is False
 
         # The document store answers a clean, JSON-carrying refusal for a
         # digest it never received, rather than raising past the route.
@@ -530,6 +560,106 @@ def test_a_dangling_attachment_and_artifact_read_unavailable_rather_than_crash(
         assert "error" in _json(body)
     finally:
         fixture.stop()
+
+
+def test_an_attachments_availability_is_computed_fresh_across_restart_and_loss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real attachment stays available across a restart and flips honestly on loss.
+
+    `available` is not a flag `POST .../messages` freezes at append time: it
+    is read back from the document store on every `GET`, so it survives a
+    stop-and-reassemble of the gateway and still answers correctly the moment
+    the backing bytes are removed out of band -- the retention sweep case
+    `tools/documents.py` describes, reproduced here by deleting the store
+    directory directly.
+    """
+    paths = _runtime_paths(tmp_path, monkeypatch)
+    static_root = _static_root(tmp_path)
+
+    document_service = documents.DocumentService(
+        documents.DocumentSettings(
+            artifacts=paths["qwen_home_artifacts"], tmp=paths["qwen_home_tmp"]
+        )
+    )
+    source = tmp_path / "note.txt"
+    source.write_text("a real attachment's bytes", encoding="utf-8")
+    record = document_service.extract(source, "text/plain", filename="note.txt")
+
+    first = _start_gateway(paths, static_root)
+    try:
+        cookie = _pair(first)
+        response, body = _exchange(
+            first,
+            "POST",
+            conversations_module.CONVERSATIONS_PATH,
+            body={"mode": "saved", "title": "real attachment"},
+            headers={"Cookie": cookie},
+        )
+        assert response.status == 201
+        conversation_id = _json(body)["conversation_id"]
+        response, _ = _exchange(
+            first,
+            "POST",
+            f"{conversations_module.CONVERSATIONS_PATH}/{conversation_id}/messages",
+            body={
+                "role": "user",
+                "content": "see the attached note",
+                "created_utc": "2026-01-01T00:00:00Z",
+                "attachments": [
+                    {
+                        "name": "note.txt",
+                        "media_type": "text/plain",
+                        "sha256": record.sha256,
+                        "byte_count": record.source_bytes,
+                    }
+                ],
+            },
+            headers={"Cookie": cookie},
+        )
+        assert response.status == 201
+
+        response, body = _exchange(
+            first,
+            "GET",
+            f"{conversations_module.CONVERSATIONS_PATH}/{conversation_id}",
+            headers={"Cookie": cookie},
+        )
+        assert response.status == 200
+        assert _json(body)["messages"][0]["attachments"][0]["available"] is True  # type: ignore[index]
+    finally:
+        first.stop()
+
+    second = _start_gateway(paths, static_root)
+    try:
+        cookie = _pair(second)
+        response, body = _exchange(
+            second,
+            "GET",
+            f"{conversations_module.CONVERSATIONS_PATH}/{conversation_id}",
+            headers={"Cookie": cookie},
+        )
+        assert response.status == 200
+        assert _json(body)["messages"][0]["attachments"][0]["available"] is True  # type: ignore[index]
+
+        # Bytes lost out of band -- a retention sweep, a manual cleanup --
+        # flip the same read to unavailable on the very next call, since
+        # nothing here is cached from the write.
+        store_directory = paths["qwen_home_artifacts"] / "documents" / record.sha256
+        assert store_directory.is_dir()
+        shutil.rmtree(store_directory)
+
+        response, body = _exchange(
+            second,
+            "GET",
+            f"{conversations_module.CONVERSATIONS_PATH}/{conversation_id}",
+            headers={"Cookie": cookie},
+        )
+        assert response.status == 200
+        record_after_loss = _json(body)
+        assert record_after_loss["messages"][0]["attachments"][0]["available"] is False  # type: ignore[index]
+    finally:
+        second.stop()
 
 
 # ---------------------------------------------------------------------------
