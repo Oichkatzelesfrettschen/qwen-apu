@@ -43,9 +43,12 @@ export const toolState = {
 export const WEB_SEARCH_TOOL_NAME = 'web_search';
 export const WEB_FETCH_TOOL_NAME = 'read_url';
 export const WEB_TOOL_NAMES = [WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME];
-// The two matrix rows those names execute: `web_search` runs one approved
-// query and `read_url` redeems one signed Result ID that query issued.
-export const WEB_MATRIX_TOOL_IDS = ['web_search', 'read_url'];
+// The matrix rows those names execute are the same two identifiers, since the
+// executor dispatches on the row id the matrix states: `web_search` runs one
+// approved query and `read_url` redeems one signed Result ID that query
+// issued. The alias stays so a reader of either surface finds the name it
+// uses, and one edit moves both.
+export const WEB_MATRIX_TOOL_IDS = WEB_TOOL_NAMES;
 const WEB_RESULT_HANDLE_PATTERN = /^r_[0-9a-f]{24}$/;
 
 export function clearWebResultHandles() {
@@ -307,14 +310,14 @@ export async function resolveWebTools(selectedModel, generation) {
   /* Return the web tool definitions this turn may offer the model.
 
      The matrix is the authority for what the browser may later invoke, and it
-     carries a function schema only for a row this origin can execute. The web
-     rows carry none: `executeWebTool` posts to `POST /api/tools` and the
-     gateway serves no such route, so the matrix reports `web_search` and
-     `read_url` as temporarily unavailable and names the missing executor.
-     Composing a schema the page cannot run would put the refusal after the
-     proposal, which is the ordering the matrix exists to reverse, so a turn
-     under that state carries no web tool and the panel shows the row's own
-     reason.
+     carries a function schema only for a row this origin can execute. An
+     assembly that resolved a SearXNG instance mounts `src/qwen_apu/tools/web.py`
+     on `POST /api/tools`, so the matrix states both web rows as available and
+     carries the schema that executor advertises; one that resolved none states
+     them temporarily unavailable and carries no schema. Composing a schema the
+     page cannot run would put the refusal after the proposal, which is the
+     ordering the matrix exists to reverse, so a turn under that state carries
+     no web tool and the panel shows the row's own reason.
 
      The composition returns on its own the moment a row carries a definition,
      because this filter reads the state and the definition rather than a name

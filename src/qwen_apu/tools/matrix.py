@@ -10,6 +10,8 @@ composing a request the gateway answers with 403 several seconds later.
 Five states close the vocabulary, and each names a different party:
 
 - `available`: the gateway serves the route and executes the call itself.
+  A web row reads this where `src/qwen_apu/tools/web.py` is mounted, and
+  `helper` still names the search backend that answers the query behind it.
 - `available_through_helper`: the call executes in a second process or against
   a second checkpoint, and `helper` names the model or service that runs it.
 - `temporarily_unavailable`: the execution path exists and the policy admits
@@ -45,7 +47,8 @@ from pathlib import Path
 
 from qwen_apu.config import models as config_models
 from qwen_apu.config.schema import ImageProfile, ModelRow, WebProfile
-from qwen_apu.tools.registry import TOOL_TABLE, ToolEntry
+from qwen_apu.tools import registry
+from qwen_apu.tools.registry import ToolEntry, WebDefinitions
 from qwen_apu.web.http import Request, Response, Route
 
 MATRIX_PATH = "/api/tools"
@@ -79,6 +82,10 @@ class ToolOffer:
     # human to approve one. Only the image generation row carries them, from
     # the armed profile's own remote/image-profiles.tsv fields.
     bounds: Mapping[str, object] | None = None
+    # The OpenAI function object a request body carries for this row, present
+    # on a row whose state admits a call and absent on every other, so the page
+    # composes a turn's tools from the same answer that states which rows run.
+    definition: Mapping[str, object] | None = None
 
     def as_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -93,7 +100,12 @@ class ToolOffer:
         }
         if self.bounds is not None:
             payload["bounds"] = dict(self.bounds)
+        if self.definition is not None:
+            payload["definition"] = dict(self.definition)
         return payload
+
+
+_EXECUTING_STATES = (ToolState.AVAILABLE, ToolState.AVAILABLE_THROUGH_HELPER)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,10 +139,12 @@ class MatrixSettings:
     `approval_profile` is the one web profile this launch's broker signs for.
     `image_profile` is empty where the launch armed no image lane.
     `image_socket` names the worker's control socket, which is bound while the
-    worker runs and absent otherwise. `tool_execution_route` states whether
-    this origin mounts a route that runs a model-proposed web tool; the
-    gateway mounts the approval and grant routes today and no executor, so the
-    web rows report the absence rather than advertising a schema nothing runs.
+    worker runs and absent otherwise. `web_definitions` states both facts the
+    web rows turn on: an assembly that mounted `qwen_apu.tools.web` passes the
+    two schemas that executor advertises, and one that resolved no SearXNG
+    instance passes None. Binding the mount and the schema to one field is what
+    keeps a row from reading `available` while carrying no object a request
+    body could forward, which would put the refusal after the proposal.
     """
 
     approval_profile: str
@@ -141,8 +155,13 @@ class MatrixSettings:
     file_roots: tuple[Path, ...] = ()
     documents_served: bool = True
     calculator_served: bool = True
-    tool_execution_route: bool = False
+    web_definitions: WebDefinitions | None = None
     ledgers: Ledgers | None = None
+
+    @property
+    def tool_execution_route(self) -> bool:
+        """Whether this origin mounts a route that runs a model-proposed web tool."""
+        return self.web_definitions is not None
 
     def tables(self) -> Ledgers:
         return self.ledgers if self.ledgers is not None else Ledgers.load()
@@ -199,6 +218,13 @@ def _offer(
     helper: str = "",
     bounds: Mapping[str, object] | None = None,
 ) -> ToolOffer:
+    """One registry row rendered as the offer it carries for this selection.
+
+    The schema travels with the state rather than beside it: a row whose state
+    admits a call carries the function object `qwen_apu.tools.registry` holds
+    for it, and every refused row carries none, so a page that composes from
+    the definitions and a page that reads the states select the same rows.
+    """
     return ToolOffer(
         tool_id=entry.tool_id,
         title=entry.title,
@@ -209,6 +235,7 @@ def _offer(
         helper=helper,
         reason=reason,
         bounds=bounds,
+        definition=entry.definition if state in _EXECUTING_STATES else None,
     )
 
 
@@ -258,7 +285,7 @@ def _web_gate(settings: MatrixSettings, selection: Selection) -> tuple[ToolState
         return (
             ToolState.TEMPORARILY_UNAVAILABLE,
             "this origin mounts the approval and grant routes and no tool executor, "
-            "so a proposed call reaches remote/web-mcp/server.py through no route here",
+            "so a proposed call reaches src/qwen_apu/tools/web.py through no route here",
             profile.provider,
         )
     return None
@@ -284,8 +311,9 @@ def _web_search(settings: MatrixSettings, selection: Selection, entry: ToolEntry
     profile = _admitted_profile(selection)
     return _offer(
         entry,
-        ToolState.AVAILABLE_THROUGH_HELPER,
-        f"one human approval mints one single-use grant over the query, and {profile.provider} "
+        ToolState.AVAILABLE,
+        f"one human approval mints one single-use grant over the query, "
+        f"src/qwen_apu/tools/web.py runs it inside this gateway, and {profile.provider} "
         f"answers at most {profile.max_results} results",
         profile.provider,
     )
@@ -298,8 +326,9 @@ def _read_url(settings: MatrixSettings, selection: Selection, entry: ToolEntry) 
     profile = _admitted_profile(selection)
     return _offer(
         entry,
-        ToolState.AVAILABLE_THROUGH_HELPER,
-        f"the approved search's own fetch allowance is {profile.max_fetches} document"
+        ToolState.AVAILABLE,
+        f"src/qwen_apu/tools/web.py reads the page inside this gateway, and the approved "
+        f"search's own fetch allowance is {profile.max_fetches} document"
         f"{'' if profile.max_fetches == 1 else 's'}, redeemed through a signed Result ID",
         profile.provider,
     )
@@ -547,14 +576,15 @@ def offers(settings: MatrixSettings, selection: Selection) -> tuple[ToolOffer, .
     picker and a selector that names one has reached this route around that
     filter.
     """
+    entries = registry.table(web_definitions=settings.web_definitions)
     if selection.model.tier == "quarantine":
         reason = (
             f"remote/models.tsv reads tier quarantine for {selection.model.id}, and "
             "remote/quarantine.tsv carries the reset, fault, or correctness hazard behind it"
         )
-        return tuple(_offer(entry, ToolState.POLICY_REFUSED, reason) for entry in TOOL_TABLE)
+        return tuple(_offer(entry, ToolState.POLICY_REFUSED, reason) for entry in entries)
     built: list[ToolOffer] = []
-    for entry in TOOL_TABLE:
+    for entry in entries:
         derive = _DERIVATIONS.get(entry.tool_id)
         if derive is None:
             built.append(
@@ -630,5 +660,5 @@ def routes(settings: MatrixSettings) -> tuple[Route, ...]:
 
 def offered_tool_ids(payload: Sequence[dict[str, object]]) -> tuple[str, ...]:
     """The rows of one matrix payload whose state admits a call."""
-    executing = {str(ToolState.AVAILABLE), str(ToolState.AVAILABLE_THROUGH_HELPER)}
+    executing = {str(state) for state in _EXECUTING_STATES}
     return tuple(str(row["tool_id"]) for row in payload if row.get("state") in executing)

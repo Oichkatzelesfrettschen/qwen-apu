@@ -50,7 +50,10 @@ is what a call would actually meet. The selector is required: an absent
 Each row carries `tool_id`, `title`, `lane`, `approval`, `execution_path`,
 `state`, `helper`, and `reason`; the `image_generation` row also carries
 `bounds` (the armed profile's `max_dimension` and `max_steps`), which the page
-checks a proposal against before it opens the approval dialog.
+checks a proposal against before it opens the approval dialog. A row whose
+state admits a call also carries `definition`, the OpenAI function object the
+request body forwards; every refused row carries none, so the rows a page
+composes from and the rows it reads a state for are one set.
 
 The authorities each derivation reads:
 
@@ -58,9 +61,12 @@ The authorities each derivation reads:
   `remote/web-profiles.tsv` row. A profile other than the one this launch's
   broker signs for is `policy_refused` up front, since `POST /grant-image`
   refuses a foreign `profile_id`; `execution_policy: refused` is
-  `policy_refused`; a `searxng` provider with no instance URL and the absent
-  tool executor are `temporarily_unavailable`; a checkpoint no web profile
-  names is `not_installed`.
+  `policy_refused`; a `searxng` provider with no instance URL and an
+  unmounted tool executor are `temporarily_unavailable`; a checkpoint no web
+  profile names is `not_installed`. `web_search` and `read_url` read
+  `available` where the executor is mounted, since `tools/web.py` runs both
+  inside the gateway; `wikipedia_profile` reads `available_through_helper`,
+  because the engine profile lives in the instance's own `settings.yml`.
 - `image_interpretation`: the row's `projector` column. `required` is
   `available` and `none` is `not_installed`, because
   `remote/select-projector.sh` searches the checkpoint's own directory.
@@ -123,10 +129,7 @@ no artifact has burned it and the next generation takes a fresh approval; the
 review route verifies the claim and spends nothing, which is what lets the
 already-spent generation token prove which prompt a human approved.
 
-Recorded gaps. `executeWebTool` posts to `POST /api/tools` and this gateway
-mounts no such route, so the web rows read `temporarily_unavailable` and a
-turn carries no web tool; restoring the lane means serving the executor, not
-widening the matrix. A review of an artifact restored from saved history has
+Recorded gaps. A review of an artifact restored from saved history has
 no grant, because a conversation record keeps the digest and the provenance
 route rather than the token, so the review button on a restored card stays
 hidden. The withheld and swapped review controls still have no route.
@@ -143,20 +146,21 @@ runs the router lane; the gateway executes both web tools itself.
 
 ## The web executor: `POST /api/tools`
 
-`tools/web.py` answers one route with two tools, and `tools/registry.py`
-answers `GET /api/tools` beside it. Availability and the request schema are
-computed rather than declared: `web_search` and `read_url` read `served` and
-carry a `definition` where `web/assemble.py` resolved a
-`remote/web-profiles.tsv` row whose provider is `searxng` and whose
-`searxng_url` is set, and read `planned` carrying none otherwise, so a gateway
-serving chat alone states the two rows as planned rather than answering a
-refusal at the first call.
+`tools/web.py` answers `POST /api/tools` with two tools and `tools/matrix.py`
+answers `GET /api/tools?model=ID` beside it. `qwen_apu.web.http.match` keys a
+route on the method beside the compiled path, so the two share one path and
+neither shadows the other. Availability and the request schema are computed
+rather than declared: `web/assemble.py` passes the executor's two schemas to
+`MatrixSettings.web_definitions` where it resolved a `remote/web-profiles.tsv`
+row whose provider is `searxng` and whose `searxng_url` is set, and passes None
+otherwise. One field carries both facts, which is what keeps a row from
+reading `available` while carrying no object a request body could forward.
 
 One answer serves both readers. `static/js/tools.js` composes a turn's
-`body.tools` from the `tools` array of that `qwen.tool-registry` document,
-filtering on `tool_id` and `availability` and stripping the `authorization`
-property before a definition reaches a request; `static/js/models.js` reads the
-same document to decide whether a roster row can act on the Web toggle. The
+`body.tools` from the `tools` array of that `qwen.tool-matrix` document,
+filtering on `tool_id` and `state` and stripping the `authorization` property
+before a definition reaches a request; `static/js/models.js` reads the same
+document to decide whether a roster row can act on the Web toggle. The
 schema states what this executor serves rather than what the tool lane admits,
 so `published_after`, `published_before`, and `max_age_hours` are absent: the
 SearXNG JSON API carries no publication interval and
