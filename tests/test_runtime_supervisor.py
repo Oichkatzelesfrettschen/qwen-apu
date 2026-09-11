@@ -8,11 +8,12 @@ the supervisor acting on it is the property under test and takes
 QWEN_GUARD_OBSERVATION_DEADLINE_S. A failure prints which deadline expired,
 the load average, and the elapsed time.
 
-Loopback ports come from `remote/test-port-lease.sh`, which holds an exclusive
-flock on each port's lease file for the fixture's whole life. Binding port zero
-and closing the socket reports a number that was free at the instant of the
-read and reserves nothing afterwards, so two gate cells would receive the same
-number and the second listener would meet EADDRINUSE.
+Loopback ports come from the `leased_port` fixture in `tests/conftest.py`,
+which holds an exclusive flock on each port's lease file for the fixture's
+whole life. Binding port zero and closing the socket reports a number that was
+free at the instant of the read and reserves nothing afterwards, so two gate
+cells would receive the same number and the second listener would meet
+EADDRINUSE.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ import signal
 import socket
 import subprocess
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +48,6 @@ from qwen_apu.runtime.supervisor import (
 
 TREE = Path(__file__).resolve().parents[1]
 FAKE_SERVER = TREE / "remote" / "test-fixtures" / "fake-llama-server.sh"
-PORT_LEASE = TREE / "remote" / "test-port-lease.sh"
 SH = shutil.which("sh")
 PYTHON = shutil.which("python3") or "python3"
 
@@ -77,36 +77,6 @@ def await_condition[Value](
                 f"loadavg={os.getloadavg()} detail={detail}"
             )
         time.sleep(0.05)
-
-
-@pytest.fixture
-def leased_port(tmp_path: Path) -> Iterator[int]:
-    """One loopback port, held by the lease holder until this fixture releases."""
-    if SH is None:
-        pytest.skip("no /bin/sh")
-    ports_file = tmp_path / "ports.txt"
-    # The claim backgrounds a holder that outlives the command and inherits
-    # its stderr, so capturing that descriptor would block this read until the
-    # holder itself exits. stdout carries the holder pid and closes with the
-    # claim; stderr goes to the null device the way the shell leaves it to the
-    # caller's own.
-    claim = subprocess.run(
-        [SH, str(PORT_LEASE), "claim", "1", str(ports_file)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        check=True,
-    )
-    holder = claim.stdout.strip()
-    try:
-        yield int(ports_file.read_text(encoding="ascii").split()[0])
-    finally:
-        subprocess.run(
-            [SH, str(PORT_LEASE), "release", holder],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
 
 
 @pytest.fixture
