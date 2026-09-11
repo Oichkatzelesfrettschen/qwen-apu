@@ -160,7 +160,15 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         ),
         _Providers(images.routes(image_settings)),
     )
-    return Gateway(config, providers, session_authority=session), session
+    return (
+        Gateway(
+            config,
+            providers,
+            session_authority=session,
+            on_shutdown=(conversation_settings.temporary.shutdown,),
+        ),
+        session,
+    )
 
 
 def run(paths: RuntimePaths, request: GatewayRequest) -> int:
