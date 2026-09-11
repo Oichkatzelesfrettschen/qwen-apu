@@ -34,7 +34,10 @@ RETIRED_ORIGIN_TAGS = ("qwen-web-broker", "qwen-image-artifacts")
 
 # One `fetch(` call's first argument, where that argument is a string literal.
 # A template literal counts: its leading text is what decides the origin, and a
-# substitution never precedes the path.
+# substitution never precedes the path. One call reaches the network through a
+# route variable rather than a literal -- `api.postGrantTo` -- and the two
+# callers that supply it, `requestGrant` and `requestImageGrant`, carry the
+# `/api/tools/grant` and `/api/tools/grant-image` literals this scan reads.
 FETCH_LITERAL = re.compile(r"""fetch\(\s*(['"`])([^'"`$]*)""")
 
 

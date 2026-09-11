@@ -348,9 +348,20 @@ export async function bootPage(options = {}) {
   await flushPromises();
   if (registryStatus === 200 && rows.length > 1) {
     for (const row of rows) {
+      // `toolListing` answers every row alike, or names one answer per id: a
+      // row whose section carries no MCP configuration answers 403
+      // feature_disabled (evidence/web-admission-router-tools.md) where a row
+      // that carries one answers its listing, and that difference is what
+      // decides the default rather than the sort.
+      const answer = typeof toolListing === 'function'
+        ? toolListing(row)
+        : (toolListing && !Array.isArray(toolListing) && row.id in toolListing
+          ? toolListing[row.id]
+          : toolListing);
       (await page.take(request => request.url === `/api/tools?model=${encodeURIComponent(row.id)}`,
         `tool probe for ${row.id}`)).resolve(
-        Array.isArray(toolListing) ? jsonResponse(toolListing) : jsonResponse(toolListing, 403));
+        Array.isArray(answer) ? jsonResponse(answer) : jsonResponse(
+          answer ?? { error: 'feature_disabled' }, 403));
       await flushPromises();
     }
   }

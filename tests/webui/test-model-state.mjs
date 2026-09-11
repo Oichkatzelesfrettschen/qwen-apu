@@ -31,18 +31,33 @@ function registryAnswer(rows) {
   return jsonResponse({ models: rows });
 }
 
+const LISTING = [{ tool: 'web_search_exa', definition: { function: { name: 'web_search_exa' } } }];
+
 async function twoModelPage(options = {}) {
   /* Boot a page whose roster carries a tool-offering row and a review-only one.
 
-     `boot()` probes `GET /api/tools` per row and prefers the first row that
-     answers a listing over sort position, so model A being selected below is
-     that rule choosing it rather than the sort happening to agree. */
+     `boot()` probes `GET /api/tools` per row and prefers a row whose section
+     answers a listing over sort position, so the probes below answer per id:
+     model A carries the listing and model B answers 403 feature_disabled, the
+     shape a review-only section takes. */
   const page = await bootPage({
     rows: [ROW_A, ROW_B],
-    toolListing: [{ tool: 'web_search_exa', definition: { function: { name: 'web_search_exa' } } }],
+    toolListing: { [MODEL_A]: LISTING, [MODEL_B]: { error: 'feature_disabled' } },
     ...options
   });
   return page;
+}
+
+async function reviewFirstPage() {
+  /* The same roster with the tool-offering row sorted second.
+
+     `/api/models` answers in registry order and the picker follows it, so a
+     default that read sort position alone would select the review-only row
+     here. The selection below is the probe deciding it. */
+  return bootPage({
+    rows: [ROW_B, ROW_A],
+    toolListing: { [MODEL_A]: LISTING, [MODEL_B]: { error: 'feature_disabled' } }
+  });
 }
 
 function state(page) {
@@ -83,6 +98,18 @@ test('boot defaults to the tool-offering row and reads its depth', async () => {
   assert.equal(state(page).requestModel, MODEL_A, 'boot did not default to the listing row');
   assert.equal(state(page).nctx, 24576);
   assert.equal(state(page).nctxModel, MODEL_A);
+});
+
+test('the probe rather than the sort order picks the default', async () => {
+  const page = await reviewFirstPage();
+  assert.equal(state(page).requestModel, MODEL_A,
+    'boot selected the row that sorts first rather than the row that offers a tool');
+  assert.equal(state(page).nctx, 24576, 'the selection read another row depth');
+  const labels = page.element('#model-picker').children.map(option => option.textContent);
+  assert.ok(labels[0].includes('(review)'),
+    'a row answering 403 feature_disabled is not labelled as review-only');
+  assert.ok(!labels[1].includes('(review)'),
+    'a row answering a listing is labelled as review-only');
 });
 
 test('a switch marks depth and counts pending, then fills both', async () => {
