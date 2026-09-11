@@ -24,7 +24,7 @@ dpm-telemetry	e0d179a:remote/validate-clock-sidecar.py	-	-
 dpm-telemetry	e0d179a:remote/summarize-census-controls.py	-	-
 dpm-telemetry	e0d179a:remote/test-census-controls.py	-	-
 dpm-telemetry	e0d179a:remote/test-telemetry-broker.sh	-	-
-shared	CLAUDE.md	-	-
+shared	DOCTRINE-SNAPSHOT.md	-	-
 shared	evidence/SHA256SUMS	-	-
 shared	evidence/raven2-vulkan-kernel-census/README.md	-	-
 shared	remote/repository-quality-gates.sh	-	-

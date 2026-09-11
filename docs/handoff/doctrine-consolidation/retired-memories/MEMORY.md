@@ -1,0 +1,38 @@
+- [Qwen appliance host](qwen-appliance-host.md) — the Raven2 laptop is qwen-laptop; the repo writes it as qwen-laptop, and nsswitch hides /etc/hosts from .local names
+- [Verify a host before calling it unreachable](qwen-appliance-verify-host-before-blocking.md) — a failed ping is evidence about that address, not about the appliance
+- [llama-server router preset cascade](llama-router-preset-cascade.md) — router CLI args overwrite every per-model preset key; per-model values only work if the router argv omits them
+- [Agent worktrees pin branch names](agent-worktrees-pin-branch-names.md) -- remove a finished agent worktree before git branch -f or re-dispatching onto that branch name
+- [git checkout discards uncommitted edits](git-checkout-discards-uncommitted-edits.md) -- check git diff before any checkout/restore of an edited file
+- [Laptop repo copy and test paths](qwen-laptop-repo-copy-and-test-paths.md) -- ~/Github/qwen-apu on the laptop for registry tests; device harness tests need the router down
+- [GitHub and harness limits](github-and-harness-limits.md) -- poll and merge through gh api REST; force-push and rm -rf are denied, so publish rebases under a new branch name
+- [Laptop host memory tenants](qwen-laptop-host-memory-tenants.md) -- a 16.5 GiB qemu VM sits beside the router; build or fetch only with the router torn down or the monitor aborts it
+- [Image turn language model](qwen-image-turn-language-model.md) -- image admission passes with the 4B and an explicit tool-naming prompt; the 2B answers in prose
+- [Benchmark class policy](qwen-benchmark-class-policy.md) -- 2B primary, 0.8B secondary, 4B quality fallback; experiments run 2B -> 0.8B -> 4B; every fine-tune graded on its own
+- [Workstation shared with an NVIDIA session](workstation-shared-with-nvidia-session.md) -- repo renamed to qwen-nvidia by another session; CUDA servers make workstation gates refuse; run gates on the laptop in a teardown window
+- [GTT is conditional, not queued](qwen-gtt-and-queue-decisions.md) -- 20 GiB is an alternate research boot; test the RADV unified heap first; live device queue
+- [Natural-boundary patch is local](qwen-natural-boundary-patch.md) -- our repair, #20288 is provenance only; promoted 2026-09-01 with checkpoint_semantics bound to the build at the exec boundary
+- [Model lane roadmap](qwen-model-lane-roadmap.md) -- five serving lanes; Q4-class 7B/9B fit today; only 7B F16 reaches a boundary, and heap topology decides it
+- [Telemetry session records](qwen-telemetry-session-records.md) -- branch 951ce41 makes records immutable; the monitor starts after readiness, so the loading peak is still unmeasured
+- [Decode campaign](qwen-decode-campaign.md) -- Stage A goes decode-first with tok/s as the product metric; two-level admission keeps sub-5% gains
+- [dash parent-side fd redirections](dash-parent-side-fd-redirections.md) -- a trailing 8>&- empties the parent's /proc fd for the child's whole runtime; close fds in a child shell instead
+- [Parallel agent merges](qwen-parallel-agent-merges.md) -- verify branch ancestry vs origin/main before gating; gate venv needs mypy; push to laptop repo over ssh
+- [Fixed-64 scoreboard baseline](qwen-fixed64-scoreboard-baseline.md) -- Stage 0 denominator 18.257/9.864/3.352 tok/s, all unmet; sync the laptop with sync-runtime-tree.sh, never bare rsync
+- [dash dot command aborts](dash-dot-command-aborts.md) -- `. missing-file` exits a dash script silently; prove detached jobs by log content, never pgrep -f from ssh
+- [Stage A census state](qwen-stage-a-census-state.md) -- branch stage-a-pipeline-census; census patch works on the workstation device; laptop build blocked on candidate-tree verification in build-llama-preset.sh
+- [Background agents model choice](background-agents-model-choice.md) -- every Agent call names haiku, sonnet, or opus explicitly; never inherit
+- [LAN bring-up and merge program](qwen-lan-bringup-and-merge-program.md) -- remote/qwen-lan-launch.sh is the only bring-up; gh works on the laptop; lane merge order, SHA256SUMS regeneration helper, gate-cell conversion after build-cache-identity
+- [Package power is not a lever](qwen-package-power-not-a-lever.md) -- STAPM 15 vs 25 W moves draw 0.27 W and decode under 0.7%; serve-fixed profiles at nice 0; cold sclk select up to 27 s
+- [Workstation gates need a PID namespace](workstation-gates-pid-namespace.md) -- bwrap --unshare-pid AND --proc /proc; without the second, every fixture /proc/PID read fails and reads as a code regression
+- [The gate reads the live worktree](gate-reads-the-live-worktree.md) -- editing files during a gate run rejects cells that pass at the commit; leave the tree alone until the verdict
+- [Model size ladder](qwen-model-size-ladder.md) -- 0.8B/2B/4B/9B/27B, 2B-4B gap empty by design, both 3B rows quarantined, no Qwen3.8 3B distill exists or may be invented
+- [Local reviewer calibration](qwen-local-reviewer-calibration.md) -- the 9B loopback reviewer is advisory only: recall 0/3, no true positive found; gate and Codex reviews stay the authority
+- [Router cancelled-load defect and repair](qwen-router-cancelled-load.md) -- repaired, confirmed on the appliance, ninth production patch; epoch main-7f8f2ed-r1 serves it; the 2B closure control is now the nine-member build 70aa78bc
+- [Codex CLI usage](codex-cli-usage.md) -- default model gpt-6-astra, never pass -m astra; effort via -c; its sandbox blocks sockets, rerun tests under bwrap
+- [2B target-closure result](qwen-2b-target-closure-result.md) -- closed once/unresolved on repeat; paired verdict re-read under the median marker rule is unresolved twice (+5.3%, +5.5%); census twin of the candidate at .runtime/opt/llama.cpp-q4k-census
+- [Runtime root doctrine](qwen-runtime-root-doctrine.md) -- QWEN_HOME=.runtime beside remote/; laptop runs from ~/Github/qwen-apu; gates export QWEN_HOME to the primary root under bwrap; fixtures copy qwen-home.sh
+- [4B null attribution](qwen-4b-null-attribution.md) -- 09-03 null was a two-patch candidate; composed stack: 4B Q4_K dispatch -10%, served +6.63% promoted; 4B-class result pending an operator series decision
+- [0.8B attribution result](qwen-08b-attribution-result.md) -- Q8_0 mat-vec owns about 67% of the 0.8B decode; production census twin at .runtime/opt/llama.cpp-prod-census; P must be the tree build, not the bundle path
+- [Row-scoped 4B release](qwen-4b-row-scoped-release.md) -- LANDED 2026-09-06 as epoch main-2c1fa9de-r1; bundled q4k-policy.tsv keeps the keyless rollback verifying; read a child's formulation from server.log, not /proc environ
+- [flock does not survive Bash calls](flock-does-not-survive-bash-calls.md) -- serialize a landing as one `flock LOCK sh -c` command; a lock or trap set in one call is gone in the next
+- [Serving epoch: lease](qwen-serving-epoch-lease.md) -- lease-q4k-6b262d93-r1 serves, main-2c1fa9de-r1 is recovery; preserve-the-working-service rule; bundle rollback swaps links without restarting
+- [All artifacts live in the repo](all-artifacts-live-in-the-repo.md) -- reports and handoffs go under ~/Github/qwen-apu/docs/handoff/, never ~; no new agents at low budget unless tight and haiku
