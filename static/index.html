@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>qwen-apu</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  One origin carries the page and every route it calls. The gateway serves this
+  directory, mints the session the browser presents, proxies chat, signs the
+  approval grants, and reads the artifacts, so the page derives no sibling
+  origin and holds no bearer: `src/qwen_apu/web/auth.py` mints an HttpOnly
+  SameSite=Strict cookie at `POST /api/pair` and script never reads it.
+
+  The two LAN bound tags below describe the ceiling a launch applies.
+  `remote/stage-webui-page.sh` writes the served values into the copy it
+  stages, and an empty value here leaves the page unbounded: the launch states
+  the bound and the server enforces it.
+-->
+<meta name="qwen-lan-max-prompt-tokens" content="">
+<meta name="qwen-lan-max-output-tokens" content="">
+<!--
+  Reasoning is shown, folded, beside the answer. A model can spend a whole small
+  token budget reasoning and return empty answer content. The separate display
+  distinguishes that result from a dead server.
+
+  A text file is tokenized by the gateway before it is attached. The count comes
+  from the loaded Qwen tokenizer rather than a prose character ratio. There is
+  no file API: the browser reads the bytes and places them in the prompt, and
+  the server refuses a prompt that exceeds the active context.
+
+  Server timings are preferred when the stream supplies them. Browser-derived
+  rates remain interactive diagnostics rather than admitted benchmark results.
+  The native Vulkan backend uses LOW-priority bounded submissions so desktop
+  graphics can preempt inference work.
+-->
+<link rel="stylesheet" href="app.css">
+</head>
+
+<body>
+
+<header>
+  <b>qwen-apu</b>
+  <span id="model">connecting</span>
+  <select class="model-picker" id="model-picker" aria-label="Model" hidden></select>
+  <span class="tier-badge" id="model-tier" hidden></span>
+  <span id="ctx">context pending</span>
+  <span id="health">health pending</span>
+  <span>Raven2 UMA | LOW-priority Vulkan | service-latency guarded</span>
+  <input class="key" type="password" id="pair-code" placeholder="pairing code" autocomplete="off" hidden>
+  <button class="act" id="pair" hidden>pair</button>
+  <span class="hint" id="pair-hint" hidden>this gateway wants one pairing: read the code `qwen-apu status` prints and enter it here</span>
+  <label class="chip"><input type="checkbox" id="reasoning"> reasoning</label>
+  <label class="chip"><input type="checkbox" id="web-tools"> web</label>
+  <label class="chip"><input type="checkbox" id="image-tools"> image</label>
+  <button class="act" id="clear">New conversation</button>
+</header>
+
+<!--
+  Two tabs name two launches of one binary rather than two routes of one
+  listener. `server_http_context::init` mounts a `--path` directory at
+  `api_prefix + "/"` when `public_path` carries a value (tools/server/
+  server-http.cpp:333-335) and registers the compiled-in SvelteKit assets under
+  the same `api_prefix` in its else branch (:339-427, routes at :403-404 and
+  :416-424), and `--api-prefix` supplies one value to whichever branch runs
+  (common/arg.cpp:3352-3356). Router mode changes nothing here:
+  `ctx_http.init(params)` runs ahead of the router branch (tools/server/
+  server.cpp:173 against :188-232) and `server-models.cpp` registers no UI route
+  at all. So the llama.cpp UI and this page are two launches of one binary
+  rather than two routes of one listener, and this tab states that rather than
+  linking to an address nothing answers.
+-->
+<nav class="tabs" id="tab-bar">
+  <button id="tab-chat" aria-selected="true">Chat</button>
+  <button id="tab-llama" aria-selected="false">llama.cpp UI</button>
+</nav>
+
+<!--
+  A conversation is a durable record with a URL. The side panel lists what the
+  conversation store holds, the `#/c/<id>` route names one of them, and the log
+  renders the record the route selects, so a reload returns to the transcript
+  the reader left rather than to an empty page. The model picker and the Web
+  and image toggles stay per turn, and the record states which model answered
+  each message so a reader sees where a switch landed.
+
+  A Temporary conversation is the exception the banner names: it lives in a
+  memory store for the life of the tab, so the panel lists it nowhere and the
+  reload that returns to a durable transcript returns to none of it.
+-->
+<div id="workspace">
+  <aside id="conversation-panel">
+    <div id="conversation-actions">
+      <button class="act" id="conversation-new">new conversation</button>
+      <button class="act" id="conversation-temporary">temporary conversation</button>
+      <button class="act" id="conversation-export">export history</button>
+      <button class="act" id="conversation-delete-all">delete all saved</button>
+    </div>
+    <p class="meta" id="conversation-storage-status"></p>
+    <p class="meta" id="conversation-export-status"></p>
+    <div id="conversation-list"></div>
+  </aside>
+  <div id="chat-column">
+    <p class="temporary-banner" id="temporary-banner" hidden>Temporary conversation:
+      this transcript stays in memory for the life of this tab and reaches no
+      browser store. Closing the tab ends it.</p>
+    <!--
+      The support matrix reports what remote/feature-claims.tsv claims for the
+      ids GET /api/models returned, so a reader sees the tier and the
+      per-feature status of the row the picker is about to route to. The gateway
+      serves this directory, and evidence/ is a repository surface, so a cell
+      names its evidence path for a reader to open in the tree.
+    -->
+    <details class="roster" id="roster-matrix" hidden>
+      <summary id="roster-summary">feature support</summary>
+      <div id="roster-matrix-body"></div>
+    </details>
+
+    <div id="log"></div>
+
+<!--
+  The approval dialog is the boundary the web search tool is built around. The
+  model writes the query, and evidence/model-admission records tool-08 carrying
+  an injected city into a tool call in place of the authorized one in all six
+  measured arms, so a human reads the exact proposed arguments here and the
+  gateway signs a grant over those arguments alone. The dialog offers one
+  approval and a refusal: a standing grade would authorize a query nobody has
+  read, which is what the single-use grant exists to prevent.
+-->
+<dialog class="approval" id="web-approval">
+  <h2>Authorize one web search</h2>
+  <p class="why">The model proposes these exact arguments. An approval signs a
+    grant over them and admits one search; the served path refuses any other
+    query, domain list, publication window, cached age, or larger result count.</p>
+  <p class="approval-note" id="approval-note" hidden></p>
+  <dl class="args" id="approval-args"></dl>
+  <div class="approval-actions">
+    <button class="act" id="approve-deny">deny</button>
+    <button class="act" id="approve-once">approve once</button>
+  </div>
+</dialog>
+
+<!--
+  A proposed generate_image call opens this dialog with the same exact-argument
+  discipline as the web search dialog: the gateway signs its
+  qwen-image-generate-v1 grant over the fields shown here, never over a value
+  the model wrote and nobody read. The one addition against the search dialog is
+  the seed -- when the model omits it this page generates one with
+  crypto.getRandomValues and the dialog names it as generated, because
+  randomness is never chosen after authorization.
+-->
+<dialog class="approval" id="image-approval">
+  <h2>Authorize one image generation</h2>
+  <p class="why">The model proposes these exact arguments. An approval signs a
+    grant over them and admits one generation; the served path refuses any
+    other prompt, negative prompt, seed, size, step count, or profile.</p>
+  <p class="approval-note" id="image-approval-note" hidden></p>
+  <dl class="args" id="image-approval-args"></dl>
+  <div class="approval-actions">
+    <button class="act" id="image-approve-deny">deny</button>
+    <button class="act" id="image-approve-once">approve once</button>
+  </div>
+</dialog>
+
+<footer>
+  <div id="attached"></div>
+  <div class="row">
+    <label class="file chip">attach
+      <input type="file" id="file" multiple accept="image/*,text/*,.md,.txt,.log,.csv,.json,.py,.c,.h,.rs,.sh">
+    </label>
+    <textarea id="input" rows="1" placeholder="Ask. Shift+Enter for a newline."></textarea>
+    <button class="act" id="send">send</button>
+  </div>
+</footer>
+  </div>
+</div>
+
+<section class="notice" id="llama-ui-panel" hidden>
+  <h2>The llama.cpp UI is served by the ordinary router launch</h2>
+  <p>llama-server serves one page at the root of one listener. This appliance
+    reaches that server through the qwen-apu gateway, which passes chat through
+    <code>/api/chat</code> and serves this page from its own static root, and
+    the llama.cpp UI answers at the router's own address and port instead.</p>
+  <p>Three surfaces exist on this page alone, because each one is built here
+    rather than in the served binary: the approved web search, the approved
+    image generation with its artifact cards and vision review, and the feature
+    roster this page reads beside itself. A turn run in the llama.cpp UI reaches
+    the model and reaches none of them.</p>
+  <p>
+    <a id="llama-ui-link" href="/">open the root of this listener</a>
+    <span class="hint" id="llama-ui-origin"></span>
+  </p>
+</section>
+
+<script type="module" src="js/status.js"></script>
+</body>
+</html>
