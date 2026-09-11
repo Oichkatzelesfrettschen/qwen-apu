@@ -26,6 +26,7 @@ identifiers whatever order a later edit puts the tuple in.
 from __future__ import annotations
 
 import shutil
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -93,6 +94,7 @@ class TemporaryConversations:
         self.lifetime_s = lifetime_s
         self.clock = clock
         self._live: dict[str, _Temporary] = {}
+        self._lock = threading.Lock()
 
     def directory(self, conversation_id: str) -> Path:
         """The scratch directory one temporary conversation owns.
@@ -121,58 +123,78 @@ class TemporaryConversations:
             created_utc=stamp,
             updated_utc=stamp,
         )
-        self._live[conversation_id] = _Temporary(conversation, now)
+        with self._lock:
+            self._live[conversation_id] = _Temporary(conversation, now)
         return conversation
 
     def holds(self, conversation_id: str) -> bool:
-        return conversation_id in self._live
+        with self._lock:
+            return conversation_id in self._live
 
     def identifiers(self) -> tuple[str, ...]:
-        return tuple(self._live)
+        with self._lock:
+            return tuple(self._live)
 
     def get(self, conversation_id: str) -> Conversation:
-        held = self._live.get(conversation_id)
-        if held is None:
-            raise UnknownConversation(
-                f"no temporary conversation is open under {conversation_id!r}"
-            )
-        return held.conversation
+        with self._lock:
+            return self._held(conversation_id).conversation
 
     def rename(self, conversation_id: str, title: str) -> Conversation:
-        held = self._live[conversation_id] if self.holds(conversation_id) else None
-        if held is None:
-            raise UnknownConversation(
-                f"no temporary conversation is open under {conversation_id!r}"
-            )
         now = self.clock()
-        held.conversation = replace(held.conversation, title=title, updated_utc=utc_stamp(now))
-        held.touched = now
-        return held.conversation
+        with self._lock:
+            held = self._held(conversation_id)
+            held.conversation = replace(held.conversation, title=title, updated_utc=utc_stamp(now))
+            held.touched = now
+            return held.conversation
 
     def append(self, conversation_id: str, message: Message) -> int:
-        """Extend the in-memory transcript and return the position the message took."""
-        held = self._live.get(conversation_id)
-        if held is None:
-            raise UnknownConversation(
-                f"no temporary conversation is open under {conversation_id!r}"
-            )
+        """Extend the in-memory transcript and return the position the message took.
+
+        The read of the transcript and the write of the extended one happen
+        under one lock, so two requests appending to one conversation take
+        consecutive positions rather than both reading the same tuple and the
+        second assignment dropping the first message. The gateway serves each
+        request on its own thread, which is what makes that reachable.
+        """
         now = self.clock()
-        messages = (*held.conversation.messages, message)
-        held.conversation = replace(
-            held.conversation, messages=messages, updated_utc=utc_stamp(now)
-        )
-        held.touched = now
-        return len(messages) - 1
+        with self._lock:
+            held = self._held(conversation_id)
+            messages = (*held.conversation.messages, message)
+            held.conversation = replace(
+                held.conversation, messages=messages, updated_utc=utc_stamp(now)
+            )
+            held.touched = now
+            return len(messages) - 1
 
     def close(self, conversation_id: str) -> None:
         """Drop the transcript and remove the scratch directory whole."""
-        directory = self.directory(conversation_id)
-        held = self._live.pop(conversation_id, None)
+        with self._lock:
+            self._close_held(conversation_id)
+
+    def _held(self, conversation_id: str) -> _Temporary:
+        held = self._live.get(conversation_id)
         if held is None:
             raise UnknownConversation(
                 f"no temporary conversation is open under {conversation_id!r}"
             )
-        shutil.rmtree(directory, ignore_errors=True)
+        return held
+
+    def _close_held(self, conversation_id: str) -> None:
+        """Remove one conversation's directory and record, with the lock held.
+
+        `shutil.rmtree` raises on a directory it leaves behind -- a file it
+        cannot unlink, a mode it cannot traverse -- so a partial removal
+        reaches the caller rather than answering as a whole one. The absent
+        directory is the one stated exception, since it is the state this call
+        establishes.
+        """
+        directory = self.directory(conversation_id)
+        self._held(conversation_id)
+        try:
+            shutil.rmtree(directory)
+        except FileNotFoundError:
+            pass
+        del self._live[conversation_id]
 
     def expire(self, now: float) -> tuple[str, ...]:
         """Close every conversation untouched for its lifetime, and name them.
@@ -181,20 +203,22 @@ class TemporaryConversations:
         open, so a conversation in use stays open and an abandoned one takes
         its directory with it at the next sweep.
         """
-        expired = tuple(
-            conversation_id
-            for conversation_id, held in self._live.items()
-            if now - held.touched >= self.lifetime_s
-        )
-        for conversation_id in expired:
-            self.close(conversation_id)
+        with self._lock:
+            expired = tuple(
+                conversation_id
+                for conversation_id, held in self._live.items()
+                if now - held.touched >= self.lifetime_s
+            )
+            for conversation_id in expired:
+                self._close_held(conversation_id)
         return expired
 
     def shutdown(self) -> tuple[str, ...]:
         """Close every live conversation, which is what a gateway stop owes them."""
-        closing = tuple(self._live)
-        for conversation_id in closing:
-            self.close(conversation_id)
+        with self._lock:
+            closing = tuple(self._live)
+            for conversation_id in closing:
+                self._close_held(conversation_id)
         return closing
 
 

@@ -18,6 +18,7 @@ passing over a store that wrote nothing at all.
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import threading
 from collections.abc import Callable
@@ -445,6 +446,67 @@ def test_close_expire_and_shutdown_each_remove_the_temporary_directory(tmp_path:
     assert registry.identifiers() == ()
 
 
+def test_close_drops_the_record_when_the_directory_is_already_gone(tmp_path: Path) -> None:
+    """An absent directory is the state `close` establishes; every other failure raises."""
+    registry = TemporaryConversations(tmp_path / "tmp")
+    opened = registry.open("removed out of band")
+    shutil.rmtree(registry.directory(opened.conversation_id))
+    registry.close(opened.conversation_id)
+    assert not registry.holds(opened.conversation_id)
+    with pytest.raises(UnknownConversation):
+        registry.close(opened.conversation_id)
+
+
+def test_two_threads_appending_to_one_temporary_transcript_keep_every_message(
+    tmp_path: Path,
+) -> None:
+    """The registry's read-modify-write runs under one lock.
+
+    Without it both threads read the same tuple and the second assignment drops
+    the first message, which is the invariant the store's own concurrency case
+    pins on the SQLite side. The transcript length is what opens that window:
+    `(*messages, message)` copies a tuple whose length grows, so the copy
+    reaches the interpreter's switch interval only once the transcript is long.
+    With the lock replaced by a null context, 1000 appends per thread lost
+    nothing across five trials and 1500 lost messages in all five, so the case
+    runs 2000 and costs about 30 milliseconds.
+    """
+    per_thread = 2000
+    registry = TemporaryConversations(tmp_path / "tmp")
+    opened = registry.open("two writers")
+    taken: list[int] = []
+    lock = threading.Lock()
+    failures: list[BaseException] = []
+
+    def append(marker: str) -> None:
+        try:
+            for index in range(per_thread):
+                position = registry.append(
+                    opened.conversation_id, Message("user", f"{marker}-{index}", "now")
+                )
+                with lock:
+                    taken.append(position)
+        except BaseException as failure:  # the thread's failure belongs to the test
+            with lock:
+                failures.append(failure)
+
+    threads = [threading.Thread(target=append, args=(marker,)) for marker in ("first", "second")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert failures == []
+    assert sorted(taken) == list(range(2 * per_thread))
+    held = registry.get(opened.conversation_id)
+    assert len(held.messages) == 2 * per_thread
+    for marker in ("first", "second"):
+        contents = [
+            message.content for message in held.messages if message.content.startswith(marker)
+        ]
+        assert contents == [f"{marker}-{index}" for index in range(per_thread)]
+    registry.shutdown()
+
+
 def test_a_patch_carrying_mode_is_refused_for_either_home(tmp_path: Path) -> None:
     settings = settings_at(tmp_path, admit)
     saved = decoded(call(settings, "POST", CONVERSATIONS_PATH, {"mode": "saved", "title": "kept"}))
@@ -577,9 +639,10 @@ def test_delete_through_the_route_reports_digests_and_closes_a_temporary(tmp_pat
 def test_two_threads_appending_take_consecutive_positions(tmp_path: Path) -> None:
     """`BEGIN IMMEDIATE` holds the write lock across the read of MAX(position).
 
-    A lost update would repeat a position or skip one, so the case asserts the
-    set of positions equals `range(2 * PER_THREAD)` rather than asserting that
-    the order merely rises.
+    A lost update would repeat a position, which the messages table's primary
+    key over (conversation_id, position) raises on, and the surviving thread
+    would skip one, so the case asserts the set of positions equals
+    `range(2 * PER_THREAD)` rather than asserting that the order merely rises.
     """
     per_thread = 25
     store = store_at(tmp_path / "state")
