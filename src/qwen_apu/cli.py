@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict
@@ -264,6 +265,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     except (ValueError, RuntimeError) as error:
         print(f"qwen-apu: {error}", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as error:
+        print(f"qwen-apu: {error.cmd[0]} exited {error.returncode}", file=sys.stderr)
         return 1
 
 

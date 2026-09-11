@@ -96,6 +96,17 @@ stable-diffusion recipe's bundle.
 | core group download | 3 min 49 s |
 | core group verify | 3 of 3 verified |
 
+### The source path and the host compiler
+
+`qwen-apu build` on the workstation acquires the pinned archive, applies the
+production series, and configures with the recipe's defines, then GCC 16
+refuses `tools/mtmd/clip-graph.h` under `-Werror` with
+`-Wdeprecated-enum-enum-conversion`; the laptop's GCC 13.3 compiles the same
+commit. The pinned commit therefore binds the source path to a toolchain
+generation, which is what `opt/toolchains` will pin; until then the source
+path is proven through the digest gate and the prebuilt bundle is the
+installation path.
+
 ## Order of the remaining phases
 
 3. Deployment manager: build, activate, rollback under `fcntl` locks with
