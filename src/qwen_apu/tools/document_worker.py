@@ -1259,20 +1259,23 @@ def compile_query(query: str, *, regex: bool, bounds: SearchBounds) -> re.Patter
     forms and a literal never carries a metacharacter of its own. CPython
     publishes no size for the compiled program, so the bound reads the two
     measures the compiled pattern does publish -- the source it holds and the
-    groups it captures -- which are what a nested quantifier grows.
+    groups it captures -- which are what a nested quantifier grows. The source
+    length is read ahead of the compile, since `re.compile` leaves a pattern's
+    own source unchanged and compiling a refused pattern spends the process
+    that is about to refuse it.
     """
     if not query:
         raise ExtractionRefused("the query is empty")
+    if regex and len(query) > bounds.max_pattern_chars:
+        raise SearchBounded(
+            f"the pattern is {len(query)} characters, past the "
+            f"{bounds.max_pattern_chars}-character bound"
+        )
     try:
         pattern = re.compile(query if regex else re.escape(query))
     except re.error as error:
         raise ExtractionRefused(f"the query is not a valid regular expression: {error}") from None
     if regex:
-        if len(pattern.pattern) > bounds.max_pattern_chars:
-            raise SearchBounded(
-                f"the pattern is {len(pattern.pattern)} characters, past the "
-                f"{bounds.max_pattern_chars}-character bound"
-            )
         if pattern.groups > bounds.max_pattern_groups:
             raise SearchBounded(
                 f"the pattern captures {pattern.groups} groups, past the "

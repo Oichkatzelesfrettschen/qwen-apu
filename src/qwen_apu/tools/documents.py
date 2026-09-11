@@ -339,27 +339,30 @@ class DocumentService:
         rather than an offset alone.
 
         A literal query is the default and scans here: `str.find` walks each
-        chunk once and backtracks over nothing, so the cost is the document's
-        own size and the candidate-chunk bound is what limits it. `regex=True`
-        hands the pattern to the worker, where the wall-clock timer, the CPU
-        cap, and the address-space cap bound what it spends; this process
-        compiles it first so an invalid pattern refuses without a spawn, and
-        the worker applies every bound again as the authority. Each bound
-        answers `search_bounded`.
+        chunk once and backtracks over nothing, so the cost is the stored
+        document's own size and every document the upload cap admits stays
+        searchable. `regex=True` hands the pattern to the worker, where the
+        wall-clock timer, the CPU cap, and the address-space cap bound what it
+        spends; the candidate-chunk bound, the pattern's source length, and
+        its group count all belong to that path, since they bound a cost the
+        pattern rather than the document decides. This process compiles the
+        pattern first so an invalid one refuses without a spawn, and the
+        worker applies every bound again as the authority. Each bound answers
+        `search_bounded`.
         """
         if not query:
             raise DocumentRefused(400, "the query is empty")
         record = self.record(digest)
         stored = self.settings.store() / digest
         bounds = self.settings.search_bounds
-        if len(record.chunks) > bounds.max_candidate_chunks:
-            raise DocumentRefused(
-                400,
-                f"the document holds {len(record.chunks)} chunks, past the "
-                f"{bounds.max_candidate_chunks}-chunk search bound",
-                SEARCH_BOUNDED,
-            )
         if regex:
+            if len(record.chunks) > bounds.max_candidate_chunks:
+                raise DocumentRefused(
+                    400,
+                    f"the document holds {len(record.chunks)} chunks, past the "
+                    f"{bounds.max_candidate_chunks}-chunk search bound",
+                    SEARCH_BOUNDED,
+                )
             try:
                 compile_query(query, regex=True, bounds=bounds)
             except SearchBounded as bounded:

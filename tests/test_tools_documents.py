@@ -1154,6 +1154,13 @@ def _backtracking_document(tmp_path: Path) -> Path:
     return source
 
 
+def _many_chunks(tmp_path: Path) -> Path:
+    """Four chunks of one repeated character, past the bound this fixture sets at two."""
+    source = tmp_path / "many.txt"
+    source.write_text(("x" * 1199 + "\n") * 4, encoding="utf-8")
+    return source
+
+
 def test_a_catastrophic_pattern_answers_search_bounded_inside_the_bound(
     bounded: DocumentService, tmp_path: Path
 ) -> None:
@@ -1204,15 +1211,28 @@ def test_a_pattern_past_the_group_bound_answers_search_bounded(
 def test_a_document_past_the_candidate_chunk_bound_answers_search_bounded(
     bounded: DocumentService, tmp_path: Path
 ) -> None:
-    """The chunk count refuses ahead of the first match, literal or not."""
-    long_document = tmp_path / "many.txt"
-    long_document.write_text(("x" * 1199 + "\n") * 4, encoding="utf-8")
-    record = bounded.extract(long_document, "text/plain")
+    """The chunk count refuses a pattern ahead of its first match."""
+    record = bounded.extract(_many_chunks(tmp_path), "text/plain")
     assert len(record.chunks) > 2
     with pytest.raises(DocumentRefused) as refusal:
-        bounded.search(record.sha256, "x")
+        bounded.search(record.sha256, "x+", regex=True)
     assert refusal.value.kind == "search_bounded"
     assert "past the 2-chunk search bound" in refusal.value.message
+
+
+def test_the_chunk_bound_leaves_a_literal_search_of_the_same_document_admitted(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    """A literal scan costs the document's own size, so every stored document answers one.
+
+    The bound belongs to the pattern rather than to the document: an upload
+    the size cap admits would otherwise store and then refuse every search of
+    itself.
+    """
+    record = bounded.extract(_many_chunks(tmp_path), "text/plain")
+    assert len(record.chunks) > bounded.settings.search_bounds.max_candidate_chunks
+    hits = bounded.search(record.sha256, "xxx")
+    assert len(hits) == bounded.settings.max_search_hits
 
 
 def test_the_worker_enforces_the_pattern_bound_the_gateway_also_states(

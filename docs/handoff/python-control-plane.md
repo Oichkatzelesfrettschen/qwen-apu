@@ -223,14 +223,17 @@ regular expression runs in the worker, where a bound can end the process.
 | extracted file | `DocumentSettings.max_upload_bytes` | 32 MiB | `DocumentService.extract`, on the staged file | 413 |
 | worker input | `Limits.max_input_bytes` | 32 MiB | `read_source`, before the read | worker refusal |
 | extraction deadline | `DocumentSettings.deadline_seconds` | 120 s | the parent, killing the process group | 504 |
-| pattern source | `SearchBounds.max_pattern_chars` | 200 | `compile_query` in the worker | `search_bounded` |
-| pattern groups | `SearchBounds.max_pattern_groups` | 20 | `compile_query` in the worker | `search_bounded` |
-| candidate chunks | `SearchBounds.max_candidate_chunks` | 2048 | the gateway ahead of the spawn, the worker ahead of the first match | `search_bounded` |
+| pattern source | `SearchBounds.max_pattern_chars` | 200 | `compile_query`, ahead of the compile | `search_bounded` |
+| pattern groups | `SearchBounds.max_pattern_groups` | 20 | `compile_query`, on the compiled pattern | `search_bounded` |
+| candidate chunks | `SearchBounds.max_candidate_chunks` | 2048 | the regex path alone: the gateway ahead of the spawn, the worker ahead of the first match | `search_bounded` |
 | search wall clock | `SearchBounds.wall_clock_seconds` | 5 s | `arm_wall_clock` in the worker: SIGALRM at its default disposition | `search_bounded` |
 | hits | `DocumentSettings.max_search_hits` | 200 | the worker and the gateway | truncation |
 
-The request bound sits above the file cap because multipart framing rides
-between them, and `REQUEST_DEADLINE_SECONDS` (60 s) is the connection's own
+Every search bound belongs to the pattern rather than to the document, so a
+literal scan of a stored document is always admitted: 2048 chunks is about
+2.4 MB of text where `max_upload_bytes` admits 32 MiB, and a shared bound
+would store a document and then refuse every search of it. The request bound
+sits above the file cap because multipart framing rides between them, and `REQUEST_DEADLINE_SECONDS` (60 s) is the connection's own
 timeout, so a link slow enough to spend it ends an upload before 64 MiB does.
 `(a+)+$` against a thousand-character run answers `search_bounded` in 1.06 s
 against a 1-second bound: `_sre` reaches no bytecode boundary inside a match,
