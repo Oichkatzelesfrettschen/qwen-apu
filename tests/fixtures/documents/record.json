@@ -1,0 +1,15 @@
+{
+    "checkpoint": "qwen38-2b-distill",
+    "decode_tokens_per_second": 9.46,
+    "backend": "vulkan",
+    "arms": [
+        {
+            "depth": 0,
+            "rate": 9.46
+        },
+        {
+            "depth": 4096,
+            "rate": 8.11
+        }
+    ]
+}

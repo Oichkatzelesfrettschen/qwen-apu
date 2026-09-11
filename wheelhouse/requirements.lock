@@ -1,0 +1,13 @@
+# The third-party closure of qwen-apu, one distribution deep and pinned by digest.
+#
+# `bootstrap.py` installs this file with `--no-index --find-links wheelhouse
+# --require-hashes`, so the appliance resolves the bytes beside it rather than
+# an index, and a wheel whose digest moved refuses the install rather than
+# replacing what was measured. pypdf is pure Python and declares no runtime
+# dependency on this interpreter, which is what keeps the closure one line long.
+#
+# Regenerate with:
+#     pip download pypdf --no-deps -d wheelhouse/
+#     pip hash wheelhouse/pypdf-<version>-py3-none-any.whl
+pypdf==6.18.1 \
+    --hash=sha256:ee93a2665670ecf57ee81d197a4ca548f3dc15f9cefc56e59b8140866aaa3de5

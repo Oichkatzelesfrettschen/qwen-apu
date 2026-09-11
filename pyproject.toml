@@ -9,7 +9,9 @@ description = "Shell-free Python control plane around native Vulkan inference en
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-dependencies = []
+# pypdf carries the PDF text extractor `qwen_apu.tools.document_worker` imports
+# at call time; `wheelhouse/requirements.lock` pins the same version by digest.
+dependencies = ["pypdf==6.18.1"]
 
 [project.scripts]
 qwen-apu = "qwen_apu.cli:main"
