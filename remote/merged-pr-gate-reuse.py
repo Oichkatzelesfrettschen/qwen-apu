@@ -110,8 +110,6 @@ def clone_local_gate_kind(value: Json) -> str | None:
     cache_conclusion = cache_save_steps[0].get("conclusion")
     if cache_conclusion == "success":
         return "exhaustive"
-    if cache_conclusion == "skipped":
-        return "targeted"
     return None
 
 
@@ -202,7 +200,7 @@ def reuse_is_proven(fetch: Fetch, pushed_sha: str) -> bool:
 
 
 def write_source(path: str, source: GateSource) -> None:
-    if source.gate_kind not in {"exhaustive", "targeted"}:
+    if source.gate_kind != "exhaustive":
         raise ValueError(f"invalid source gate kind: {source.gate_kind}")
     destination = os.path.abspath(path)
     temporary = f"{destination}.pending"

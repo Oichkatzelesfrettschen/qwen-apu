@@ -213,9 +213,14 @@ else:
     raise AssertionError("a traversal path entered pull-request routing")
 
 workflow_text = WORKFLOW.read_text(encoding="utf-8")
-assert "github.event.pull_request.draft" not in workflow_text
-assert "ready_for_review" not in workflow_text
+assert workflow_text.count("ready_for_review") == 1
+assert workflow_text.count("'draft-targeted'") == 1
+assert workflow_text.count("'clone-local'") == 1
+assert workflow_text.count("github.event.pull_request.draft") == 2
+assert 'test "${{ github.event.pull_request.draft }}" = true' in workflow_text
 assert workflow_text.count("python3 remote/run-pull-request-gate.py") == 1
+assert "main_gate_reuse=targeted" not in workflow_text
+assert 'test "$source_gate_kind" = exhaustive' in workflow_text
 
 webui_commands = MODULE.selected_checks(
     ["remote/test-fallback-webui-web-authorization.sh"], "webui"

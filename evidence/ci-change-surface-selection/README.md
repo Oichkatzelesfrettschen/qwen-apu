@@ -17,6 +17,17 @@ infrastructure, recognized no general evidence surface, and therefore returned
 required a route-specific source edit or all 155 cells even though the UI,
 runtime, telemetry, and gate-cell implementations were unchanged.
 
+Pull request 254 exposed the admission consequence of sharing one job context
+across development and merge-ready checks. Its draft head
+`8d40b8ef0e2e99a329044f7283f3d2e47b0cd47f` passed the targeted route in run
+`34544825418` under the required `clone-local` context. The workflow subscribed
+to no `ready_for_review` event, so the transition started no exhaustive run.
+Auto-merge then merged that head as
+`393093f772309869d6cb7dc0bd48d121d5a07955`, and main run `34545041195`
+reported `source_gate_kind=targeted` and reused the draft result. The run
+established neither merge-ready exhaustive validation nor an exhaustive cache
+promotion source.
+
 ## Correction
 
 `remote/run-pull-request-gate.py` now derives a set of consuming surfaces for
@@ -26,13 +37,13 @@ integrity companion. Documentation, Web UI, browser preflight, Q8 sampler
 attribution, CI routing, and gate infrastructure remain separately named.
 Unknown executable and runtime paths still select the exhaustive gate.
 
-The workflow sends opened, synchronized, and reopened pull requests through the
-same classifier. Marking an already checked commit ready for review changes no
-tree input and starts no duplicate job.
-`remote/merged-pr-gate-reuse.py` accepts an exact-tree successful PR source as
-either `targeted` or `exhaustive`. Main promotes a cache only for an exhaustive
-source; targeted reuse retains the source receipt and claims no full-gate
-artifact.
+The workflow sends draft pull requests through the classifier under the
+`draft-targeted` job context. A ready pull request executes the exhaustive gate
+under `clone-local`, including a `ready_for_review` transition over an already
+checked commit. `remote/merged-pr-gate-reuse.py` accepts only an exact-tree
+successful exhaustive PR source. Main imports that source's retained cell cache
+and falls back to the exhaustive gate when the source or artifact is absent or
+malformed.
 
 ## Focused proof
 
@@ -44,11 +55,11 @@ evidence directories, unions with gate infrastructure, browser preflight, Q8,
 and Web UI, traversal refusal, and exhaustive fallback for an unclassified
 runtime launcher.
 
-`remote/test-merged-pr-gate-reuse.py` requires the gate step itself to complete,
-classifies a successful cache-save step as `exhaustive`, classifies a skipped
-cache-save step as `targeted`, and refuses every other shape. Both kinds retain
-the exact pull-request head tree, merge tree, workflow run, run attempt, and
-successful clone-local job identity already required by the reuse proof.
+`remote/test-merged-pr-gate-reuse.py` requires the gate step and cache-save step
+to complete successfully, classifies that source as `exhaustive`, and refuses a
+targeted source whose cache-save step was skipped. The proof retains the exact
+pull-request head tree, merge tree, workflow run, run attempt, and successful
+clone-local job identity.
 
 ## Boundaries and falsifiers
 
@@ -57,7 +68,8 @@ no browser or model, and changes no serving artifact. A changed path that maps
 to no reviewed surface continues to request the full repository gate.
 
 The correction is falsified if the pull request 248 path set selects a Web UI,
-browser, Q8, runtime, or exhaustive check; if draft state changes the selected
-commands; if a targeted PR source causes cache promotion; if an exhaustive
-source without its cache artifact avoids the full fallback; or if an exact-tree
-mismatch reuses any PR result.
+browser, Q8, runtime, or exhaustive check; if a draft job publishes the
+`clone-local` context; if a ready transition starts no exhaustive run; if a
+targeted PR source causes any main reuse; if an exhaustive source without its
+cache artifact avoids the full fallback; or if an exact-tree mismatch reuses
+any PR result.

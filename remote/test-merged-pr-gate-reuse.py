@@ -97,7 +97,7 @@ def targeted_fixture_fetch(path: str) -> object:
         "total_count": 1,
         "jobs": [
             {
-                "name": "clone-local",
+                "name": "draft-targeted",
                 "status": "completed",
                 "conclusion": "success",
                 "steps": [
@@ -117,22 +117,48 @@ def targeted_fixture_fetch(path: str) -> object:
     }
 
 
+def targeted_with_cache_fixture_fetch(path: str) -> object:
+    if path != "/actions/runs/73/jobs?per_page=100":
+        return fixture_fetch(path)
+    return {
+        "total_count": 1,
+        "jobs": [
+            {
+                "name": "draft-targeted",
+                "status": "completed",
+                "conclusion": "success",
+                "steps": [
+                    {
+                        "name": "Run clone-local gates",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                    {
+                        "name": "Save accepted gate cell cache",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                ],
+            }
+        ],
+    }
+
+
 assert MODULE.reuse_is_proven(fixture_fetch, PUSHED)
 assert MODULE.reusable_gate_source(fixture_fetch, PUSHED) == MODULE.GateSource(
     73, 2, "exhaustive"
 )
-assert MODULE.reusable_gate_source(targeted_fixture_fetch, PUSHED) == MODULE.GateSource(
-    73, 2, "targeted"
-)
+assert MODULE.reusable_gate_source(targeted_fixture_fetch, PUSHED) is None
+assert MODULE.reusable_gate_source(targeted_with_cache_fixture_fetch, PUSHED) is None
 with tempfile.TemporaryDirectory() as temporary_directory:
     source_result = pathlib.Path(temporary_directory) / "source.tsv"
-    MODULE.write_source(str(source_result), MODULE.GateSource(73, 2, "targeted"))
+    MODULE.write_source(str(source_result), MODULE.GateSource(73, 2, "exhaustive"))
     assert source_result.read_text(encoding="utf-8") == (
         "field\tvalue\nsource_run_id\t73\nsource_run_attempt\t2\n"
-        "source_gate_kind\ttargeted\n"
+        "source_gate_kind\texhaustive\n"
     )
 try:
-    MODULE.write_source("unused", MODULE.GateSource(73, 2))
+    MODULE.write_source("unused", MODULE.GateSource(73, 2, "targeted"))
 except ValueError:
     pass
 else:
@@ -208,7 +234,7 @@ assert (
             ],
         }
     )
-    == "targeted"
+    is None
 )
 assert not MODULE.exhaustive_clone_local_succeeded(
     {
