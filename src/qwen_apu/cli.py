@@ -235,6 +235,16 @@ def build_parser() -> argparse.ArgumentParser:
     canary_run.add_argument("--repeats", type=int, default=canary.DEFAULT_REPEATS)
     canary_run.add_argument("--ratio", type=float, default=canary.DEFAULT_RATIO)
     canary_run.add_argument("--base", default=canary.DEFAULT_BASE)
+    for arm in ("legacy", "python"):
+        canary_run.add_argument(
+            f"--{arm}-base", default="", help=f"the {arm} arm's origin where it differs from --base"
+        )
+        canary_run.add_argument(
+            f"--{arm}-bearer-file",
+            type=Path,
+            default=None,
+            help=f"a file holding the bearer the {arm} arm requires; never printed",
+        )
     canary_run.add_argument("--prompt", default=canary.DEFAULT_PROMPT)
     canary_run.add_argument("--tokens", type=int, default=canary.DEFAULT_TOKENS)
     canary_run.add_argument("--model", default="")
@@ -583,10 +593,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     tokens=args.tokens,
                     model=args.model,
                     legacy=canary.ArmCommands(
-                        start=tuple(args.legacy_start), stop=tuple(args.legacy_stop)
+                        start=tuple(args.legacy_start),
+                        stop=tuple(args.legacy_stop),
+                        base=args.legacy_base,
+                        bearer_file=args.legacy_bearer_file,
                     ),
                     python=canary.ArmCommands(
-                        start=tuple(args.python_start), stop=tuple(args.python_stop)
+                        start=tuple(args.python_start),
+                        stop=tuple(args.python_stop),
+                        base=args.python_base,
+                        bearer_file=args.python_bearer_file,
                     ),
                     sysfs=canary.sysfs_from_request(args.sysfs),
                     readiness_deadline_s=args.readiness_deadline_s,

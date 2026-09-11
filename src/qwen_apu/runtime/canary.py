@@ -93,6 +93,13 @@ class ArmCommands:
 
     start: tuple[str, ...] = ()
     stop: tuple[str, ...] = ()
+    # The origin this arm listens on and the bearer its routes require; an
+    # empty base falls to the request's base, and an absent bearer sends no
+    # Authorization header. The production LAN launch serves its address with
+    # a bearer while the Python serve stays on the loopback, and the two are
+    # still one server argv apart from the transport words.
+    base: str = ""
+    bearer_file: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -136,21 +143,44 @@ class Configuration:
             "pid": self.pid,
             "reason": self.reason,
             "preset_sha256": self.preset_sha256,
+            "transport": self.transport(),
         }
 
     def comparable_argv(self) -> list[str]:
-        """The argv with the preset word replaced by the preset's content digest.
+        """The policy argv: the preset word by content digest, transport words out.
 
         The legacy launch snapshots the merged router preset to a per-launch
         path and the Python launch names the bundle's own file, so the two
         argvs differ by that one word while the bytes the server reads are
-        equal; the digest is what the arms must agree on.
+        equal; the digest is what the arms must agree on. The listening host
+        and port, the bearer file, and the CORS origins name where the server
+        answers rather than how it decodes, so they are recorded under
+        `transport` and left out of the comparison.
         """
-        words = list(self.argv)
-        for index, word in enumerate(words[:-1]):
-            if word == PRESET_FLAG and self.preset_sha256:
-                words[index + 1] = f"sha256:{self.preset_sha256}"
+        words: list[str] = []
+        skip = False
+        for index, word in enumerate(self.argv):
+            if skip:
+                skip = False
+                continue
+            if word in TRANSPORT_FLAGS and index + 1 < len(self.argv):
+                skip = True
+                continue
+            if word == PRESET_FLAG and self.preset_sha256 and index + 1 < len(self.argv):
+                words.append(word)
+                words.append(f"sha256:{self.preset_sha256}")
+                skip = True
+                continue
+            words.append(word)
         return words
+
+    def transport(self) -> dict[str, str]:
+        """The transport words the comparison leaves out, for the record."""
+        pairs: dict[str, str] = {}
+        for index, word in enumerate(self.argv[:-1]):
+            if word in TRANSPORT_FLAGS:
+                pairs[word] = self.argv[index + 1]
+        return pairs
 
     def comparable(self) -> dict[str, object]:
         """The fields two arms must agree on, with the pid left out.
@@ -277,6 +307,7 @@ def listener_pid(port: int) -> int:
 
 
 PRESET_FLAG = "--models-preset"
+TRANSPORT_FLAGS = frozenset({"--host", "--port", "--api-key-file", "--cors-origins"})
 
 
 def preset_digest(argv: Sequence[str]) -> str:
@@ -356,21 +387,36 @@ class Endpoint:
 
     host: str
     port: int
+    bearer: str = ""
 
     @classmethod
-    def parse(cls, base: str) -> Endpoint:
+    def parse(cls, base: str, bearer_file: Path | None = None) -> Endpoint:
         parts = urlsplit(base)
         if parts.scheme != "http" or not parts.hostname:
             raise CanaryRefused(
                 f"the canary base names {base!r}; it reads an http origin such as "
                 "http://127.0.0.1:8080"
             )
-        return cls(parts.hostname, parts.port or 80)
+        bearer = ""
+        if bearer_file is not None:
+            try:
+                bearer = bearer_file.read_text(encoding="utf-8").strip()
+            except OSError as error:
+                raise CanaryRefused(f"the bearer file is unreadable: {error}") from None
+            if not bearer:
+                raise CanaryRefused(f"the bearer file is empty: {bearer_file}")
+        return cls(parts.hostname, parts.port or 80, bearer)
+
+    def _headers(self, **extra: str) -> dict[str, str]:
+        headers = dict(extra)
+        if self.bearer:
+            headers["Authorization"] = f"Bearer {self.bearer}"
+        return headers
 
     def get(self, path: str, timeout_s: float) -> tuple[int, bytes]:
         connection = HTTPConnection(self.host, self.port, timeout=timeout_s)
         try:
-            connection.request("GET", path)
+            connection.request("GET", path, headers=self._headers())
             response = connection.getresponse()
             return response.status, response.read()
         finally:
@@ -383,7 +429,7 @@ class Endpoint:
                 "POST",
                 path,
                 body=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers=self._headers(**{"Content-Type": "application/json"}),
             )
             response = connection.getresponse()
             return response.status, response.read()
@@ -692,11 +738,16 @@ def run(paths: RuntimePaths, request: CanaryRequest) -> int:
     destination = require_inside_root(paths, request.report)
     if request.repeats < 1:
         raise CanaryRefused(f"the canary runs at least one alternation; {request.repeats} is none")
-    endpoint = Endpoint.parse(request.base)
+    legacy_endpoint = Endpoint.parse(
+        request.legacy.base or request.base, request.legacy.bearer_file
+    )
+    python_endpoint = Endpoint.parse(
+        request.python.base or request.base, request.python.bearer_file
+    )
     results: list[ArmResult] = []
     for ordinal in range(1, request.repeats + 1):
-        results.append(run_arm(LEGACY_ARM, ordinal, request.legacy, request, endpoint))
-        results.append(run_arm(PYTHON_ARM, ordinal, request.python, request, endpoint))
+        results.append(run_arm(LEGACY_ARM, ordinal, request.legacy, request, legacy_endpoint))
+        results.append(run_arm(PYTHON_ARM, ordinal, request.python, request, python_endpoint))
     overall, reason, rows = verdict(request, results)
     document = report_document(request, results, overall, reason, rows)
     destination.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")

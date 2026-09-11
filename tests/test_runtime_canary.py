@@ -21,7 +21,7 @@ import socket
 import sys
 import threading
 from collections.abc import Iterator
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -439,3 +439,69 @@ def test_an_unreadable_preset_leaves_the_path_word_in_place(tmp_path: Path) -> N
     argv = ("llama-server", "--models-preset", str(tmp_path / "absent.ini"))
     assert canary.preset_digest(argv) == ""
     assert canary.Configuration(argv=argv).comparable()["argv"] == list(argv)
+
+
+def test_transport_words_leave_the_comparison_and_enter_the_record() -> None:
+    legacy = canary.Configuration(
+        argv=(
+            "llama-server",
+            "--host",
+            "10.0.0.170",
+            "--port",
+            "42069",
+            "--api-key-file",
+            "/k",
+            "--cors-origins",
+            "http://a",
+            "--ctx-size",
+            "24576",
+        )
+    )
+    python = canary.Configuration(
+        argv=("llama-server", "--host", "127.0.0.1", "--port", "8080", "--ctx-size", "24576")
+    )
+    assert legacy.comparable() == python.comparable()
+    assert legacy.comparable()["argv"] == ["llama-server", "--ctx-size", "24576"]
+    assert legacy.to_json()["transport"] == {
+        "--host": "10.0.0.170",
+        "--port": "42069",
+        "--api-key-file": "/k",
+        "--cors-origins": "http://a",
+    }
+    changed = canary.Configuration(argv=(*python.argv[:-1], "16384"))
+    assert legacy.comparable() != changed.comparable()
+
+
+def test_an_endpoint_sends_the_bearer_it_read(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            seen.append(self.headers.get("Authorization", ""))
+            body = b'{"status":"ok"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        key = tmp_path / "api.key"
+        key.write_text("secret-token\n", encoding="utf-8")
+        endpoint = canary.Endpoint.parse(f"http://127.0.0.1:{server.server_port}", key)
+        status, _ = endpoint.get("/health", timeout_s=5.0)
+        assert status == 200
+        assert seen == ["Bearer secret-token"]
+        bare = canary.Endpoint.parse(f"http://127.0.0.1:{server.server_port}")
+        bare.get("/health", timeout_s=5.0)
+        assert seen[-1] == ""
+    finally:
+        server.shutdown()
+        server.server_close()
+    with pytest.raises(canary.CanaryRefused):
+        canary.Endpoint.parse("http://127.0.0.1:1", tmp_path / "absent")
