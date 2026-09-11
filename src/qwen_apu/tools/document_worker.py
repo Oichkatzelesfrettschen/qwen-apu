@@ -54,7 +54,9 @@ lands inside the budget and cuts at the last line break otherwise.
 A PDF page whose extracted text is empty while the page's resources name an
 image XObject is reported through `requires_ocr`, which carries the page
 numbers. The document still records every other page's text, so a mixed PDF
-answers with what it has beside the list of what it cannot read.
+answers with what it has beside the list of what it cannot read; a document
+that yielded no text at all states `ocr_required` in the record's `state`,
+which is what separates a scan from a success over an empty document.
 """
 
 from __future__ import annotations
@@ -79,8 +81,17 @@ from typing import Any, cast
 from xml.etree import ElementTree
 
 WORKER_NAME = "qwen-apu-document-worker"
-WORKER_VERSION = "1"
-RECORD_SCHEMA = "qwen-apu-document-record-1"
+# The version a record carries names what the extractors record, so heading
+# boundaries on a DOCX, cell ranges on a spreadsheet row, and the extraction
+# state move it together with the schema.
+WORKER_VERSION = "2"
+RECORD_SCHEMA = "qwen-apu-document-record-2"
+
+# What one extraction established about its source. A record whose text is
+# blank while its pages carry images states `ocr_required` rather than
+# reporting an empty extraction as a complete one.
+STATE_EXTRACTED = "extracted"
+STATE_OCR_REQUIRED = "ocr_required"
 
 CHUNK_MAX_CHARS = 1200
 TOKEN_ESTIMATE_CHARS = 4
@@ -115,6 +126,10 @@ OFFICE_RELATIONSHIP_NAMESPACE = (
 PACKAGE_RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
 
 SLIDE_NAME_PATTERN = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
+# Word names a heading paragraph by its style id, which the publishers this
+# tree reads spell `Heading1` and `Heading 1`; the outline level lives in
+# `styles.xml`, so the style id is what one part answers.
+HEADING_STYLE_PATTERN = re.compile(r"^heading\s*\d+$", re.IGNORECASE)
 DOCTYPE_PATTERN = re.compile(rb"<!DOCTYPE", re.IGNORECASE)
 HTML_BLOCK_TAGS = frozenset(
     {"p", "div", "li", "tr", "br", "section", "article", "header", "footer", "blockquote", "pre"}
@@ -363,6 +378,7 @@ class DocumentRecord:
     chunks: tuple[Chunk, ...]
     warnings: tuple[str, ...] = ()
     requires_ocr: tuple[int, ...] = ()
+    state: str = STATE_EXTRACTED
     network_isolation: str = "unrecorded"
     schema: str = RECORD_SCHEMA
 
@@ -383,6 +399,7 @@ class DocumentRecord:
             "chunks": [chunk.to_json() for chunk in self.chunks],
             "warnings": list(self.warnings),
             "requires_ocr": list(self.requires_ocr),
+            "state": self.state,
             "network_isolation": self.network_isolation,
         }
 
@@ -407,6 +424,7 @@ class DocumentRecord:
             chunks=tuple(Chunk.from_json(entry) for entry in chunks),
             warnings=tuple(str(entry) for entry in warnings),
             requires_ocr=tuple(int(cast(int, entry)) for entry in ocr),
+            state=str(payload.get("state", STATE_EXTRACTED)),
             network_isolation=str(payload.get("network_isolation", "unrecorded")),
             schema=str(payload.get("schema", RECORD_SCHEMA)),
         )
@@ -422,6 +440,17 @@ class Extraction:
     detected_format: str
     warnings: tuple[str, ...] = ()
     requires_ocr: tuple[int, ...] = ()
+
+    def state(self) -> str:
+        """`ocr_required` where the text is blank and the pages carry images.
+
+        A mixed document keeps `extracted` and names its unreadable pages in
+        `requires_ocr`, because it answers with the text it holds; a document
+        that yielded nothing states the reason instead.
+        """
+        if self.requires_ocr and not self.text.strip():
+            return STATE_OCR_REQUIRED
+        return STATE_EXTRACTED
 
 
 # --- limits ------------------------------------------------------------------
@@ -745,6 +774,42 @@ def _docx_paragraph_text(paragraph: ElementTree.Element) -> str:
     return "".join(pieces)
 
 
+def _docx_heading_text(paragraph: ElementTree.Element, text: str) -> str:
+    """The paragraph's own text where its style names a heading, or an empty string."""
+    properties = paragraph.find(qualified(WORD_NAMESPACE, "pPr"))
+    if properties is None:
+        return ""
+    style = properties.find(qualified(WORD_NAMESPACE, "pStyle"))
+    if style is None:
+        return ""
+    named = style.get(qualified(WORD_NAMESPACE, "val"), "")
+    return text if HEADING_STYLE_PATTERN.match(named) else ""
+
+
+def _sections(starts: Sequence[tuple[int, str]], length: int) -> list[Boundary]:
+    """Heading boundaries spanning each start to the next, tiling the whole text.
+
+    A document whose text opens before its first heading takes an unlabeled
+    section at zero, the shape `extract_markdown` and `extract_html` both
+    record, so one covering rule answers a heading query across three formats.
+    """
+    opened = list(starts)
+    if not opened:
+        return []
+    if opened[0][0] > 0:
+        opened.insert(0, (0, ""))
+    return [
+        Boundary(
+            "heading",
+            index,
+            start,
+            opened[index][0] if index < len(opened) else length,
+            label,
+        )
+        for index, (start, label) in enumerate(opened, start=1)
+    ]
+
+
 def _docx_breaks_page(paragraph: ElementTree.Element) -> bool:
     for node in paragraph.iter():
         if node.tag == qualified(WORD_NAMESPACE, "lastRenderedPageBreak"):
@@ -764,6 +829,11 @@ def extract_docx(data: bytes, filename: str, limits: Limits) -> Extraction:
     that paragraph's own start. A break sharing its paragraph with text puts
     the boundary one paragraph early, which the extraction records as a warning
     rather than silently relocating.
+
+    A paragraph whose style names a heading opens a heading section that runs
+    to the next one, so a hit reports the heading it sits under beside the
+    paragraph that holds it. Chunking stays on the paragraphs, which is what
+    keeps a chunk edge at a paragraph rather than at a section.
     """
     warnings: list[str] = []
     archive = open_archive(data, limits)
@@ -774,6 +844,7 @@ def extract_docx(data: bytes, filename: str, limits: Limits) -> Extraction:
         raise ExtractionRefused("word/document.xml carries no body")
     paragraphs: list[Boundary] = []
     pages: list[Boundary] = []
+    headings: list[tuple[int, str]] = []
     pieces: list[str] = []
     position = 0
     page_start = 0
@@ -792,6 +863,9 @@ def extract_docx(data: bytes, filename: str, limits: Limits) -> Extraction:
             page_index += 1
         if not text:
             continue
+        heading = _docx_heading_text(paragraph, text)
+        if heading:
+            headings.append((position, heading))
         line = text + "\n"
         pieces.append(line)
         paragraphs.append(Boundary("paragraph", paragraph_index, position, position + len(line)))
@@ -801,7 +875,7 @@ def extract_docx(data: bytes, filename: str, limits: Limits) -> Extraction:
     pages.append(Boundary("page", page_index, page_start, len(whole)))
     return Extraction(
         text=whole,
-        boundaries=(*pages, *paragraphs),
+        boundaries=(*pages, *_sections(headings, len(whole)), *paragraphs),
         primary_kind="paragraph",
         detected_format="docx",
         warnings=tuple(warnings),
@@ -870,8 +944,32 @@ def _cell_text(cell: ElementTree.Element, strings: Sequence[str], warnings: list
     return value.text or "" if value is not None else ""
 
 
+def _row_range(sheet: str, row: ElementTree.Element) -> str:
+    """The row's label: `Sheet!A1:B1` from the cells' own references.
+
+    The cells carry the references, so a sparse row reports the range it
+    actually holds; a row whose cells name none falls back to the sheet and
+    the row number the `r` attribute states.
+    """
+    references = [
+        reference
+        for reference in (
+            cell.get("r", "") for cell in row.findall(qualified(SPREADSHEET_NAMESPACE, "c"))
+        )
+        if reference
+    ]
+    if references:
+        return f"{sheet}!{references[0]}:{references[-1]}"
+    return f"{sheet}!{row.get('r', '')}"
+
+
 def extract_xlsx(data: bytes, filename: str, limits: Limits) -> Extraction:
-    """XLSX: every sheet the workbook names, rendered as tab-separated rows."""
+    """XLSX: every sheet the workbook names, rendered as tab-separated rows.
+
+    A sheet boundary carries its name and a row boundary carries the cell
+    range it spans, so a hit inside a spreadsheet cites `Alpha!A2:B2` rather
+    than a character offset into a tab-separated rendering.
+    """
     warnings: list[str] = []
     archive = open_archive(data, limits)
     strings = _shared_strings(archive, limits)
@@ -888,13 +986,13 @@ def extract_xlsx(data: bytes, filename: str, limits: Limits) -> Extraction:
             continue
         root = parse_xml(read_member(archive, path, limits), path)
         for row in root.iter(qualified(SPREADSHEET_NAMESPACE, "row")):
-            cells = [
-                _cell_text(cell, strings, warnings)
-                for cell in row.findall(qualified(SPREADSHEET_NAMESPACE, "c"))
-            ]
+            found = row.findall(qualified(SPREADSHEET_NAMESPACE, "c"))
+            cells = [_cell_text(cell, strings, warnings) for cell in found]
             line = "\t".join(cells) + "\n"
             pieces.append(line)
-            rows.append(Boundary("row", row_index, position, position + len(line)))
+            rows.append(
+                Boundary("row", row_index, position, position + len(line), _row_range(name, row))
+            )
             position += len(line)
             row_index += 1
         sheets.append(Boundary("sheet", sheet_index, start, position, name))
@@ -1372,6 +1470,7 @@ def run(job: Job) -> DocumentRecord:
         chunks=tuple(chunks),
         warnings=extraction.warnings,
         requires_ocr=extraction.requires_ocr,
+        state=extraction.state(),
         network_isolation=job.network_isolation,
     )
     write_outputs(job.output_directory, record, extraction.text)
@@ -1449,6 +1548,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "record": f"{record.sha256}.json",
                 "chunks": len(record.chunks),
                 "requires_ocr": list(record.requires_ocr),
+                "state": record.state,
             }
         )
     )

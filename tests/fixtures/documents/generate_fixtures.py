@@ -5,11 +5,12 @@
 
 Each fixture is small enough to commit and states its own expected extraction:
 `two-paragraphs.docx` carries two paragraphs around one `w:br w:type="page"`,
-`two-sheets.xlsx` names its sheets Alpha and Beta, `two-slides.pptx` titles its
-slides, `text.pdf` draws two text pages through an uncompressed content stream,
-and `scan.pdf` draws one page whose only content is an image XObject. A test
-asserts the boundaries those declarations imply, so a fixture and its assertion
-move together.
+`headings.docx` styles two paragraphs `Heading1` and `Heading2` among plain
+ones, `two-sheets.xlsx` names its sheets Alpha and Beta and gives every cell an
+`r` reference, `two-slides.pptx` titles its slides, `text.pdf` draws two text
+pages through an uncompressed content stream, and `scan.pdf` draws one page
+whose only content is an image XObject. A test asserts the boundaries those
+declarations imply, so a fixture and its assertion move together.
 
 `--check` compares content rather than bytes. Deflate is unreproducible across
 zlib builds -- the appliance and the workstation encode the same members to
@@ -85,6 +86,19 @@ DOCUMENT_XML = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:p><w:r><w:t>The second paragraph closes the first page.</w:t></w:r></w:p>
 <w:p><w:r><w:br w:type="page"/></w:r></w:p>
 <w:p><w:r><w:t>The third paragraph opens the second page.</w:t></w:r></w:p>
+</w:body></w:document>
+"""
+
+HEADINGS_DOCUMENT_XML = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="{WORD_NAMESPACE}"><w:body>
+<w:p><w:r><w:t>An opening paragraph sits above every heading.</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>
+<w:r><w:t>Acquisition</w:t></w:r></w:p>
+<w:p><w:r><w:t>The acquisition paragraph names the sweep it came from.</w:t></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr>
+<w:r><w:t>Measurement</w:t></w:r></w:p>
+<w:p><w:r><w:t>The measurement paragraph names the rate it recorded.</w:t></w:r></w:p>
+<w:p><w:r><w:t>A second measurement paragraph closes the section.</w:t></w:r></w:p>
 </w:body></w:document>
 """
 
@@ -304,6 +318,19 @@ def docx_bytes() -> bytes:
     )
 
 
+def headings_docx_bytes() -> bytes:
+    return zip_bytes(
+        [
+            ("[Content_Types].xml", CONTENT_TYPES_DOCX.encode("utf-8")),
+            (
+                "_rels/.rels",
+                ROOT_RELATIONSHIPS.format(target="word/document.xml").encode("utf-8"),
+            ),
+            ("word/document.xml", HEADINGS_DOCUMENT_XML.encode("utf-8")),
+        ]
+    )
+
+
 def xlsx_bytes() -> bytes:
     return zip_bytes(
         [
@@ -360,6 +387,7 @@ FIXTURES: dict[str, bytes] = {
     "rows.tsv": ROWS_TSV.encode("utf-8"),
     "headings.html": HEADINGS_HTML.encode("utf-8"),
     "two-paragraphs.docx": docx_bytes(),
+    "headings.docx": headings_docx_bytes(),
     "two-sheets.xlsx": xlsx_bytes(),
     "two-slides.pptx": pptx_bytes(),
     "text.pdf": text_pdf(),

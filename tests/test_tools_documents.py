@@ -1278,3 +1278,107 @@ def test_the_search_route_names_the_refusal_beside_its_text(
     )
     assert response.status == 400
     assert payload(response)["refusal"] == "search_bounded"
+
+
+# --- format qualification -----------------------------------------------------
+
+
+def test_docx_headings_and_paragraphs_are_separate_boundaries() -> None:
+    """A heading section runs to the next heading while the paragraphs tile the text."""
+    extraction = extract_docx(fixture("headings.docx"), "headings.docx", Limits())
+    headings = [boundary for boundary in extraction.boundaries if boundary.kind == "heading"]
+    paragraphs = [boundary for boundary in extraction.boundaries if boundary.kind == "paragraph"]
+    assert [heading.label for heading in headings] == ["", "Acquisition", "Measurement"]
+    assert len(paragraphs) == 6
+    assert tiles(extraction, "heading")
+    assert tiles(extraction, "paragraph")
+    assert extraction.primary_kind == "paragraph"
+    assert extraction.text[headings[1].char_start :].startswith("Acquisition\n")
+
+
+def test_a_docx_record_names_the_heading_a_chunk_sits_under(service: DocumentService) -> None:
+    record = service.extract(FIXTURES / "headings.docx", "")
+    assert record.detected_format == "docx"
+    assert record.state == "extracted"
+    hits = service.search(record.sha256, "rate it recorded")
+    assert len(hits) == 1
+    assert "heading:3" in hits[0].boundaries
+    assert "paragraph:5" in hits[0].boundaries
+
+
+def test_xlsx_rows_name_their_sheet_and_cell_range() -> None:
+    extraction = extract_xlsx(fixture("two-sheets.xlsx"), "two-sheets.xlsx", Limits())
+    rows = [boundary for boundary in extraction.boundaries if boundary.kind == "row"]
+    assert [row.label for row in rows] == [
+        "Alpha!A1:B1",
+        "Alpha!A2:B2",
+        "Beta!A1:B1",
+        "Beta!A2:B2",
+    ]
+    assert tiles(extraction, "row")
+
+
+def test_an_xlsx_record_carries_the_sheet_and_the_range(service: DocumentService) -> None:
+    record = service.extract(FIXTURES / "two-sheets.xlsx", "")
+    sheets = [boundary for boundary in record.boundaries if boundary.kind == "sheet"]
+    rows = [boundary for boundary in record.boundaries if boundary.kind == "row"]
+    assert [sheet.label for sheet in sheets] == ["Alpha", "Beta"]
+    assert [row.label for row in rows][0] == "Alpha!A1:B1"
+    assert [row.label for row in rows][-1] == "Beta!A2:B2"
+
+
+def test_a_pptx_record_carries_one_boundary_per_slide(service: DocumentService) -> None:
+    record = service.extract(FIXTURES / "two-slides.pptx", "")
+    slides = [boundary for boundary in record.boundaries if boundary.kind == "slide"]
+    assert [slide.index for slide in slides] == [1, 2]
+    assert [slide.label for slide in slides] == ["Placement", "Depth"]
+
+
+@requires_pypdf
+def test_a_text_pdf_record_carries_one_boundary_per_page(service: DocumentService) -> None:
+    """The record is where a page reference is read back, so the proof reads it there."""
+    record = service.extract(FIXTURES / "text.pdf", "application/pdf")
+    pages = [boundary for boundary in record.boundaries if boundary.kind == "page"]
+    assert [page.index for page in pages] == [1, 2]
+    assert pages[0].char_end == pages[1].char_start
+    assert record.state == "extracted"
+    assert record.requires_ocr == ()
+    first = service.search(record.sha256, "The first page")
+    second = service.search(record.sha256, "The second page")
+    assert first[0].boundaries == ("page:1",)
+    assert second[0].boundaries == ("page:2",)
+
+
+@requires_pypdf
+def test_an_image_only_pdf_records_the_ocr_required_state(service: DocumentService) -> None:
+    """An empty extraction states its reason rather than reporting a complete one."""
+    record = service.extract(FIXTURES / "scan.pdf", "application/pdf")
+    assert record.state == "ocr_required"
+    assert record.requires_ocr == (1,)
+    assert record.characters == 0
+    assert record.chunks == ()
+    assert service.record(record.sha256).state == "ocr_required"
+
+
+@requires_pypdf
+def test_the_upload_route_answers_the_ocr_required_state(service: DocumentService) -> None:
+    response = handle_upload(
+        service,
+        request(
+            "POST",
+            DOCUMENTS_ROUTE,
+            fixture("scan.pdf"),
+            {"content-type": "application/pdf", "x-filename": "scan.pdf"},
+        ),
+    )
+    assert response.status == 201
+    body = payload(response)
+    assert body["state"] == "ocr_required"
+    assert body["requires_ocr"] == [1]
+
+
+def test_a_text_record_states_that_it_extracted(service: DocumentService) -> None:
+    record = service.extract(FIXTURES / "plain.txt", "text/plain")
+    assert record.state == "extracted"
+    assert record.extractor_version == "2"
+    assert record.schema == "qwen-apu-document-record-2"
