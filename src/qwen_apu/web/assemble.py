@@ -11,18 +11,21 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
 from qwen_apu.config import models as config_models
 from qwen_apu.config.loader import RegistryError
+from qwen_apu.config.schema import WebProfile
 from qwen_apu.engines import llama as llama_engine
 from qwen_apu.engines.image import SOCKET_FILE_NAME, ImageControlClient
 from qwen_apu.engines.llama import LlamaClient, binding_from_runtime
 from qwen_apu.runtime import deployment, preflight
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.tools import approvals, calculator, documents, files, images, matrix
+from qwen_apu.tools import web as web_tools
 from qwen_apu.tools.ledger import Ledger
 from qwen_apu.web import artifacts, chat, conversations, status
 from qwen_apu.web.app import Gateway, GatewayConfig, RequestRefused
@@ -74,6 +77,106 @@ def review_model_for(request: GatewayRequest) -> str:
         return config_models.image_profile(request.image_profile).review_model or ""
     except RegistryError:
         return ""
+
+
+# One ledger connection belongs to the thread that opened it, so every writer
+# takes a fresh one for its own call rather than sharing a handle across the
+# gateway's request threads.
+LedgerFactory = Callable[[], Ledger]
+
+
+def resolve_web_profile(profile_id: str) -> WebProfile | None:
+    """Return the `remote/web-profiles.tsv` row this gateway serves under.
+
+    The row carries the SearXNG endpoint, the categories, the minimum result
+    count, and the three per-profile bounds together, so the executor's limits
+    come from the ledger a preset is generated from rather than from constants
+    chosen here. A profile the ledger does not name, and a ledger a checkout
+    does not carry, leave the executor unmounted: the gateway serves chat and
+    the tool listing reports both web rows as planned, which is an honest
+    answer where refusing the launch would be a wrong one.
+    """
+    try:
+        rows = config_models.load_web_profiles()
+    except RegistryError:
+        return None
+    for row in rows:
+        if row.profile_id == profile_id:
+            return row
+    return None
+
+
+def build_web_tool_settings(
+    profile: WebProfile | None,
+    *,
+    token_key_file: Path,
+    profile_id: str,
+    session_admits: Callable[[Request], bool],
+    ledger: LedgerFactory,
+) -> web_tools.WebToolSettings:
+    """Return the executor's settings, with the instance absent where the row is.
+
+    The three ledger operations are bound here rather than inside the tool
+    module: the grant's single use, the fetch allowance an approved search
+    opens over its own results, and the spend of one unit of that allowance all
+    write the database `qwen_apu.tools.ledger` owns, and the executor holds no
+    handle on it.
+
+    Each operation opens its own connection and closes it, the way
+    `remote/web-mcp/server.py` opens the ledger per call. `sqlite3` binds a
+    connection to the thread that created it, and the gateway answers every
+    request on a worker, so a handle opened at assembly raises
+    `ProgrammingError` on the first call rather than serializing anything;
+    `BEGIN IMMEDIATE` and the 10-second busy timeout are what serialize two
+    connections instead.
+    """
+    settings = web_tools.WebToolSettings(
+        token_key_file=token_key_file,
+        profile=profile_id,
+        session_admits=session_admits,
+    )
+    if profile is None or profile.provider != "searxng" or not profile.searxng_url:
+        return settings
+
+    def spend_search_grant(grant_id: str, expiry: float) -> None:
+        with closing(ledger()) as open_ledger:
+            open_ledger.consume_grant(
+                grant_id, profile_id, "searxng", expiry=expiry, now=time.time()
+            )
+
+    def open_search(search_id: str, allowance: int, expiry: float, urls: Sequence[str]) -> None:
+        with closing(ledger()) as open_ledger:
+            open_ledger.open_search(
+                search_id,
+                profile_id,
+                "searxng",
+                fetches_allowed=allowance,
+                expiry=expiry,
+                urls=urls,
+            )
+
+    def spend_fetch(search_id: str, url: str) -> None:
+        with closing(ledger()) as open_ledger:
+            open_ledger.spend_fetch(search_id, url, time.time())
+
+    return web_tools.WebToolSettings(
+        token_key_file=token_key_file,
+        profile=profile_id,
+        provider="searxng",
+        searxng=web_tools.SearxngProvider(
+            profile.searxng_url,
+            profile.primary_category or "",
+            profile.fallback_category or "",
+            profile.minimum_results or 1,
+        ),
+        max_results=profile.max_results,
+        max_fetches=profile.max_fetches,
+        max_chars_per_fetch=profile.max_chars_per_fetch,
+        session_admits=session_admits,
+        spend_grant=spend_search_grant,
+        open_search=open_search,
+        spend_fetch=spend_fetch,
+    )
 
 
 class _Providers:
@@ -166,13 +269,23 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         image_profile=request.image_profile,
     )
     approval_service = approvals.ApprovalService(approval_settings, session_check)
-    ledger = Ledger(state)
+
+    def ledger() -> Ledger:
+        return Ledger(state)
 
     def spend_grant(grant_id: str, expiry: float) -> None:
-        ledger.consume_grant(
-            grant_id, approval_settings.profile, "image", expiry=expiry, now=time.time()
-        )
+        with closing(ledger()) as open_ledger:
+            open_ledger.consume_grant(
+                grant_id, approval_settings.profile, "image", expiry=expiry, now=time.time()
+            )
 
+    web_settings = build_web_tool_settings(
+        resolve_web_profile(request.web_profile),
+        token_key_file=paths["qwen_home_web_token_key"],
+        profile_id=approval_settings.profile,
+        session_admits=session_admits,
+        ledger=ledger,
+    )
     artifact_directory = state / "artifacts"
     image_socket = state / SOCKET_FILE_NAME
 
@@ -261,9 +374,11 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
                     open_lan=approval_settings.open_lan,
                     image_socket=image_socket,
                     file_roots=file_roots,
+                    tool_execution_route=web_settings.mounted,
                 )
             )
         ),
+        _Providers(web_tools.routes(web_settings)),
         _Providers(
             artifacts.routes(
                 artifacts.ArtifactSettings(
