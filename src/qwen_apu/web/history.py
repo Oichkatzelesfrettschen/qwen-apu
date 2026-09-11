@@ -768,7 +768,6 @@ class ConversationStore:
                 "SELECT 1 FROM conversations WHERE conversation_id = ?", (conversation_id,)
             ).fetchone()
             if present is None:
-                connection.execute("ROLLBACK")
                 raise UnknownConversation(f"no conversation is stored under {conversation_id!r}")
             held = {
                 str(row[0])
@@ -800,7 +799,12 @@ class ConversationStore:
 
         `BEGIN IMMEDIATE` takes the write lock before the `max(position)`
         read, so two threads appending to one conversation take consecutive
-        positions rather than reading one count and both writing it back.
+        positions rather than reading one count and both writing it back. The
+        absent-row check raises `UnknownConversation` without rolling back
+        itself: the outer `except BaseException` is the one rollback every
+        path here shares, and a second `ROLLBACK` issued ahead of it meets no
+        open transaction and raises its own `OperationalError`, which is what
+        reached a caller here before this rolled the check into the one path.
         """
         stamp = utc_stamp(self.clock())
         connection = self.connection
@@ -810,7 +814,6 @@ class ConversationStore:
                 "SELECT 1 FROM conversations WHERE conversation_id = ?", (conversation_id,)
             ).fetchone()
             if present is None:
-                connection.execute("ROLLBACK")
                 raise UnknownConversation(f"no conversation is stored under {conversation_id!r}")
             row = connection.execute(
                 "SELECT COALESCE(MAX(position) + 1, 0) FROM messages WHERE conversation_id = ?",
@@ -936,7 +939,6 @@ class ConversationStore:
                 "SELECT 1 FROM conversations WHERE conversation_id = ?", (conversation_id,)
             ).fetchone()
             if present is None:
-                connection.execute("ROLLBACK")
                 raise UnknownConversation(f"no conversation is stored under {conversation_id!r}")
             self._write_observation(connection, conversation_id, observation, position=None)
             connection.execute("COMMIT")
@@ -955,7 +957,6 @@ class ConversationStore:
                 "SELECT 1 FROM conversations WHERE conversation_id = ?", (conversation_id,)
             ).fetchone()
             if present is None:
-                connection.execute("ROLLBACK")
                 raise UnknownConversation(f"no conversation is stored under {conversation_id!r}")
             row = connection.execute(
                 "SELECT COALESCE(MAX(ordinal) + 1, 0) FROM model_switches"

@@ -193,6 +193,82 @@ stop of the gateway ends it and nothing of it reaches the database.
 `import --browser` reads the page's IndexedDB export
 (`docs/handoff/browser-history-format.md`).
 
+`tests/test_conversation_lifecycle.py` drives `web/assemble.py` over a
+temporary runtime root through `http.client` rather than through
+`web.http.match`, which is what `tests/test_web_history.py`'s own route
+helper calls directly, and the HTTP-verb gap only the former reaches. The
+suite fixed four defects that gap had hidden, closed one gap in what a
+conversation read reports, and records the lifecycle guarantees the fixes
+now hold. It also carries an autouse fixture restoring the process umask
+`qwen_apu.tools.ledger.Ledger.__init__` leaves at `0o077`: `assemble()`
+builds one `Ledger`, `os.umask` is process-wide, and this file is the first
+in the suite to call `assemble()` at all, so without the fixture the leak
+narrowed file and directory modes two unrelated test files assert on
+whenever this module ran ahead of them in the same pytest process.
+
+- A gateway restart ends every live temporary conversation: `Gateway.shutdown`
+  takes `on_shutdown`, a sequence of hooks it runs after the listening socket
+  closes, and `assemble()` names `TemporaryConversations.shutdown` as one, so
+  a temporary conversation's `tmp/conversations/<id>/` directory is gone
+  before a second process opens the same root and a saved conversation and
+  its messages read back unchanged.
+- `_Handler` named `do_GET`, `do_POST`, `do_PUT`, `do_DELETE`, and
+  `do_OPTIONS` but no `do_PATCH`, so `BaseHTTPRequestHandler` answered every
+  PATCH with a bare 501 and the conversation rename route was unreachable
+  over the real listener; `do_PATCH` now forwards to `_dispatch` like every
+  other verb.
+- `append_message`, `delete`, `record_observation`, and `record_model_switch`
+  each issued an explicit `ROLLBACK` ahead of raising `UnknownConversation`
+  for an absent conversation row, inside a `try` whose own
+  `except BaseException` rolled back and re-raised again; the second
+  `ROLLBACK` met no open transaction and raised
+  `sqlite3.OperationalError: cannot rollback - no transaction is active`,
+  which replaced `UnknownConversation` as the exception every caller actually
+  saw. The absent-row check now raises once and the one shared handler rolls
+  back.
+- A database write that meets a read-only file, a directory with no create
+  permission, or a lock held past the busy timeout raises `sqlite3.Error`
+  past every named catch in `_answer`, which reached the HTTP server loop
+  uncaught and ended the connection with no response body. `_answer` now
+  answers 500 JSON naming the driver's own reason, so a caller reads a
+  status rather than losing the socket and being left unable to tell a
+  failed save from one the network merely interrupted.
+- A PATCH naming `mode` was already refused unconditionally -- mode is fixed
+  at creation, since a saved conversation lives in the database and a
+  temporary one lives in memory and under `tmp/conversations/`, so a mode
+  change is a move between stores rather than a field update -- but the
+  refusal answered 400, the status for a body the route cannot parse, though
+  the body parses fine. It now answers 409, naming the conflict between the
+  request and the conversation's fixed mode.
+- `ConversationStore.append_message` and `TemporaryConversations.append`
+  both check existence inside the same lock or transaction an insert would
+  use, so a delayed save task racing a delete or a `close` finds no row or
+  registry entry to attach to and raises `UnknownConversation` rather than
+  recreating one; this holds without any fix, and the suite pins it as a
+  regression test.
+
+`GET /api/conversations/<id>` decorates every attachment of a saved
+conversation with `available`, computed at read time from
+`<artifacts>/documents/<sha256>/<sha256>.json` rather than from a flag
+frozen at `POST .../messages`, so a client reads one field per attachment
+rather than probing `GET /api/documents/<sha256>` itself; the digest
+answers `true` right after upload, `true` again after a gateway restart,
+and `false` the moment its bytes leave the store by any means, retention
+sweep included. `ConversationSettings.document_store` and
+`conversations.build()`'s matching parameter carry the root in;
+`assemble()` names `paths["qwen_home_artifacts"] / "documents"`, and a
+caller that names none reports every attachment unavailable rather than
+raising. A temporary conversation's read carries no `available` key at
+all: its uploads live under `tmp/conversations/<id>/`, a scratch tree with
+no digest-addressed layout to check, so decorating that branch the same
+way would answer `false` for bytes that are actually on disk, which is a
+worse lie than carrying no field. `artifacts` (a message's plain digest
+tuple naming a generated image rather than an upload) carries no matching
+flag either: `GET /api/artifacts/<sha256>.<ext>` already answers a clean
+404 for a digest no publication marker names, and widening that field to
+carry availability would change the tuple shape `browser_import.py` and
+the export document both already commit to.
+
 ## Phase 7: documents and deterministic tools
 
 `tools/calculator.py` evaluates an arithmetic expression over a closed

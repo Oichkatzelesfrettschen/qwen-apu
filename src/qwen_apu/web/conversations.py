@@ -26,11 +26,13 @@ identifiers whatever order a later edit puts the tuple in.
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import cast
 
 from qwen_apu.tools.approvals import SessionCheck, refuse_every_session
 from qwen_apu.web.app import RequestRefused
@@ -59,6 +61,10 @@ MESSAGES_PATH = f"{CONVERSATION_PATH}/messages"
 TEMPORARY_DIRECTORY_NAME = "conversations"
 TEMPORARY_DIRECTORY_MODE = 0o700
 TEMPORARY_LIFETIME_SECONDS = 12 * 3600
+
+# `tools/documents.py`'s own STORE_DIRECTORY: `<artifacts>/documents/<sha256>/
+# <sha256>.json` is the record a completed extraction publishes.
+DOCUMENT_STORE_DIRECTORY = "documents"
 
 MODES: frozenset[str] = frozenset({"saved", "temporary"})
 
@@ -224,15 +230,55 @@ class TemporaryConversations:
 
 @dataclass(frozen=True)
 class ConversationSettings:
-    """The store, the temporary registry, and the session verdict the routes read."""
+    """The store, the temporary registry, and the session verdict the routes read.
+
+    `document_store` is `<artifacts>/documents`, the root
+    `tools/documents.py.DocumentService` publishes an extraction under; a
+    settings object built with none named reports every attachment
+    unavailable rather than raising, which is the same default a caller that
+    wires no session authority gets from `refuse_every_session`.
+    """
 
     store: ConversationStore
     temporary: TemporaryConversations
     session_check: SessionCheck = refuse_every_session
+    document_store: Path | None = None
 
 
 def _is_identifier(value: str) -> bool:
     return len(value) == 32 and all(character in "0123456789abcdef" for character in value)
+
+
+def _attachment_is_available(document_store: Path | None, sha256: str) -> bool:
+    if document_store is None or not sha256:
+        return False
+    return (document_store / sha256 / f"{sha256}.json").is_file()
+
+
+def _decorate_attachment_availability(
+    settings: ConversationSettings, record: dict[str, object]
+) -> dict[str, object]:
+    """Add each attachment's live availability, computed fresh at read time.
+
+    This runs on a saved conversation's read alone. The document store is
+    content-addressed by digest, so `available` answers from whatever the
+    store holds right now rather than from a flag written once at append
+    time: a restart, a retention sweep, or bytes lost to any other cause all
+    read back honestly the next time this route runs, and a message naming a
+    digest the store never received answers `available: false` rather than
+    failing the read. A temporary conversation's uploads live under
+    `tmp/conversations/<id>/`, a scratch tree with no digest-addressed
+    layout to check, so `_read` never calls this for one and its attachments
+    carry no `available` key at all.
+    """
+    messages = cast("list[dict[str, object]]", record.get("messages", []))
+    for message in messages:
+        attachments = cast("list[dict[str, object]]", message.get("attachments", []))
+        for attachment in attachments:
+            attachment["available"] = _attachment_is_available(
+                settings.document_store, str(attachment.get("sha256", ""))
+            )
+    return record
 
 
 def summary(conversation: Conversation, message_count: int | None = None) -> dict[str, object]:
@@ -279,6 +325,15 @@ def _answer(settings: ConversationSettings, request: Request, work: Work) -> Res
     The check runs ahead of every lookup, so a present identifier and an absent
     one answer 401 alike and the routes are no existence oracle for a caller
     holding no session.
+
+    `sqlite3.Error` reaches here uncaught where the database file or its
+    directory refuses a write -- a read-only mode bit, a full filesystem, a
+    lock another process holds past the busy timeout -- and every write in
+    `web/history.py` runs inside `BEGIN IMMEDIATE` with its own rollback, so
+    the transaction that failed leaves no partial row behind. Answering 500
+    here is what keeps that failure a status the caller reads rather than a
+    dropped connection that leaves the caller unable to tell a failed save
+    from a save the network lost.
     """
     verdict = settings.session_check(request)
     if not verdict.admitted:
@@ -291,6 +346,10 @@ def _answer(settings: ConversationSettings, request: Request, work: Work) -> Res
         return Response.json({"error": str(refused)}, status=400)
     except RequestRefused as refusal:
         return Response.json({"error": refusal.message}, status=refusal.status)
+    except sqlite3.Error as storage_failure:
+        return Response.json(
+            {"error": f"the conversation store refused the write: {storage_failure}"}, status=500
+        )
 
 
 def _listing(settings: ConversationSettings, request: Request) -> Response:
@@ -333,20 +392,28 @@ def _identifier(request: Request) -> str:
 def _read(settings: ConversationSettings, request: Request) -> Response:
     conversation_id = _identifier(request)
     if settings.temporary.holds(conversation_id):
+        # A temporary conversation's uploads live under
+        # tmp/conversations/<id>/, a scratch tree with no digest-addressed
+        # layout, and no upload route writes one yet: `document_store` names
+        # the saved store alone, so decorating here would answer `available:
+        # false` for bytes that sit on disk, which is worse than carrying no
+        # field at all.
         return Response.json(conversation_to_json(settings.temporary.get(conversation_id)))
     conversation = settings.store.get(conversation_id)
     observations = settings.store.observations(conversation_id)
-    return Response.json(conversation_to_json(conversation, observations))
+    record = conversation_to_json(conversation, observations)
+    return Response.json(_decorate_attachment_availability(settings, record))
 
 
 def _rename(settings: ConversationSettings, request: Request) -> Response:
     conversation_id = _identifier(request)
     payload = _body(request)
     if "mode" in payload:
-        raise DocumentRefused(
+        raise RequestRefused(
+            409,
             "a conversation never changes mode after creation: a saved conversation "
             "lives in the database and a temporary one lives in memory and under "
-            "tmp/conversations/, so a mode change is a move rather than an update"
+            "tmp/conversations/, so a mode change is a move rather than an update",
         )
     if "title" not in payload:
         raise DocumentRefused("the request body names no title")
@@ -416,14 +483,19 @@ def build(
     session_check: SessionCheck = refuse_every_session,
     *,
     lifetime_s: float = TEMPORARY_LIFETIME_SECONDS,
+    document_store: Path | None = None,
 ) -> ConversationSettings:
     """Open the store and the registry from the two runtime-root directories.
 
     `qwen_home_state` holds the database and `qwen_home_tmp` holds the
     temporary scratch, which is the split the runtime root already declares.
+    `document_store` names `<artifacts>/documents`, the root
+    `tools/documents.py` publishes an extraction under; a caller that names
+    none gets a settings object that reports every attachment unavailable.
     """
     return ConversationSettings(
         store=ConversationStore(state_directory),
         temporary=TemporaryConversations(tmp_directory, lifetime_s=lifetime_s),
         session_check=session_check,
+        document_store=document_store,
     )

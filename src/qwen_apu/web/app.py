@@ -26,7 +26,7 @@ import hashlib
 import mimetypes
 import socket
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -344,6 +344,9 @@ class _Handler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:  # noqa: N802 -- BaseHTTPRequestHandler names the verb
         self._dispatch()
 
+    def do_PATCH(self) -> None:  # noqa: N802 -- BaseHTTPRequestHandler names the verb
+        self._dispatch()
+
     def do_DELETE(self) -> None:  # noqa: N802 -- BaseHTTPRequestHandler names the verb
         self._dispatch()
 
@@ -552,6 +555,12 @@ class Gateway:
     separate call -- `shutdown()` alone leaves the socket bound, and
     `allow_reuse_address` lets a later bind succeed over it, so absence is
     proven by a refused connection rather than by a successful bind.
+
+    `on_shutdown` runs after the socket closes: a temporary conversation's
+    registry holds a `tmp/conversations/<id>/` directory per live entry that
+    reaches no SQLite row, so nothing but an explicit hook empties it when the
+    process serving it ends. A gateway assembled with none named runs the same
+    accept loop and teardown as before this parameter existed.
     """
 
     def __init__(
@@ -560,6 +569,7 @@ class Gateway:
         providers: Sequence[RouteProvider],
         *,
         session_authority: SessionAuthority | None = None,
+        on_shutdown: Sequence[Callable[[], object]] = (),
     ) -> None:
         self.config = config
         self.routes: tuple[Route, ...] = tuple(
@@ -571,6 +581,7 @@ class Gateway:
         self.content_security_policy = content_security_policy(self.static.index())
         self._server = _GatewayServer((config.bind_host, config.port), _Handler, self)
         self._lock = threading.Lock()
+        self._on_shutdown = tuple(on_shutdown)
 
     @property
     def port(self) -> int:
@@ -585,3 +596,5 @@ class Gateway:
         with self._lock:
             self._server.shutdown()
             self._server.server_close()
+            for hook in self._on_shutdown:
+                hook()

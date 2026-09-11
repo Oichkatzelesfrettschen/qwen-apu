@@ -115,7 +115,12 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         "provider": approval_settings.provider,
         "signing_key_sha256": approval_settings.signing_key_sha256,
     }
-    conversation_settings = conversations.build(state, paths["qwen_home_tmp"], session_check)
+    conversation_settings = conversations.build(
+        state,
+        paths["qwen_home_tmp"],
+        session_check,
+        document_store=paths["qwen_home_artifacts"] / conversations.DOCUMENT_STORE_DIRECTORY,
+    )
     file_roots = tuple(root for root in request.file_roots if root.is_dir())
     providers = (
         session,
@@ -160,7 +165,15 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         ),
         _Providers(images.routes(image_settings)),
     )
-    return Gateway(config, providers, session_authority=session), session
+    return (
+        Gateway(
+            config,
+            providers,
+            session_authority=session,
+            on_shutdown=(conversation_settings.temporary.shutdown,),
+        ),
+        session,
+    )
 
 
 def run(paths: RuntimePaths, request: GatewayRequest) -> int:
