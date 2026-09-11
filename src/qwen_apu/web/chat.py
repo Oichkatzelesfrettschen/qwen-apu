@@ -40,11 +40,6 @@ from qwen_apu.web.roster import PICKER_TIERS, quantization
 
 __all__ = ["PICKER_TIERS", "ChatService", "quantization", "served_model"]
 
-# The record path an unbound gateway reads: `runtime_state.read` answers None
-# for an absent file, which is the state a gateway holding no supervisor record
-# is in, so the roster falls back to the upstream's own claim.
-_NO_RECORD = Path("state/runtime.json")
-
 # The chunks read ahead of the browser while the first SSE frame is looked for.
 # llama-server writes one frame per flush and the first carries the model name,
 # so the bound guards against a server that streams without ever naming one
@@ -130,9 +125,7 @@ class ChatService:
     def _admission(self, client: LlamaClient) -> roster_module.Admission:
         sections = self._sections()
         upstream = self._upstream_roster(client)
-        return roster_module.resolve_admission(
-            self.runtime_record or _NO_RECORD, sections or (), upstream
-        )
+        return roster_module.resolve_admission(self.runtime_record, sections or (), upstream)
 
     def _require_admitted(self, client: LlamaClient, payload: dict[str, object]) -> str:
         """Refuse a named model the live router does not admit, and name the reason.
@@ -246,9 +239,7 @@ class ChatService:
         client = self.client_factory()
         sections = self._sections()
         upstream = self._upstream_roster(client)
-        admission = roster_module.resolve_admission(
-            self.runtime_record or _NO_RECORD, sections or (), upstream
-        )
+        admission = roster_module.resolve_admission(self.runtime_record, sections or (), upstream)
         entries = roster_module.build(
             rows=rows,
             sections=sections,
