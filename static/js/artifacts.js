@@ -22,7 +22,6 @@
 
 import {
   $,
-  logElement,
   randomSeed,
   recordSessionStatus,
   requestImageGrant,
