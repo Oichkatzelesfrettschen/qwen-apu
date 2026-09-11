@@ -33,6 +33,7 @@ from qwen_apu.tools.document_worker import (
     Extraction,
     ExtractionRefused,
     Limits,
+    SearchBounds,
     approximate_tokens,
     build_chunks,
     extract,
@@ -1113,3 +1114,167 @@ def test_a_streamed_upload_naming_no_file_refuses(serve: Callable[[int], Serving
     status, answer = served.post(b"a body with no name", {"Content-Type": "text/plain"})
     assert status == 400
     assert "X-Filename" in str(answer["error"])
+
+
+# --- the search bounds --------------------------------------------------------
+
+
+CATASTROPHIC_PATTERN = r"(a+)+$"
+SEARCH_WALL_CLOCK_SECONDS = 1.0
+
+
+@pytest.fixture
+def bounded(tmp_path: Path) -> DocumentService:
+    """A service whose search bounds are small enough for a test to meet them."""
+    return DocumentService(
+        DocumentSettings(
+            artifacts=tmp_path / "artifacts",
+            tmp=tmp_path / "tmp",
+            search_bounds=SearchBounds(
+                max_pattern_chars=24,
+                max_pattern_groups=2,
+                max_candidate_chunks=2,
+                wall_clock_seconds=SEARCH_WALL_CLOCK_SECONDS,
+            ),
+            python_path=EXTRA_PYTHON_PATH,
+            session_admits=admits_every_session,
+        )
+    )
+
+
+def _backtracking_document(tmp_path: Path) -> Path:
+    """One chunk of a thousand `a` and one `!`, where `(a+)+$` never finishes.
+
+    The exclamation mark is what makes the match fail: the group must consume
+    it to reach the end anchor and cannot, so the engine tries every partition
+    of the run ahead of it.
+    """
+    source = tmp_path / "runs.txt"
+    source.write_text("a" * 1000 + "!\n", encoding="utf-8")
+    return source
+
+
+def test_a_catastrophic_pattern_answers_search_bounded_inside_the_bound(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    """The worker's own SIGALRM ends the match, since no Python handler runs inside one."""
+    record = bounded.extract(_backtracking_document(tmp_path), "text/plain")
+    started = time.monotonic()
+    with pytest.raises(DocumentRefused) as refusal:
+        bounded.search(record.sha256, CATASTROPHIC_PATTERN, regex=True)
+    elapsed = time.monotonic() - started
+    assert refusal.value.kind == "search_bounded"
+    assert refusal.value.status == 400
+    assert "SIGALRM" in refusal.value.message
+    # The lower bound proves the match ran and the timer ended it; the upper
+    # one proves the refusal arrives at the bound rather than at the service's
+    # own 120-second deadline.
+    assert SEARCH_WALL_CLOCK_SECONDS / 2 < elapsed < SEARCH_WALL_CLOCK_SECONDS + 5.0
+
+
+def test_the_same_pattern_costs_the_gateway_nothing_as_a_literal(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    """A literal query is the default, so the pattern's own characters are what it seeks."""
+    record = bounded.extract(_backtracking_document(tmp_path), "text/plain")
+    assert bounded.search(record.sha256, CATASTROPHIC_PATTERN) == ()
+    assert bounded.search(record.sha256, "aaaa")
+
+
+def test_a_pattern_past_the_character_bound_answers_search_bounded(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    record = bounded.extract(_backtracking_document(tmp_path), "text/plain")
+    with pytest.raises(DocumentRefused) as refusal:
+        bounded.search(record.sha256, "a" * 25, regex=True)
+    assert refusal.value.kind == "search_bounded"
+    assert "past the 24-character bound" in refusal.value.message
+
+
+def test_a_pattern_past_the_group_bound_answers_search_bounded(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    record = bounded.extract(_backtracking_document(tmp_path), "text/plain")
+    with pytest.raises(DocumentRefused) as refusal:
+        bounded.search(record.sha256, "(a)(b)(c)", regex=True)
+    assert refusal.value.kind == "search_bounded"
+    assert "past the 2-group bound" in refusal.value.message
+
+
+def test_a_document_past_the_candidate_chunk_bound_answers_search_bounded(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    """The chunk count refuses ahead of the first match, literal or not."""
+    long_document = tmp_path / "many.txt"
+    long_document.write_text(("x" * 1199 + "\n") * 4, encoding="utf-8")
+    record = bounded.extract(long_document, "text/plain")
+    assert len(record.chunks) > 2
+    with pytest.raises(DocumentRefused) as refusal:
+        bounded.search(record.sha256, "x")
+    assert refusal.value.kind == "search_bounded"
+    assert "past the 2-chunk search bound" in refusal.value.message
+
+
+def test_the_worker_enforces_the_pattern_bound_the_gateway_also_states(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    """The bound is the worker's own, so a job naming it directly meets it there."""
+    record = bounded.extract(_backtracking_document(tmp_path), "text/plain")
+    stored = bounded.settings.store() / record.sha256
+    code, report = run_worker(
+        {
+            "mode": "search",
+            "document_directory": str(stored),
+            "digest": record.sha256,
+            "query": "a" * 25,
+            "regex": True,
+            "bounds": {"max_pattern_chars": 24},
+        }
+    )
+    assert code == 1
+    assert report["refusal"] == "search_bounded"
+    assert "past the 24-character bound" in str(report["error"])
+
+
+def test_the_search_worker_reports_its_matches_as_chunk_spans(
+    service: DocumentService, tmp_path: Path
+) -> None:
+    record = service.extract(FIXTURES / "rows.csv", "text/csv")
+    stored = service.settings.store() / record.sha256
+    code, report = run_worker(
+        {
+            "mode": "search",
+            "document_directory": str(stored),
+            "digest": record.sha256,
+            "query": r"\bnorth\b",
+            "regex": True,
+        }
+    )
+    assert code == 0
+    assert report["status"] == "searched"
+    matches = report["matches"]
+    assert isinstance(matches, list) and len(matches) == 2
+    assert all(entry["chunk_index"] == 1 for entry in matches)
+
+
+def test_the_worker_refuses_a_mode_it_does_not_run() -> None:
+    code, report = run_worker({"mode": "summarize"})
+    assert code == 1
+    assert "names no mode this worker runs" in str(report["error"])
+
+
+def test_the_search_route_names_the_refusal_beside_its_text(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    record = bounded.extract(_backtracking_document(tmp_path), "text/plain")
+    response = handle_search(
+        bounded,
+        request(
+            "POST",
+            f"/api/documents/{record.sha256}/search",
+            json.dumps({"query": "a" * 25, "regex": True}).encode("utf-8"),
+            digest=record.sha256,
+        ),
+    )
+    assert response.status == 400
+    assert payload(response)["refusal"] == "search_bounded"

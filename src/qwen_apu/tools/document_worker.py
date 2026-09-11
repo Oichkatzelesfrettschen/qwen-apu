@@ -2,13 +2,22 @@
 
     printf '%s' "$job" | python -m qwen_apu.tools.document_worker
 
-The job is one JSON object naming the input path, the original filename, the
-media type, the output directory, and the limits; the worker writes
-`<sha256 of the source>.json` and `chunks/<n>.txt` under that directory and
-exits 0, or prints one refusal object and exits 1. Nothing else crosses the
-boundary, so the process that owns the job decides the deadline, the working
-directory, and the environment while this process decides nothing about its
-own lifetime.
+The job is one JSON object naming a mode. `extract`, the default, names the
+input path, the original filename, the media type, the output directory, and
+the limits; the worker writes `<sha256 of the source>.json` and
+`chunks/<n>.txt` under that directory and exits 0, or prints one refusal
+object and exits 1. `search` names a stored document's directory, its digest,
+the query, and the search bounds; the worker prints every match as a chunk
+index and a character span. Nothing else crosses the boundary, so the process
+that owns the job decides the deadline, the working directory, and the
+environment while this process decides nothing about its own lifetime.
+
+A regular expression runs here rather than in the gateway because this
+process is the one that can be ended. `arm_wall_clock` raises SIGALRM at its
+default disposition, which the kernel delivers into a match that reaches no
+bytecode boundary, and `apply_limits` adds the CPU and address-space caps;
+the pattern's own size and group count and the candidate-chunk count refuse
+ahead of the first match. Every one of those answers `search_bounded`.
 
 The limits apply before the input is read, which is the order that makes them
 bounds rather than reports. `resource.setrlimit` caps address space, CPU time,
@@ -24,12 +33,23 @@ declaration to expand.
 
 Each extractor returns the text, the boundaries that tile it, the format it
 detected, and its warnings. A boundary is `(kind, index, char_start,
-char_end)` over the extracted text: pages for a PDF, paragraphs and pages for
-a DOCX, sheets and rows for a spreadsheet, slides for a presentation,
-headings for HTML and Markdown, rows for CSV and TSV. Chunking walks the
-primary kind's boundaries and fills up to 1200 characters, so a chunk ends on
-a page, a paragraph, or a row wherever one lands inside the budget and cuts
-at the last line break otherwise.
+char_end, label)` over the extracted text, and each format states its own
+vocabulary:
+
+| Format | Primary kind | Every kind it records | What a label carries |
+| --- | --- | --- | --- |
+| text, source, json | line | line | -- |
+| markdown | heading | heading | the heading line |
+| html | heading | heading | the heading text |
+| csv, tsv | row | sheet, row | the file stem on the sheet |
+| docx | paragraph | page, heading, paragraph | the heading's own text |
+| xlsx | sheet | sheet, row | the sheet name, and `Sheet!A1:B1` on a row |
+| pptx | slide | slide | the slide's first line |
+| pdf | page | page | -- |
+
+Chunking walks the primary kind's boundaries and fills up to 1200
+characters, so a chunk ends on a page, a paragraph, or a row wherever one
+lands inside the budget and cuts at the last line break otherwise.
 
 A PDF page whose extracted text is empty while the page's resources name an
 image XObject is reported through `requires_ocr`, which carries the page
@@ -47,7 +67,9 @@ import json
 import os
 import re
 import resource
+import signal
 import sys
+import time
 import zipfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -72,6 +94,17 @@ DEFAULT_CPU_SECONDS = 60
 DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_ARCHIVE_MEMBERS = 512
+
+MODE_EXTRACT = "extract"
+MODE_SEARCH = "search"
+# The one name every search bound answers with, whether the pattern, the
+# candidate chunks, or the clock is what it met.
+SEARCH_BOUNDED = "search_bounded"
+DEFAULT_MAX_PATTERN_CHARS = 200
+DEFAULT_MAX_PATTERN_GROUPS = 20
+DEFAULT_MAX_CANDIDATE_CHUNKS = 2048
+DEFAULT_SEARCH_SECONDS = 5.0
+DEFAULT_MAX_SEARCH_HITS = 200
 
 WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 SPREADSHEET_NAMESPACE = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -163,6 +196,10 @@ class ExtractionRefused(Exception):
         self.message = message
 
 
+class SearchBounded(ExtractionRefused):
+    """One search bound met, which the caller reads by its own name."""
+
+
 @dataclass(frozen=True, slots=True)
 class Limits:
     """The five caps one job runs under, each carried from the caller's settings."""
@@ -188,6 +225,59 @@ class Limits:
 
     def to_json(self) -> dict[str, int]:
         return {name: cast(int, getattr(self, name)) for name in self.__slots__}
+
+
+def _positive_int(payload: Mapping[str, object], name: str, fallback: int) -> int:
+    raw = payload.get(name)
+    if raw is None:
+        return fallback
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise ExtractionRefused(f"{name} is not a positive integer")
+    return raw
+
+
+def _positive_float(payload: Mapping[str, object], name: str, fallback: float) -> float:
+    raw = payload.get(name)
+    if raw is None:
+        return fallback
+    if isinstance(raw, bool) or not isinstance(raw, int | float) or raw <= 0:
+        raise ExtractionRefused(f"{name} is not a positive number")
+    return float(raw)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchBounds:
+    """The four bounds one search runs under, each carried from the caller's settings."""
+
+    max_pattern_chars: int = DEFAULT_MAX_PATTERN_CHARS
+    max_pattern_groups: int = DEFAULT_MAX_PATTERN_GROUPS
+    max_candidate_chunks: int = DEFAULT_MAX_CANDIDATE_CHUNKS
+    wall_clock_seconds: float = DEFAULT_SEARCH_SECONDS
+
+    @classmethod
+    def from_json(cls, payload: Mapping[str, object]) -> SearchBounds:
+        return cls(
+            max_pattern_chars=_positive_int(
+                payload, "max_pattern_chars", DEFAULT_MAX_PATTERN_CHARS
+            ),
+            max_pattern_groups=_positive_int(
+                payload, "max_pattern_groups", DEFAULT_MAX_PATTERN_GROUPS
+            ),
+            max_candidate_chunks=_positive_int(
+                payload, "max_candidate_chunks", DEFAULT_MAX_CANDIDATE_CHUNKS
+            ),
+            wall_clock_seconds=_positive_float(
+                payload, "wall_clock_seconds", DEFAULT_SEARCH_SECONDS
+            ),
+        )
+
+    def to_json(self) -> dict[str, float]:
+        return {
+            "max_pattern_chars": self.max_pattern_chars,
+            "max_pattern_groups": self.max_pattern_groups,
+            "max_candidate_chunks": self.max_candidate_chunks,
+            "wall_clock_seconds": self.wall_clock_seconds,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1061,6 +1151,150 @@ def approximate_tokens(characters: int) -> int:
     return -(-characters // TOKEN_ESTIMATE_CHARS)
 
 
+# --- search -------------------------------------------------------------------
+
+
+def compile_query(query: str, *, regex: bool, bounds: SearchBounds) -> re.Pattern[str]:
+    """Compile one query and bound what the compiled pattern carries.
+
+    A literal query escapes into the same engine, so one matcher answers both
+    forms and a literal never carries a metacharacter of its own. CPython
+    publishes no size for the compiled program, so the bound reads the two
+    measures the compiled pattern does publish -- the source it holds and the
+    groups it captures -- which are what a nested quantifier grows.
+    """
+    if not query:
+        raise ExtractionRefused("the query is empty")
+    try:
+        pattern = re.compile(query if regex else re.escape(query))
+    except re.error as error:
+        raise ExtractionRefused(f"the query is not a valid regular expression: {error}") from None
+    if regex:
+        if len(pattern.pattern) > bounds.max_pattern_chars:
+            raise SearchBounded(
+                f"the pattern is {len(pattern.pattern)} characters, past the "
+                f"{bounds.max_pattern_chars}-character bound"
+            )
+        if pattern.groups > bounds.max_pattern_groups:
+            raise SearchBounded(
+                f"the pattern captures {pattern.groups} groups, past the "
+                f"{bounds.max_pattern_groups}-group bound"
+            )
+    return pattern
+
+
+def arm_wall_clock(seconds: float) -> None:
+    """Bound this process's wall clock with a signal the kernel delivers itself.
+
+    `_sre` holds the interpreter through one match and reaches no bytecode
+    boundary, so a handler installed through `signal.signal` runs after the
+    match returns -- which is what a catastrophically backtracking pattern
+    never does. SIGALRM at its default disposition terminates the process
+    instead, so the bound holds inside the match and the parent reads the
+    signal from the exit status.
+    """
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+
+
+def disarm_wall_clock() -> None:
+    """Drop the timer before the answer is written, so the report outlives the bound."""
+    signal.setitimer(signal.ITIMER_REAL, 0.0)
+
+
+def search_chunks(
+    directory: Path,
+    digest: str,
+    pattern: re.Pattern[str],
+    bounds: SearchBounds,
+    max_hits: int,
+) -> list[dict[str, int]]:
+    """Every match over one stored document's chunks, in chunk order.
+
+    The chunk count refuses ahead of the first match, and the clock is read
+    between chunks, so a pattern that is merely slow ends with a refusal
+    object naming the bound; one that never returns from a single chunk ends
+    on the timer `arm_wall_clock` set.
+    """
+    record = read_record(directory, digest)
+    if len(record.chunks) > bounds.max_candidate_chunks:
+        raise SearchBounded(
+            f"the document holds {len(record.chunks)} chunks, past the "
+            f"{bounds.max_candidate_chunks}-chunk bound"
+        )
+    deadline = time.monotonic() + bounds.wall_clock_seconds
+    matches: list[dict[str, int]] = []
+    for chunk in record.chunks:
+        if time.monotonic() >= deadline:
+            raise SearchBounded(f"the search passed its {bounds.wall_clock_seconds:g}-second bound")
+        body = (directory / "chunks" / f"{chunk.index}.txt").read_text(encoding="utf-8")
+        for found in pattern.finditer(body):
+            if found.end() <= found.start():
+                continue
+            matches.append(
+                {
+                    "chunk_index": chunk.index,
+                    "char_start": found.start(),
+                    "char_end": found.end(),
+                }
+            )
+            if len(matches) >= max_hits:
+                return matches
+    return matches
+
+
+@dataclass(frozen=True, slots=True)
+class SearchJob:
+    """One search as the caller states it on stdin."""
+
+    directory: Path
+    digest: str
+    query: str
+    regex: bool = False
+    bounds: SearchBounds = field(default_factory=SearchBounds)
+    limits: Limits = field(default_factory=Limits)
+    max_hits: int = DEFAULT_MAX_SEARCH_HITS
+
+    @classmethod
+    def from_json(cls, payload: Mapping[str, object]) -> SearchJob:
+        directory = payload.get("document_directory")
+        digest = payload.get("digest")
+        query = payload.get("query")
+        if not isinstance(directory, str) or not directory:
+            raise ExtractionRefused("document_directory is absent or is not a nonempty string")
+        if not isinstance(digest, str) or not digest:
+            raise ExtractionRefused("digest is absent or is not a nonempty string")
+        if not isinstance(query, str) or not query:
+            raise ExtractionRefused("query is absent or is not a nonempty string")
+        regex = payload.get("regex", False)
+        if not isinstance(regex, bool):
+            raise ExtractionRefused("regex is not a boolean")
+        raw_bounds = payload.get("bounds", {})
+        raw_limits = payload.get("limits", {})
+        if not isinstance(raw_bounds, dict) or not isinstance(raw_limits, dict):
+            raise ExtractionRefused("bounds and limits are JSON objects")
+        return cls(
+            directory=Path(directory),
+            digest=digest,
+            query=query,
+            regex=regex,
+            bounds=SearchBounds.from_json(cast(Mapping[str, object], raw_bounds)),
+            limits=Limits.from_json(cast(Mapping[str, object], raw_limits)),
+            max_hits=_positive_int(payload, "max_hits", DEFAULT_MAX_SEARCH_HITS),
+        )
+
+
+def run_search(job: SearchJob) -> int:
+    """Run one search under every bound and print the matches it found."""
+    apply_limits(job.limits)
+    pattern = compile_query(job.query, regex=job.regex, bounds=job.bounds)
+    arm_wall_clock(job.bounds.wall_clock_seconds)
+    matches = search_chunks(job.directory, job.digest, pattern, job.bounds, job.max_hits)
+    disarm_wall_clock()
+    print(json.dumps({"status": "searched", "matches": matches}))
+    return 0
+
+
 # --- the job ------------------------------------------------------------------
 
 
@@ -1172,13 +1406,14 @@ def read_chunks(directory: Path, record: DocumentRecord) -> Iterator[tuple[Chunk
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Read one job on stdin, extract, and report the record or the refusal."""
+    """Read one job on stdin, run its mode, and report the answer or the refusal."""
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments:
         print(
             f"usage: {os.path.basename(sys.argv[0])} < job.json\n"
-            "The job is one JSON object naming input_path, filename, media_type, "
-            "output_directory, and limits.",
+            "An extract job names input_path, filename, media_type, output_directory, "
+            "and limits; a search job names mode, document_directory, digest, query, "
+            "regex, and bounds.",
             file=sys.stderr,
         )
         return 2
@@ -1186,9 +1421,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload: object = json.loads(sys.stdin.read())
         if not isinstance(payload, dict):
             raise ExtractionRefused("the job is not a JSON object")
-        job = Job.from_json(cast(Mapping[str, object], payload))
+        body = cast(Mapping[str, object], payload)
+        mode = body.get("mode", MODE_EXTRACT)
+        if mode == MODE_SEARCH:
+            return run_search(SearchJob.from_json(body))
+        if mode != MODE_EXTRACT:
+            raise ExtractionRefused(f"{mode!r} names no mode this worker runs")
+        job = Job.from_json(body)
         apply_limits(job.limits)
         record = run(job)
+    except SearchBounded as bounded:
+        print(
+            json.dumps({"status": "refused", "refusal": SEARCH_BOUNDED, "error": bounded.message})
+        )
+        return 1
     except ExtractionRefused as refusal:
         print(json.dumps({"status": "refused", "error": refusal.message}))
         return 1

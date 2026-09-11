@@ -50,6 +50,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -59,10 +60,15 @@ from pathlib import Path
 from typing import IO, cast
 
 from qwen_apu.tools.document_worker import (
+    SEARCH_BOUNDED,
     Boundary,
     Chunk,
     DocumentRecord,
+    ExtractionRefused,
     Limits,
+    SearchBounded,
+    SearchBounds,
+    compile_query,
     read_record,
 )
 from qwen_apu.web.http import Request, Response, Route
@@ -102,12 +108,18 @@ ISOLATION_PROBE_SOURCE = "import os\nos.unshare(os.CLONE_NEWUSER | os.CLONE_NEWN
 
 
 class DocumentRefused(Exception):
-    """One refusal carrying the HTTP status the boundary answers with."""
+    """One refusal carrying the HTTP status the boundary answers with.
 
-    def __init__(self, status: int, message: str) -> None:
+    `kind` names a refusal a caller acts on rather than reads: a search that
+    met one of its bounds answers `search_bounded` whichever bound it was, so
+    the client distinguishes it from a malformed query without parsing prose.
+    """
+
+    def __init__(self, status: int, message: str, kind: str = "") -> None:
         super().__init__(message)
         self.status = status
         self.message = message
+        self.kind = kind
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +160,7 @@ class DocumentSettings:
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
     max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES
     max_search_hits: int = DEFAULT_MAX_SEARCH_HITS
+    search_bounds: SearchBounds = field(default_factory=SearchBounds)
     worker_command: tuple[str, ...] = ()
     python_path: tuple[Path, ...] = ()
     session_admits: Callable[[Request], bool] = session_refused
@@ -254,9 +267,10 @@ class DocumentService:
         return record
 
     def _run_worker(self, path: Path, filename: str, media_type: str, job_directory: Path) -> None:
-        """Run one worker to completion, killing its group on the deadline."""
+        """Run one extraction to completion, killing its group on the deadline."""
         job = json.dumps(
             {
+                "mode": "extract",
                 "input_path": str(path.resolve()),
                 "filename": filename,
                 "media_type": media_type,
@@ -265,6 +279,12 @@ class DocumentService:
                 "network_isolation": self.network_isolation,
             }
         ).encode("utf-8")
+        returncode, stdout, stderr = self._run_job(job, job_directory, "extraction")
+        if returncode != 0:
+            raise DocumentRefused(400, _worker_error(returncode, stdout, stderr))
+
+    def _run_job(self, job: bytes, job_directory: Path, what: str) -> tuple[int, bytes, bytes]:
+        """Run one worker to completion, killing its group on the deadline."""
         environment = {
             "PATH": os.environ.get("PATH", os.defpath),
             "PYTHONPATH": os.pathsep.join(
@@ -294,11 +314,10 @@ class DocumentService:
             _kill_group(process)
             raise DocumentRefused(
                 504,
-                f"the extraction passed its {self.settings.deadline_seconds:g}-second deadline "
+                f"the {what} passed its {self.settings.deadline_seconds:g}-second deadline "
                 "and its process group was killed",
             ) from None
-        if process.returncode != 0:
-            raise DocumentRefused(400, _worker_error(process.returncode, stdout, stderr))
+        return process.returncode, stdout, stderr
 
     # --- retrieval -----------------------------------------------------------
 
@@ -319,37 +338,72 @@ class DocumentService:
         the match falls inside, so a caller cites a page, a paragraph, or a row
         rather than an offset alone.
 
-        The pattern runs in this process against the stored chunks, where the
-        worker's CPU cap reaches nothing, so a catastrophically backtracking
-        expression costs the gateway its own time; the admitted session is what
-        bounds who spends it.
+        A literal query is the default and scans here: `str.find` walks each
+        chunk once and backtracks over nothing, so the cost is the document's
+        own size and the candidate-chunk bound is what limits it. `regex=True`
+        hands the pattern to the worker, where the wall-clock timer, the CPU
+        cap, and the address-space cap bound what it spends; this process
+        compiles it first so an invalid pattern refuses without a spawn, and
+        the worker applies every bound again as the authority. Each bound
+        answers `search_bounded`.
         """
         if not query:
             raise DocumentRefused(400, "the query is empty")
         record = self.record(digest)
-        matcher = _matcher(query, regex=regex)
         stored = self.settings.store() / digest
-        hits: list[SearchHit] = []
-        for chunk in record.chunks:
-            if len(hits) >= self.settings.max_search_hits:
-                break
-            body = (stored / "chunks" / f"{chunk.index}.txt").read_text(encoding="utf-8")
-            for found in matcher(body):
-                if len(hits) >= self.settings.max_search_hits:
-                    break
-                start = chunk.char_start + found.start()
-                end = chunk.char_start + found.end()
-                hits.append(
-                    SearchHit(
-                        chunk_index=chunk.index,
-                        chunk_sha256=chunk.sha256,
-                        char_start=start,
-                        char_end=end,
-                        text=_excerpt(body, found.start(), found.end()),
-                        boundaries=_covering(record.boundaries, start, end),
-                    )
-                )
-        return tuple(hits)
+        bounds = self.settings.search_bounds
+        if len(record.chunks) > bounds.max_candidate_chunks:
+            raise DocumentRefused(
+                400,
+                f"the document holds {len(record.chunks)} chunks, past the "
+                f"{bounds.max_candidate_chunks}-chunk search bound",
+                SEARCH_BOUNDED,
+            )
+        if regex:
+            try:
+                compile_query(query, regex=True, bounds=bounds)
+            except SearchBounded as bounded:
+                raise DocumentRefused(400, bounded.message, SEARCH_BOUNDED) from None
+            except ExtractionRefused as refusal:
+                raise DocumentRefused(400, refusal.message) from None
+            matches = self._search_through_worker(stored, digest, query)
+        else:
+            matches = _literal_matches(stored, record, query, self.settings.max_search_hits)
+        return _hits(stored, record, matches[: self.settings.max_search_hits])
+
+    def _search_through_worker(
+        self, stored: Path, digest: str, query: str
+    ) -> list[tuple[int, int, int]]:
+        """Run one regular expression in the worker and read back its matches.
+
+        The bounds travel with the job and the worker owns them, so a pattern
+        that never returns to Python ends on the timer the worker armed on
+        itself; this process reads that signal from the exit status and names
+        the same refusal the worker's own object carries.
+        """
+        job = json.dumps(
+            {
+                "mode": "search",
+                "document_directory": str(stored),
+                "digest": digest,
+                "query": query,
+                "regex": True,
+                "bounds": self.settings.search_bounds.to_json(),
+                "limits": self.settings.limits.to_json(),
+                "max_hits": self.settings.max_search_hits,
+            }
+        ).encode("utf-8")
+        directory = self.settings.scratch() / f"search-{secrets.token_hex(JOB_TOKEN_BYTES)}"
+        directory.mkdir(parents=True)
+        try:
+            returncode, stdout, stderr = self._run_job(job, directory, "search")
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+        if returncode == 0:
+            return _worker_matches(stdout)
+        raise _search_refusal(
+            returncode, stdout, stderr, self.settings.search_bounds.wall_clock_seconds
+        )
 
     def chunk_text(self, digest: str, index: int) -> str:
         """Return one chunk's text, refusing an index the record does not carry."""
@@ -423,19 +477,108 @@ def _worker_error(returncode: int, stdout: bytes, stderr: bytes) -> str:
     return tail[-1] if tail else f"the worker exited {returncode}"
 
 
-def _matcher(query: str, *, regex: bool) -> Callable[[str], list[re.Match[str]]]:
-    """Compile the query once; a literal query escapes into the same engine."""
+def _chunk_body(stored: Path, index: int) -> str:
+    return (stored / "chunks" / f"{index}.txt").read_text(encoding="utf-8")
+
+
+def _literal_matches(
+    stored: Path, record: DocumentRecord, query: str, max_hits: int
+) -> list[tuple[int, int, int]]:
+    """Every occurrence of the query's own characters, chunk by chunk.
+
+    `str.find` advances by the query's length, which is the non-overlapping
+    walk `finditer` performs, so a literal query and its escaped pattern
+    report one count.
+    """
+    matches: list[tuple[int, int, int]] = []
+    for chunk in record.chunks:
+        body = _chunk_body(stored, chunk.index)
+        position = body.find(query)
+        while position >= 0:
+            matches.append((chunk.index, position, position + len(query)))
+            if len(matches) >= max_hits:
+                return matches
+            position = body.find(query, position + len(query))
+    return matches
+
+
+def _worker_matches(stdout: bytes) -> list[tuple[int, int, int]]:
+    """The matches one search worker printed, as chunk index and character span."""
     try:
-        pattern = re.compile(query if regex else re.escape(query))
-    except re.error as error:
-        raise DocumentRefused(
-            400, f"the query is not a valid regular expression: {error}"
-        ) from None
+        payload: object = json.loads(stdout.decode("utf-8"))
+    except ValueError:
+        raise DocumentRefused(500, "the search worker printed no report") from None
+    if not isinstance(payload, dict):
+        raise DocumentRefused(500, "the search worker printed no report object")
+    raw = cast(Mapping[str, object], payload).get("matches", [])
+    matches: list[tuple[int, int, int]] = []
+    for entry in cast(Sequence[Mapping[str, int]], raw):
+        matches.append(
+            (int(entry["chunk_index"]), int(entry["char_start"]), int(entry["char_end"]))
+        )
+    return matches
 
-    def find(body: str) -> list[re.Match[str]]:
-        return [found for found in pattern.finditer(body) if found.end() > found.start()]
 
-    return find
+def _search_refusal(
+    returncode: int, stdout: bytes, stderr: bytes, wall_clock_seconds: float
+) -> DocumentRefused:
+    """The refusal one failed search worker earned, named by what ended it.
+
+    A refusal object carries its own name. A signal carries none, so the two
+    the bounds raise -- SIGALRM from the worker's own timer and SIGXCPU from
+    its CPU cap -- map to the same name here, since both say the pattern spent
+    what the bounds allow.
+    """
+    try:
+        payload: object = json.loads(stdout.decode("utf-8"))
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        report = cast(Mapping[str, object], payload)
+        if report.get("refusal") == SEARCH_BOUNDED:
+            return DocumentRefused(400, str(report.get("error", "")), SEARCH_BOUNDED)
+    if returncode in (-signal.SIGALRM, -signal.SIGXCPU):
+        name = signal.Signals(-returncode).name
+        return DocumentRefused(
+            400,
+            f"the search was ended by {name} at its {wall_clock_seconds:g}-second bound",
+            SEARCH_BOUNDED,
+        )
+    return DocumentRefused(400, _worker_error(returncode, stdout, stderr))
+
+
+def _hits(
+    stored: Path, record: DocumentRecord, matches: Sequence[tuple[int, int, int]]
+) -> tuple[SearchHit, ...]:
+    """One hit per match, in the document's own coordinates.
+
+    The chunk bodies a hit lands in are read here and nowhere else, so a
+    search that matched two chunks reads two files whatever the document's
+    size.
+    """
+    chunks = {chunk.index: chunk for chunk in record.chunks}
+    bodies: dict[int, str] = {}
+    hits: list[SearchHit] = []
+    for index, start, end in matches:
+        chunk = chunks.get(index)
+        if chunk is None:
+            raise DocumentRefused(500, f"the search named chunk {index}, which the record omits")
+        if index not in bodies:
+            bodies[index] = _chunk_body(stored, index)
+        body = bodies[index]
+        hits.append(
+            SearchHit(
+                chunk_index=index,
+                chunk_sha256=chunk.sha256,
+                char_start=chunk.char_start + start,
+                char_end=chunk.char_start + end,
+                text=_excerpt(body, start, end),
+                boundaries=_covering(
+                    record.boundaries, chunk.char_start + start, chunk.char_start + end
+                ),
+            )
+        )
+    return tuple(hits)
 
 
 def _excerpt(body: str, start: int, end: int) -> str:
@@ -639,6 +782,14 @@ def _json(status: int, payload: object) -> Response:
     )
 
 
+def _refused(refusal: DocumentRefused) -> Response:
+    """One refusal as JSON, naming its kind where the refusal carries one."""
+    body: dict[str, object] = {"error": refusal.message}
+    if refusal.kind:
+        body["refusal"] = refusal.kind
+    return _json(refusal.status, body)
+
+
 def _body(request: Request) -> Mapping[str, object]:
     try:
         parsed: object = request.json()
@@ -697,7 +848,7 @@ def handle_upload(service: DocumentService, request: Request) -> Response:
         source, filename, media_type = stage_upload(service.settings, request, job)
         record = service.extract(source, media_type, filename)
     except DocumentRefused as refusal:
-        return _json(refusal.status, {"error": refusal.message})
+        return _refused(refusal)
     finally:
         shutil.rmtree(job, ignore_errors=True)
     return _json(201, record.to_json())
@@ -710,12 +861,17 @@ def handle_record(service: DocumentService, request: Request) -> Response:
     try:
         record = service.record(request.path_params.get("digest", ""))
     except DocumentRefused as refusal:
-        return _json(refusal.status, {"error": refusal.message})
+        return _refused(refusal)
     return _json(200, record.to_json())
 
 
 def handle_search(service: DocumentService, request: Request) -> Response:
-    """Answer one search over one stored document's chunks."""
+    """Answer one search over one stored document's chunks.
+
+    `regex` is absent by default, so a query is literal unless the request
+    names the flag; a bound the search meets answers `search_bounded` in the
+    refusal body beside its own text.
+    """
     if not service.settings.session_admits(request):
         return _json(401, {"error": "the request carries no admitted session"})
     try:
@@ -729,7 +885,7 @@ def handle_search(service: DocumentService, request: Request) -> Response:
         digest = request.path_params.get("digest", "")
         hits = service.search(digest, query, regex=regex)
     except DocumentRefused as refusal:
-        return _json(refusal.status, {"error": refusal.message})
+        return _refused(refusal)
     return _json(200, {"sha256": digest, "hits": [hit.to_json() for hit in hits]})
 
 
