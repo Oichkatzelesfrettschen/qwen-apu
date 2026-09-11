@@ -37,6 +37,7 @@ the digest that verify a fetch -- exactly as wide as every other row.
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -240,6 +241,18 @@ def _model_plan(
         source_repository=pin.source_repository,
         source_revision=pin.source_revision,
     )
+
+
+def model_plan(
+    row: ModelRow, artifacts: Mapping[str, ModelArtifact], models_dir: Path
+) -> ArtifactPlan:
+    """The install destination and pin one registry row resolves to.
+
+    `resolve_group` answers for a group; a launch names one checkpoint and needs
+    the same composition of publisher directory, filename, and artifact pin. One
+    reader keeps a launch reading the leaf a fetch wrote.
+    """
+    return _model_plan(row, dict(artifacts), models_dir)
 
 
 def _projector_plan(
