@@ -10,6 +10,11 @@ runs the credential check ahead of the meter, so an unauthenticated peer draws
 no unit a legitimate caller also spends from. `_dispatch` applies both orders:
 Host, then Origin, then the route, then the session, then the handler.
 
+`REQUEST_BODY_BYTE_CAP` bounds the body every route reads whole. A route
+declared `streams=True` reads the socket itself through `Request.stream`
+under the bound it states, so an upload route admits a body the JSON routes
+refuse while the cap keeps its position ahead of every other handler.
+
 A handler returns a `Response` whole or a `StreamingResponse` whose chunks
 this server writes as chunked transfer encoding with a flush per chunk, which
 is how chat completions reach the browser token by token. The static WebUI
@@ -34,7 +39,7 @@ from pathlib import Path
 from typing import Protocol, cast
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-from qwen_apu.web.http import Request, Response, Route, StreamingResponse, match
+from qwen_apu.web.http import BodyStream, Request, Response, Route, StreamingResponse, match
 
 # remote/web-mcp/authorize-broker.py's own literals: the loopback pair stands
 # under every setting, because the session's probes reach a service over
@@ -298,6 +303,10 @@ class _Handler(BaseHTTPRequestHandler):
     # in the socket and the connection unusable for a second request.
     body_consumed = False
 
+    # The body a streaming route reads for itself, whose `remaining` reports
+    # what the handler left in the socket.
+    body_stream: BodyStream | None = None
+
     @property
     def gateway(self) -> Gateway:
         return cast(_GatewayServer, self.server).gateway
@@ -311,7 +320,13 @@ class _Handler(BaseHTTPRequestHandler):
         request-smuggling case. Closing is what keeps the unread bytes from
         being parsed as anything, and it is the cost of refusing before the
         read rather than draining a body a refused peer sent.
+
+        A streaming route reads the body itself, so its stream reports what it
+        consumed: an upload refused at its own bound leaves the rest of the
+        body in the socket and takes the same close.
         """
+        if self.body_stream is not None:
+            self.body_consumed = self.body_stream.exhausted
         if self.body_consumed or self.command not in BODY_METHODS:
             return
         if self.headers.get("Content-Length", "0") not in ("0", ""):
@@ -359,6 +374,7 @@ class _Handler(BaseHTTPRequestHandler):
         every test passes. The Host check runs first here as everywhere.
         """
         self.body_consumed = False
+        self.body_stream = None
         if not self._named_host():
             self._write(Response.json({"error": self._host_refusal()}, status=403), "")
             return
@@ -406,6 +422,33 @@ class _Handler(BaseHTTPRequestHandler):
             raise RequestRefused(400, "the request body is shorter than Content-Length")
         return body
 
+    def _open_body_stream(self) -> BodyStream:
+        """The body as bytes still in the socket, for a route that bounds its own read.
+
+        The gateway's byte cap stays off this path, which is what lets one
+        upload route admit a body every JSON route refuses; the route's own
+        bound is what the stream meets.
+
+        Content-Length is what a stream reads: `BaseHTTPRequestHandler`
+        decodes no chunked body, so a request that names a transfer encoding
+        and no length is refused by name here rather than read as an empty
+        body.
+        """
+        if self.headers.get("Transfer-Encoding", "") and "Content-Length" not in self.headers:
+            raise RequestRefused(
+                411,
+                "this route reads a body of a declared length; "
+                f"{self.headers.get('Transfer-Encoding', '')} declares none",
+            )
+        raw = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw)
+        except ValueError:
+            raise RequestRefused(400, "Content-Length is not an integer") from None
+        if length < 0:
+            raise RequestRefused(400, "Content-Length is negative")
+        return BodyStream(self.rfile, length)
+
     def _dispatch(self) -> None:
         """Host, Origin, route, session, handler -- in that order.
 
@@ -413,24 +456,35 @@ class _Handler(BaseHTTPRequestHandler):
         admitted set spends no meter unit and reaches no handler. The session
         gate precedes every guarded handler for the same reason the broker
         puts the bearer ahead of its buckets.
+
+        The route match runs ahead of the body read and decides which read
+        happens: a streaming route takes the socket under its own bound and
+        every other route takes the capped read, in the position the cap has
+        always occupied. Matching reads no bytes and holds no state, so the
+        refusal order a non-streaming route meets is the order above.
         """
         self.body_consumed = False
+        self.body_stream = None
         if not self._named_host():
             self._write(Response.json({"error": self._host_refusal()}, status=403), "")
             return
         origin = self._allowed_origin()
         parts = urlsplit(self.path)
         path = unquote(parts.path)
+        found = match(self.gateway.routes, self.command, path)
+        streams = found is not None and found[0].streams and self.command in BODY_METHODS
         try:
+            if streams:
+                self.body_stream = self._open_body_stream()
             request = Request(
                 method=self.command,
                 path=path,
                 query=dict(parse_qsl(parts.query)),
                 headers={name.lower(): value for name, value in self.headers.items()},
-                body=self._read_body(),
+                body=b"" if streams else self._read_body(),
                 client_address=str(self.client_address[0]),
+                stream=self.body_stream,
             )
-            found = match(self.gateway.routes, self.command, path)
             if found is None:
                 self._serve_static(path, origin)
                 return
@@ -443,6 +497,7 @@ class _Handler(BaseHTTPRequestHandler):
                 body=request.body,
                 client_address=request.client_address,
                 path_params=params,
+                stream=request.stream,
             )
             authority = self.gateway.session_authority
             if authority is not None and authority.guards(path):

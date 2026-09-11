@@ -19,17 +19,22 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import zipfile
+from collections.abc import Callable, Iterator
+from http.client import HTTPConnection
 from pathlib import Path
 
 import pytest
 
 from qwen_apu.tools.document_worker import (
     ESTIMATE_BASIS,
+    DocumentRecord,
     Extraction,
     ExtractionRefused,
     Limits,
+    SearchBounds,
     approximate_tokens,
     build_chunks,
     extract,
@@ -47,11 +52,13 @@ from qwen_apu.tools.document_worker import (
     resolve_format,
 )
 from qwen_apu.tools.documents import (
+    DEFAULT_MAX_REQUEST_BYTES,
     DIGEST_PATTERN,
     DOCUMENT_ROUTE,
     DOCUMENT_SEARCH_ROUTE,
     DOCUMENTS_ROUTE,
     NETWORK_ISOLATION_NAMESPACED,
+    UPLOAD_BLOCK_BYTES,
     DocumentRefused,
     DocumentService,
     DocumentSettings,
@@ -63,7 +70,9 @@ from qwen_apu.tools.documents import (
     probe_network_isolation,
     routes,
     safe_filename,
+    stage_body,
 )
+from qwen_apu.web.app import REQUEST_BODY_BYTE_CAP, Gateway, GatewayConfig
 from qwen_apu.web.http import Request, Response, match
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -921,3 +930,503 @@ def test_the_search_route_refuses_an_absent_query(service: DocumentService) -> N
         request("POST", "/api/documents/x/search", b"{}", digest=record.sha256),
     )
     assert response.status == 400
+
+
+# --- the upload bound ---------------------------------------------------------
+
+
+def _blocks_forever(limit: int) -> Callable[[int], bytes]:
+    """A reader that hands out blocks and fails the test where it is read past `limit`."""
+    handed = 0
+
+    def read(size: int) -> bytes:
+        nonlocal handed
+        if handed > limit:
+            raise AssertionError(f"the copy read {handed} bytes, past the {limit}-byte bound")
+        handed += size
+        return b"u" * size
+
+    return read
+
+
+def test_stage_body_refuses_at_the_bound_while_reading(tmp_path: Path) -> None:
+    """The running count stops the copy, so the reader is never asked for the rest.
+
+    The declaration states nothing here, which is the case a body longer than
+    its own Content-Length presents; the reader raises where the copy keeps
+    reading past the bound, so the refusal proves the copy stopped.
+    """
+    target = tmp_path / "body"
+    bound = 4 * UPLOAD_BLOCK_BYTES
+    with pytest.raises(DocumentRefused) as refusal:
+        stage_body(_blocks_forever(bound + UPLOAD_BLOCK_BYTES), 0, target, bound)
+    assert refusal.value.status == 413
+    assert f"passes the {bound}-byte upload bound" in refusal.value.message
+    assert target.stat().st_size <= bound
+
+
+def test_stage_body_refuses_a_declaration_past_the_bound(tmp_path: Path) -> None:
+    """A Content-Length past the bound refuses before one byte is read."""
+
+    def unread(size: int) -> bytes:
+        raise AssertionError("the copy read a body its declaration already refused")
+
+    with pytest.raises(DocumentRefused) as refusal:
+        stage_body(unread, 1 << 30, tmp_path / "body", 64)
+    assert refusal.value.status == 413
+    assert "declares 1073741824 bytes" in refusal.value.message
+
+
+def test_stage_body_writes_what_it_reads(tmp_path: Path) -> None:
+    source = io.BytesIO(b"a" * 5000)
+    target = tmp_path / "body"
+    written = stage_body(source.read, 5000, target, 1 << 20, block=512)
+    assert written == 5000
+    assert target.read_bytes() == b"a" * 5000
+
+
+class Serving:
+    """One gateway serving the document routes alone, on a port the bind decides."""
+
+    def __init__(self, settings: DocumentSettings, static_root: Path) -> None:
+        static_root.mkdir(parents=True, exist_ok=True)
+        (static_root / "index.html").write_text("<!doctype html>\n", encoding="utf-8")
+        self.gateway = Gateway(
+            GatewayConfig(static_root=static_root, port=0, bind_host="127.0.0.1"),
+            (_Mounted(routes(DocumentService(settings))),),
+        )
+        self.thread = threading.Thread(target=self.gateway.serve_forever)
+        self.thread.start()
+
+    def post(self, body: bytes, headers: dict[str, str]) -> tuple[int, dict[str, object]]:
+        connection = HTTPConnection("127.0.0.1", self.gateway.port, timeout=60.0)
+        try:
+            connection.request("POST", DOCUMENTS_ROUTE, body=body, headers=headers)
+            response = connection.getresponse()
+            answer = json.loads(response.read().decode("utf-8"))
+            assert isinstance(answer, dict)
+            return response.status, answer
+        finally:
+            connection.close()
+
+    def stop(self) -> None:
+        self.gateway.shutdown()
+        self.thread.join(timeout=60.0)
+
+
+class _Mounted:
+    def __init__(self, table: tuple[object, ...]) -> None:
+        self._table = table
+
+    def routes(self) -> tuple[object, ...]:
+        return self._table
+
+
+@pytest.fixture
+def serve(tmp_path: Path) -> Iterator[Callable[[int], Serving]]:
+    """A factory for one gateway per bound, torn down whatever the test asserts."""
+    running: list[Serving] = []
+
+    def start(bound: int) -> Serving:
+        served = Serving(
+            DocumentSettings(
+                artifacts=tmp_path / "artifacts",
+                tmp=tmp_path / "tmp",
+                max_request_bytes=bound,
+                python_path=EXTRA_PYTHON_PATH,
+                session_admits=admits_every_session,
+            ),
+            tmp_path / "static",
+        )
+        running.append(served)
+        return served
+
+    try:
+        yield start
+    finally:
+        for served in running:
+            served.stop()
+
+
+def test_the_upload_route_refuses_a_body_past_its_own_bound(
+    serve: Callable[[int], Serving],
+) -> None:
+    """The route's bound answers the request, and the general JSON cap decides nothing.
+
+    Content-Length is what the refusal reads, since the stream clamps every
+    read to it: a body longer than its own declaration reaches the copy's
+    running count, which `test_stage_body_refuses_at_the_bound_while_reading`
+    proves against a reader that keeps handing out bytes.
+    """
+    served = serve(16 * 1024)
+    status, answer = served.post(
+        b"z" * (48 * 1024),
+        {"Content-Type": "text/plain", "X-Filename": "large.txt"},
+    )
+    assert status == 413
+    assert "past the 16384-byte upload bound" in str(answer["error"])
+
+
+def test_the_upload_route_stores_a_body_the_gateway_cap_refuses(
+    serve: Callable[[int], Serving],
+) -> None:
+    """Two mebibytes reach the store, twice what a route reading its body whole admits."""
+    served = serve(DEFAULT_MAX_REQUEST_BYTES)
+    line = ("w" * (128 * 1024 - 1) + "\n").encode("utf-8")
+    body = line * 16
+    assert len(body) > REQUEST_BODY_BYTE_CAP
+    status, answer = served.post(body, {"Content-Type": "text/plain", "X-Filename": "long.txt"})
+    assert status == 201, answer
+    assert answer["sha256"] == hashlib.sha256(body).hexdigest()
+    assert answer["source_bytes"] == len(body)
+    assert answer["detected_format"] == "text"
+
+
+def test_a_streamed_multipart_upload_preserves_the_file_part(
+    serve: Callable[[int], Serving],
+) -> None:
+    """The part's byte range copies out of the staged body, digest for digest."""
+    served = serve(DEFAULT_MAX_REQUEST_BYTES)
+    data = fixture("two-paragraphs.docx")
+    boundary = "----qwenstreamboundary"
+    body = (
+        (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="note"\r\n\r\n'
+            "a field ahead of the file\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="two-paragraphs.docx"\r\n'
+            "Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "\r\n\r\n"
+        ).encode()
+        + data
+        + f"\r\n--{boundary}--\r\n".encode()
+    )
+    status, answer = served.post(
+        body, {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    )
+    assert status == 201, answer
+    assert answer["sha256"] == hashlib.sha256(data).hexdigest()
+    assert answer["detected_format"] == "docx"
+
+
+def test_a_streamed_upload_naming_no_file_refuses(serve: Callable[[int], Serving]) -> None:
+    served = serve(DEFAULT_MAX_REQUEST_BYTES)
+    status, answer = served.post(b"a body with no name", {"Content-Type": "text/plain"})
+    assert status == 400
+    assert "X-Filename" in str(answer["error"])
+
+
+# --- the search bounds --------------------------------------------------------
+
+
+CATASTROPHIC_PATTERN = r"(a+)+$"
+SEARCH_WALL_CLOCK_SECONDS = 1.0
+
+
+@pytest.fixture
+def bounded(tmp_path: Path) -> DocumentService:
+    """A service whose search bounds are small enough for a test to meet them."""
+    return DocumentService(
+        DocumentSettings(
+            artifacts=tmp_path / "artifacts",
+            tmp=tmp_path / "tmp",
+            search_bounds=SearchBounds(
+                max_pattern_chars=24,
+                max_pattern_groups=2,
+                max_candidate_chunks=2,
+                wall_clock_seconds=SEARCH_WALL_CLOCK_SECONDS,
+            ),
+            python_path=EXTRA_PYTHON_PATH,
+            session_admits=admits_every_session,
+        )
+    )
+
+
+def _backtracking_document(tmp_path: Path) -> Path:
+    """One chunk of a thousand `a` and one `!`, where `(a+)+$` never finishes.
+
+    The exclamation mark is what makes the match fail: the group must consume
+    it to reach the end anchor and cannot, so the engine tries every partition
+    of the run ahead of it.
+    """
+    source = tmp_path / "runs.txt"
+    source.write_text("a" * 1000 + "!\n", encoding="utf-8")
+    return source
+
+
+def _many_chunks(tmp_path: Path) -> Path:
+    """Four chunks of one repeated character, past the bound this fixture sets at two."""
+    source = tmp_path / "many.txt"
+    source.write_text(("x" * 1199 + "\n") * 4, encoding="utf-8")
+    return source
+
+
+def test_a_catastrophic_pattern_answers_search_bounded_inside_the_bound(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    """The worker's own SIGALRM ends the match, since no Python handler runs inside one."""
+    record = bounded.extract(_backtracking_document(tmp_path), "text/plain")
+    started = time.monotonic()
+    with pytest.raises(DocumentRefused) as refusal:
+        bounded.search(record.sha256, CATASTROPHIC_PATTERN, regex=True)
+    elapsed = time.monotonic() - started
+    assert refusal.value.kind == "search_bounded"
+    assert refusal.value.status == 400
+    assert "SIGALRM" in refusal.value.message
+    # The lower bound proves the match ran and the timer ended it; the upper
+    # one proves the refusal arrives at the bound rather than at the service's
+    # own 120-second deadline.
+    assert SEARCH_WALL_CLOCK_SECONDS / 2 < elapsed < SEARCH_WALL_CLOCK_SECONDS + 5.0
+
+
+def test_the_same_pattern_costs_the_gateway_nothing_as_a_literal(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    """A literal query is the default, so the pattern's own characters are what it seeks."""
+    record = bounded.extract(_backtracking_document(tmp_path), "text/plain")
+    assert bounded.search(record.sha256, CATASTROPHIC_PATTERN) == ()
+    assert bounded.search(record.sha256, "aaaa")
+
+
+def test_a_pattern_past_the_character_bound_answers_search_bounded(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    record = bounded.extract(_backtracking_document(tmp_path), "text/plain")
+    with pytest.raises(DocumentRefused) as refusal:
+        bounded.search(record.sha256, "a" * 25, regex=True)
+    assert refusal.value.kind == "search_bounded"
+    assert "past the 24-character bound" in refusal.value.message
+
+
+def test_a_pattern_past_the_group_bound_answers_search_bounded(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    record = bounded.extract(_backtracking_document(tmp_path), "text/plain")
+    with pytest.raises(DocumentRefused) as refusal:
+        bounded.search(record.sha256, "(a)(b)(c)", regex=True)
+    assert refusal.value.kind == "search_bounded"
+    assert "past the 2-group bound" in refusal.value.message
+
+
+def test_a_document_past_the_candidate_chunk_bound_answers_search_bounded(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    """The chunk count refuses a pattern ahead of its first match."""
+    record = bounded.extract(_many_chunks(tmp_path), "text/plain")
+    assert len(record.chunks) > 2
+    with pytest.raises(DocumentRefused) as refusal:
+        bounded.search(record.sha256, "x+", regex=True)
+    assert refusal.value.kind == "search_bounded"
+    assert "past the 2-chunk search bound" in refusal.value.message
+
+
+def test_the_chunk_bound_leaves_a_literal_search_of_the_same_document_admitted(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    """A literal scan costs the document's own size, so every stored document answers one.
+
+    The bound belongs to the pattern rather than to the document: an upload
+    the size cap admits would otherwise store and then refuse every search of
+    itself.
+    """
+    record = bounded.extract(_many_chunks(tmp_path), "text/plain")
+    assert len(record.chunks) > bounded.settings.search_bounds.max_candidate_chunks
+    hits = bounded.search(record.sha256, "xxx")
+    assert len(hits) == bounded.settings.max_search_hits
+
+
+def test_the_worker_enforces_the_pattern_bound_the_gateway_also_states(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    """The bound is the worker's own, so a job naming it directly meets it there."""
+    record = bounded.extract(_backtracking_document(tmp_path), "text/plain")
+    stored = bounded.settings.store() / record.sha256
+    code, report = run_worker(
+        {
+            "mode": "search",
+            "document_directory": str(stored),
+            "digest": record.sha256,
+            "query": "a" * 25,
+            "regex": True,
+            "bounds": {"max_pattern_chars": 24},
+        }
+    )
+    assert code == 1
+    assert report["refusal"] == "search_bounded"
+    assert "past the 24-character bound" in str(report["error"])
+
+
+def test_the_search_worker_reports_its_matches_as_chunk_spans(
+    service: DocumentService, tmp_path: Path
+) -> None:
+    record = service.extract(FIXTURES / "rows.csv", "text/csv")
+    stored = service.settings.store() / record.sha256
+    code, report = run_worker(
+        {
+            "mode": "search",
+            "document_directory": str(stored),
+            "digest": record.sha256,
+            "query": r"\bnorth\b",
+            "regex": True,
+        }
+    )
+    assert code == 0
+    assert report["status"] == "searched"
+    matches = report["matches"]
+    assert isinstance(matches, list) and len(matches) == 2
+    assert all(entry["chunk_index"] == 1 for entry in matches)
+
+
+def test_the_worker_refuses_a_mode_it_does_not_run() -> None:
+    code, report = run_worker({"mode": "summarize"})
+    assert code == 1
+    assert "names no mode this worker runs" in str(report["error"])
+
+
+def test_the_search_route_names_the_refusal_beside_its_text(
+    bounded: DocumentService, tmp_path: Path
+) -> None:
+    record = bounded.extract(_backtracking_document(tmp_path), "text/plain")
+    response = handle_search(
+        bounded,
+        request(
+            "POST",
+            f"/api/documents/{record.sha256}/search",
+            json.dumps({"query": "a" * 25, "regex": True}).encode("utf-8"),
+            digest=record.sha256,
+        ),
+    )
+    assert response.status == 400
+    assert payload(response)["refusal"] == "search_bounded"
+
+
+# --- format qualification -----------------------------------------------------
+
+
+def test_docx_headings_and_paragraphs_are_separate_boundaries() -> None:
+    """A heading section runs to the next heading while the paragraphs tile the text."""
+    extraction = extract_docx(fixture("headings.docx"), "headings.docx", Limits())
+    headings = [boundary for boundary in extraction.boundaries if boundary.kind == "heading"]
+    paragraphs = [boundary for boundary in extraction.boundaries if boundary.kind == "paragraph"]
+    assert [heading.label for heading in headings] == ["", "Acquisition", "Measurement"]
+    assert len(paragraphs) == 6
+    assert tiles(extraction, "heading")
+    assert tiles(extraction, "paragraph")
+    assert extraction.primary_kind == "paragraph"
+    assert extraction.text[headings[1].char_start :].startswith("Acquisition\n")
+
+
+def test_a_docx_record_names_the_heading_a_chunk_sits_under(service: DocumentService) -> None:
+    record = service.extract(FIXTURES / "headings.docx", "")
+    assert record.detected_format == "docx"
+    assert record.state == "extracted"
+    hits = service.search(record.sha256, "rate it recorded")
+    assert len(hits) == 1
+    assert "heading:3" in hits[0].boundaries
+    assert "paragraph:5" in hits[0].boundaries
+
+
+def test_xlsx_rows_name_their_sheet_and_cell_range() -> None:
+    extraction = extract_xlsx(fixture("two-sheets.xlsx"), "two-sheets.xlsx", Limits())
+    rows = [boundary for boundary in extraction.boundaries if boundary.kind == "row"]
+    assert [row.label for row in rows] == [
+        "Alpha!A1:B1",
+        "Alpha!A2:B2",
+        "Beta!A1:B1",
+        "Beta!A2:B2",
+    ]
+    assert tiles(extraction, "row")
+
+
+def test_an_xlsx_record_carries_the_sheet_and_the_range(service: DocumentService) -> None:
+    record = service.extract(FIXTURES / "two-sheets.xlsx", "")
+    sheets = [boundary for boundary in record.boundaries if boundary.kind == "sheet"]
+    rows = [boundary for boundary in record.boundaries if boundary.kind == "row"]
+    assert [sheet.label for sheet in sheets] == ["Alpha", "Beta"]
+    assert [row.label for row in rows][0] == "Alpha!A1:B1"
+    assert [row.label for row in rows][-1] == "Beta!A2:B2"
+
+
+def test_a_pptx_record_carries_one_boundary_per_slide(service: DocumentService) -> None:
+    record = service.extract(FIXTURES / "two-slides.pptx", "")
+    slides = [boundary for boundary in record.boundaries if boundary.kind == "slide"]
+    assert [slide.index for slide in slides] == [1, 2]
+    assert [slide.label for slide in slides] == ["Placement", "Depth"]
+
+
+@requires_pypdf
+def test_a_text_pdf_record_carries_one_boundary_per_page(service: DocumentService) -> None:
+    """The record is where a page reference is read back, so the proof reads it there."""
+    record = service.extract(FIXTURES / "text.pdf", "application/pdf")
+    pages = [boundary for boundary in record.boundaries if boundary.kind == "page"]
+    assert [page.index for page in pages] == [1, 2]
+    assert pages[0].char_end == pages[1].char_start
+    assert record.state == "extracted"
+    assert record.requires_ocr == ()
+    first = service.search(record.sha256, "The first page")
+    second = service.search(record.sha256, "The second page")
+    assert first[0].boundaries == ("page:1",)
+    assert second[0].boundaries == ("page:2",)
+
+
+@requires_pypdf
+def test_an_image_only_pdf_records_the_ocr_required_state(service: DocumentService) -> None:
+    """An empty extraction states its reason rather than reporting a complete one."""
+    record = service.extract(FIXTURES / "scan.pdf", "application/pdf")
+    assert record.state == "ocr_required"
+    assert record.requires_ocr == (1,)
+    assert record.characters == 0
+    assert record.chunks == ()
+    assert service.record(record.sha256).state == "ocr_required"
+
+
+@requires_pypdf
+def test_the_upload_route_answers_the_ocr_required_state(service: DocumentService) -> None:
+    response = handle_upload(
+        service,
+        request(
+            "POST",
+            DOCUMENTS_ROUTE,
+            fixture("scan.pdf"),
+            {"content-type": "application/pdf", "x-filename": "scan.pdf"},
+        ),
+    )
+    assert response.status == 201
+    body = payload(response)
+    assert body["state"] == "ocr_required"
+    assert body["requires_ocr"] == [1]
+
+
+def test_a_text_record_states_that_it_extracted(service: DocumentService) -> None:
+    record = service.extract(FIXTURES / "plain.txt", "text/plain")
+    assert record.state == "extracted"
+    assert record.extractor_version == "2"
+    assert record.schema == "qwen-apu-document-record-2"
+
+
+def test_a_schema_one_record_reads_back_with_the_state_its_numbers_imply(
+    service: DocumentService, tmp_path: Path
+) -> None:
+    """A record stored before the field existed stays self-consistent when it is read."""
+    payload: dict[str, object] = {
+        "schema": "qwen-apu-document-record-1",
+        "sha256": "0" * 64,
+        "filename": "scan.pdf",
+        "media_type": "application/pdf",
+        "detected_format": "pdf",
+        "extractor": "qwen-apu-document-worker",
+        "extractor_version": "1",
+        "source_bytes": 1024,
+        "characters": 0,
+        "approximate_tokens": 0,
+        "approximate_tokens_basis": "chars/4",
+        "boundaries": [],
+        "chunks": [],
+        "warnings": [],
+        "requires_ocr": [1],
+    }
+    assert DocumentRecord.from_json(payload).state == "ocr_required"
+    payload["requires_ocr"] = []
+    payload["characters"] = 12
+    assert DocumentRecord.from_json(payload).state == "extracted"

@@ -2,13 +2,22 @@
 
     printf '%s' "$job" | python -m qwen_apu.tools.document_worker
 
-The job is one JSON object naming the input path, the original filename, the
-media type, the output directory, and the limits; the worker writes
-`<sha256 of the source>.json` and `chunks/<n>.txt` under that directory and
-exits 0, or prints one refusal object and exits 1. Nothing else crosses the
-boundary, so the process that owns the job decides the deadline, the working
-directory, and the environment while this process decides nothing about its
-own lifetime.
+The job is one JSON object naming a mode. `extract`, the default, names the
+input path, the original filename, the media type, the output directory, and
+the limits; the worker writes `<sha256 of the source>.json` and
+`chunks/<n>.txt` under that directory and exits 0, or prints one refusal
+object and exits 1. `search` names a stored document's directory, its digest,
+the query, and the search bounds; the worker prints every match as a chunk
+index and a character span. Nothing else crosses the boundary, so the process
+that owns the job decides the deadline, the working directory, and the
+environment while this process decides nothing about its own lifetime.
+
+A regular expression runs here rather than in the gateway because this
+process is the one that can be ended. `arm_wall_clock` raises SIGALRM at its
+default disposition, which the kernel delivers into a match that reaches no
+bytecode boundary, and `apply_limits` adds the CPU and address-space caps;
+the pattern's own size and group count and the candidate-chunk count refuse
+ahead of the first match. Every one of those answers `search_bounded`.
 
 The limits apply before the input is read, which is the order that makes them
 bounds rather than reports. `resource.setrlimit` caps address space, CPU time,
@@ -24,17 +33,30 @@ declaration to expand.
 
 Each extractor returns the text, the boundaries that tile it, the format it
 detected, and its warnings. A boundary is `(kind, index, char_start,
-char_end)` over the extracted text: pages for a PDF, paragraphs and pages for
-a DOCX, sheets and rows for a spreadsheet, slides for a presentation,
-headings for HTML and Markdown, rows for CSV and TSV. Chunking walks the
-primary kind's boundaries and fills up to 1200 characters, so a chunk ends on
-a page, a paragraph, or a row wherever one lands inside the budget and cuts
-at the last line break otherwise.
+char_end, label)` over the extracted text, and each format states its own
+vocabulary:
+
+| Format | Primary kind | Every kind it records | What a label carries |
+| --- | --- | --- | --- |
+| text, source, json | line | line | -- |
+| markdown | heading | heading | the heading line |
+| html | heading | heading | the heading text |
+| csv, tsv | row | sheet, row | the file stem on the sheet |
+| docx | paragraph | page, heading, paragraph | the heading's own text |
+| xlsx | sheet | sheet, row | the sheet name, and `Sheet!A1:B1` on a row |
+| pptx | slide | slide | the slide's first line |
+| pdf | page | page | -- |
+
+Chunking walks the primary kind's boundaries and fills up to 1200
+characters, so a chunk ends on a page, a paragraph, or a row wherever one
+lands inside the budget and cuts at the last line break otherwise.
 
 A PDF page whose extracted text is empty while the page's resources name an
 image XObject is reported through `requires_ocr`, which carries the page
 numbers. The document still records every other page's text, so a mixed PDF
-answers with what it has beside the list of what it cannot read.
+answers with what it has beside the list of what it cannot read; a document
+that yielded no text at all states `ocr_required` in the record's `state`,
+which is what separates a scan from a success over an empty document.
 """
 
 from __future__ import annotations
@@ -47,7 +69,9 @@ import json
 import os
 import re
 import resource
+import signal
 import sys
+import time
 import zipfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -57,8 +81,23 @@ from typing import Any, cast
 from xml.etree import ElementTree
 
 WORKER_NAME = "qwen-apu-document-worker"
-WORKER_VERSION = "1"
-RECORD_SCHEMA = "qwen-apu-document-record-1"
+# The version a record carries names what the extractors record, so heading
+# boundaries on a DOCX, cell ranges on a spreadsheet row, and the extraction
+# state move it together with the schema.
+WORKER_VERSION = "2"
+RECORD_SCHEMA = "qwen-apu-document-record-2"
+
+# What one extraction established about its source. A record whose text is
+# blank while its pages carry images states `ocr_required` rather than
+# reporting an empty extraction as a complete one.
+STATE_EXTRACTED = "extracted"
+STATE_OCR_REQUIRED = "ocr_required"
+
+
+def state_of(requires_ocr: Sequence[int], characters: int) -> str:
+    """The state one pair of numbers reports: pages needing OCR and no characters."""
+    return STATE_OCR_REQUIRED if requires_ocr and characters == 0 else STATE_EXTRACTED
+
 
 CHUNK_MAX_CHARS = 1200
 TOKEN_ESTIMATE_CHARS = 4
@@ -73,6 +112,17 @@ DEFAULT_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_ARCHIVE_MEMBERS = 512
 
+MODE_EXTRACT = "extract"
+MODE_SEARCH = "search"
+# The one name every search bound answers with, whether the pattern, the
+# candidate chunks, or the clock is what it met.
+SEARCH_BOUNDED = "search_bounded"
+DEFAULT_MAX_PATTERN_CHARS = 200
+DEFAULT_MAX_PATTERN_GROUPS = 20
+DEFAULT_MAX_CANDIDATE_CHUNKS = 2048
+DEFAULT_SEARCH_SECONDS = 5.0
+DEFAULT_MAX_SEARCH_HITS = 200
+
 WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 SPREADSHEET_NAMESPACE = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 DRAWING_NAMESPACE = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -82,6 +132,10 @@ OFFICE_RELATIONSHIP_NAMESPACE = (
 PACKAGE_RELATIONSHIP_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
 
 SLIDE_NAME_PATTERN = re.compile(r"^ppt/slides/slide(\d+)\.xml$")
+# Word names a heading paragraph by its style id, which the publishers this
+# tree reads spell `Heading1` and `Heading 1`; the outline level lives in
+# `styles.xml`, so the style id is what one part answers.
+HEADING_STYLE_PATTERN = re.compile(r"^heading\s*\d+$", re.IGNORECASE)
 DOCTYPE_PATTERN = re.compile(rb"<!DOCTYPE", re.IGNORECASE)
 HTML_BLOCK_TAGS = frozenset(
     {"p", "div", "li", "tr", "br", "section", "article", "header", "footer", "blockquote", "pre"}
@@ -163,6 +217,10 @@ class ExtractionRefused(Exception):
         self.message = message
 
 
+class SearchBounded(ExtractionRefused):
+    """One search bound met, which the caller reads by its own name."""
+
+
 @dataclass(frozen=True, slots=True)
 class Limits:
     """The five caps one job runs under, each carried from the caller's settings."""
@@ -188,6 +246,59 @@ class Limits:
 
     def to_json(self) -> dict[str, int]:
         return {name: cast(int, getattr(self, name)) for name in self.__slots__}
+
+
+def _positive_int(payload: Mapping[str, object], name: str, fallback: int) -> int:
+    raw = payload.get(name)
+    if raw is None:
+        return fallback
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise ExtractionRefused(f"{name} is not a positive integer")
+    return raw
+
+
+def _positive_float(payload: Mapping[str, object], name: str, fallback: float) -> float:
+    raw = payload.get(name)
+    if raw is None:
+        return fallback
+    if isinstance(raw, bool) or not isinstance(raw, int | float) or raw <= 0:
+        raise ExtractionRefused(f"{name} is not a positive number")
+    return float(raw)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchBounds:
+    """The four bounds one search runs under, each carried from the caller's settings."""
+
+    max_pattern_chars: int = DEFAULT_MAX_PATTERN_CHARS
+    max_pattern_groups: int = DEFAULT_MAX_PATTERN_GROUPS
+    max_candidate_chunks: int = DEFAULT_MAX_CANDIDATE_CHUNKS
+    wall_clock_seconds: float = DEFAULT_SEARCH_SECONDS
+
+    @classmethod
+    def from_json(cls, payload: Mapping[str, object]) -> SearchBounds:
+        return cls(
+            max_pattern_chars=_positive_int(
+                payload, "max_pattern_chars", DEFAULT_MAX_PATTERN_CHARS
+            ),
+            max_pattern_groups=_positive_int(
+                payload, "max_pattern_groups", DEFAULT_MAX_PATTERN_GROUPS
+            ),
+            max_candidate_chunks=_positive_int(
+                payload, "max_candidate_chunks", DEFAULT_MAX_CANDIDATE_CHUNKS
+            ),
+            wall_clock_seconds=_positive_float(
+                payload, "wall_clock_seconds", DEFAULT_SEARCH_SECONDS
+            ),
+        )
+
+    def to_json(self) -> dict[str, float]:
+        return {
+            "max_pattern_chars": self.max_pattern_chars,
+            "max_pattern_groups": self.max_pattern_groups,
+            "max_candidate_chunks": self.max_candidate_chunks,
+            "wall_clock_seconds": self.wall_clock_seconds,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +366,21 @@ class Chunk:
         )
 
 
+def _recorded_state(payload: Mapping[str, object], requires_ocr: Sequence[int]) -> str:
+    """The state a record states, or the one its own numbers imply.
+
+    A record written under schema 1 carries no `state`, and the pair that
+    field reports survives in it: pages that require OCR beside a zero
+    character count is the document that yielded nothing. Deriving it here
+    keeps a stored record self-consistent, which matters because the store
+    answers a second upload of the same bytes from the copy it already holds.
+    """
+    named = payload.get("state")
+    if isinstance(named, str) and named:
+        return named
+    return state_of(requires_ocr, int(cast(int, payload["characters"])))
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentRecord:
     """What one extraction established about one source, written beside its chunks."""
@@ -273,6 +399,7 @@ class DocumentRecord:
     chunks: tuple[Chunk, ...]
     warnings: tuple[str, ...] = ()
     requires_ocr: tuple[int, ...] = ()
+    state: str = STATE_EXTRACTED
     network_isolation: str = "unrecorded"
     schema: str = RECORD_SCHEMA
 
@@ -293,6 +420,7 @@ class DocumentRecord:
             "chunks": [chunk.to_json() for chunk in self.chunks],
             "warnings": list(self.warnings),
             "requires_ocr": list(self.requires_ocr),
+            "state": self.state,
             "network_isolation": self.network_isolation,
         }
 
@@ -302,6 +430,7 @@ class DocumentRecord:
         chunks = cast(Sequence[Mapping[str, object]], payload.get("chunks", []))
         warnings = cast(Sequence[object], payload.get("warnings", []))
         ocr = cast(Sequence[object], payload.get("requires_ocr", []))
+        pages = tuple(int(cast(int, entry)) for entry in ocr)
         return cls(
             sha256=str(payload["sha256"]),
             filename=str(payload["filename"]),
@@ -316,7 +445,8 @@ class DocumentRecord:
             boundaries=tuple(Boundary.from_json(entry) for entry in boundaries),
             chunks=tuple(Chunk.from_json(entry) for entry in chunks),
             warnings=tuple(str(entry) for entry in warnings),
-            requires_ocr=tuple(int(cast(int, entry)) for entry in ocr),
+            requires_ocr=pages,
+            state=_recorded_state(payload, pages),
             network_isolation=str(payload.get("network_isolation", "unrecorded")),
             schema=str(payload.get("schema", RECORD_SCHEMA)),
         )
@@ -332,6 +462,15 @@ class Extraction:
     detected_format: str
     warnings: tuple[str, ...] = ()
     requires_ocr: tuple[int, ...] = ()
+
+    def state(self) -> str:
+        """`ocr_required` where the text is blank and the pages carry images.
+
+        A mixed document keeps `extracted` and names its unreadable pages in
+        `requires_ocr`, because it answers with the text it holds; a document
+        that yielded nothing states the reason instead.
+        """
+        return state_of(self.requires_ocr, len(self.text.strip()))
 
 
 # --- limits ------------------------------------------------------------------
@@ -655,6 +794,42 @@ def _docx_paragraph_text(paragraph: ElementTree.Element) -> str:
     return "".join(pieces)
 
 
+def _docx_heading_text(paragraph: ElementTree.Element, text: str) -> str:
+    """The paragraph's own text where its style names a heading, or an empty string."""
+    properties = paragraph.find(qualified(WORD_NAMESPACE, "pPr"))
+    if properties is None:
+        return ""
+    style = properties.find(qualified(WORD_NAMESPACE, "pStyle"))
+    if style is None:
+        return ""
+    named = style.get(qualified(WORD_NAMESPACE, "val"), "")
+    return text if HEADING_STYLE_PATTERN.match(named) else ""
+
+
+def _sections(starts: Sequence[tuple[int, str]], length: int) -> list[Boundary]:
+    """Heading boundaries spanning each start to the next, tiling the whole text.
+
+    A document whose text opens before its first heading takes an unlabeled
+    section at zero, the shape `extract_markdown` and `extract_html` both
+    record, so one covering rule answers a heading query across three formats.
+    """
+    opened = list(starts)
+    if not opened:
+        return []
+    if opened[0][0] > 0:
+        opened.insert(0, (0, ""))
+    return [
+        Boundary(
+            "heading",
+            index,
+            start,
+            opened[index][0] if index < len(opened) else length,
+            label,
+        )
+        for index, (start, label) in enumerate(opened, start=1)
+    ]
+
+
 def _docx_breaks_page(paragraph: ElementTree.Element) -> bool:
     for node in paragraph.iter():
         if node.tag == qualified(WORD_NAMESPACE, "lastRenderedPageBreak"):
@@ -674,6 +849,11 @@ def extract_docx(data: bytes, filename: str, limits: Limits) -> Extraction:
     that paragraph's own start. A break sharing its paragraph with text puts
     the boundary one paragraph early, which the extraction records as a warning
     rather than silently relocating.
+
+    A paragraph whose style names a heading opens a heading section that runs
+    to the next one, so a hit reports the heading it sits under beside the
+    paragraph that holds it. Chunking stays on the paragraphs, which is what
+    keeps a chunk edge at a paragraph rather than at a section.
     """
     warnings: list[str] = []
     archive = open_archive(data, limits)
@@ -684,6 +864,7 @@ def extract_docx(data: bytes, filename: str, limits: Limits) -> Extraction:
         raise ExtractionRefused("word/document.xml carries no body")
     paragraphs: list[Boundary] = []
     pages: list[Boundary] = []
+    headings: list[tuple[int, str]] = []
     pieces: list[str] = []
     position = 0
     page_start = 0
@@ -702,6 +883,9 @@ def extract_docx(data: bytes, filename: str, limits: Limits) -> Extraction:
             page_index += 1
         if not text:
             continue
+        heading = _docx_heading_text(paragraph, text)
+        if heading:
+            headings.append((position, heading))
         line = text + "\n"
         pieces.append(line)
         paragraphs.append(Boundary("paragraph", paragraph_index, position, position + len(line)))
@@ -711,7 +895,7 @@ def extract_docx(data: bytes, filename: str, limits: Limits) -> Extraction:
     pages.append(Boundary("page", page_index, page_start, len(whole)))
     return Extraction(
         text=whole,
-        boundaries=(*pages, *paragraphs),
+        boundaries=(*pages, *_sections(headings, len(whole)), *paragraphs),
         primary_kind="paragraph",
         detected_format="docx",
         warnings=tuple(warnings),
@@ -780,8 +964,32 @@ def _cell_text(cell: ElementTree.Element, strings: Sequence[str], warnings: list
     return value.text or "" if value is not None else ""
 
 
+def _row_range(sheet: str, row: ElementTree.Element) -> str:
+    """The row's label: `Sheet!A1:B1` from the cells' own references.
+
+    The cells carry the references, so a sparse row reports the range it
+    actually holds; a row whose cells name none falls back to the sheet and
+    the row number the `r` attribute states.
+    """
+    references = [
+        reference
+        for reference in (
+            cell.get("r", "") for cell in row.findall(qualified(SPREADSHEET_NAMESPACE, "c"))
+        )
+        if reference
+    ]
+    if references:
+        return f"{sheet}!{references[0]}:{references[-1]}"
+    return f"{sheet}!{row.get('r', '')}"
+
+
 def extract_xlsx(data: bytes, filename: str, limits: Limits) -> Extraction:
-    """XLSX: every sheet the workbook names, rendered as tab-separated rows."""
+    """XLSX: every sheet the workbook names, rendered as tab-separated rows.
+
+    A sheet boundary carries its name and a row boundary carries the cell
+    range it spans, so a hit inside a spreadsheet cites `Alpha!A2:B2` rather
+    than a character offset into a tab-separated rendering.
+    """
     warnings: list[str] = []
     archive = open_archive(data, limits)
     strings = _shared_strings(archive, limits)
@@ -798,13 +1006,13 @@ def extract_xlsx(data: bytes, filename: str, limits: Limits) -> Extraction:
             continue
         root = parse_xml(read_member(archive, path, limits), path)
         for row in root.iter(qualified(SPREADSHEET_NAMESPACE, "row")):
-            cells = [
-                _cell_text(cell, strings, warnings)
-                for cell in row.findall(qualified(SPREADSHEET_NAMESPACE, "c"))
-            ]
+            found = row.findall(qualified(SPREADSHEET_NAMESPACE, "c"))
+            cells = [_cell_text(cell, strings, warnings) for cell in found]
             line = "\t".join(cells) + "\n"
             pieces.append(line)
-            rows.append(Boundary("row", row_index, position, position + len(line)))
+            rows.append(
+                Boundary("row", row_index, position, position + len(line), _row_range(name, row))
+            )
             position += len(line)
             row_index += 1
         sheets.append(Boundary("sheet", sheet_index, start, position, name))
@@ -1061,6 +1269,153 @@ def approximate_tokens(characters: int) -> int:
     return -(-characters // TOKEN_ESTIMATE_CHARS)
 
 
+# --- search -------------------------------------------------------------------
+
+
+def compile_query(query: str, *, regex: bool, bounds: SearchBounds) -> re.Pattern[str]:
+    """Compile one query and bound what the compiled pattern carries.
+
+    A literal query escapes into the same engine, so one matcher answers both
+    forms and a literal never carries a metacharacter of its own. CPython
+    publishes no size for the compiled program, so the bound reads the two
+    measures the compiled pattern does publish -- the source it holds and the
+    groups it captures -- which are what a nested quantifier grows. The source
+    length is read ahead of the compile, since `re.compile` leaves a pattern's
+    own source unchanged and compiling a refused pattern spends the process
+    that is about to refuse it.
+    """
+    if not query:
+        raise ExtractionRefused("the query is empty")
+    if regex and len(query) > bounds.max_pattern_chars:
+        raise SearchBounded(
+            f"the pattern is {len(query)} characters, past the "
+            f"{bounds.max_pattern_chars}-character bound"
+        )
+    try:
+        pattern = re.compile(query if regex else re.escape(query))
+    except re.error as error:
+        raise ExtractionRefused(f"the query is not a valid regular expression: {error}") from None
+    if regex:
+        if pattern.groups > bounds.max_pattern_groups:
+            raise SearchBounded(
+                f"the pattern captures {pattern.groups} groups, past the "
+                f"{bounds.max_pattern_groups}-group bound"
+            )
+    return pattern
+
+
+def arm_wall_clock(seconds: float) -> None:
+    """Bound this process's wall clock with a signal the kernel delivers itself.
+
+    `_sre` holds the interpreter through one match and reaches no bytecode
+    boundary, so a handler installed through `signal.signal` runs after the
+    match returns -- which is what a catastrophically backtracking pattern
+    never does. SIGALRM at its default disposition terminates the process
+    instead, so the bound holds inside the match and the parent reads the
+    signal from the exit status.
+    """
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+
+
+def disarm_wall_clock() -> None:
+    """Drop the timer before the answer is written, so the report outlives the bound."""
+    signal.setitimer(signal.ITIMER_REAL, 0.0)
+
+
+def search_chunks(
+    directory: Path,
+    digest: str,
+    pattern: re.Pattern[str],
+    bounds: SearchBounds,
+    max_hits: int,
+) -> list[dict[str, int]]:
+    """Every match over one stored document's chunks, in chunk order.
+
+    The chunk count refuses ahead of the first match, and the clock is read
+    between chunks, so a pattern that is merely slow ends with a refusal
+    object naming the bound; one that never returns from a single chunk ends
+    on the timer `arm_wall_clock` set.
+    """
+    record = read_record(directory, digest)
+    if len(record.chunks) > bounds.max_candidate_chunks:
+        raise SearchBounded(
+            f"the document holds {len(record.chunks)} chunks, past the "
+            f"{bounds.max_candidate_chunks}-chunk bound"
+        )
+    deadline = time.monotonic() + bounds.wall_clock_seconds
+    matches: list[dict[str, int]] = []
+    for chunk in record.chunks:
+        if time.monotonic() >= deadline:
+            raise SearchBounded(f"the search passed its {bounds.wall_clock_seconds:g}-second bound")
+        body = (directory / "chunks" / f"{chunk.index}.txt").read_text(encoding="utf-8")
+        for found in pattern.finditer(body):
+            if found.end() <= found.start():
+                continue
+            matches.append(
+                {
+                    "chunk_index": chunk.index,
+                    "char_start": found.start(),
+                    "char_end": found.end(),
+                }
+            )
+            if len(matches) >= max_hits:
+                return matches
+    return matches
+
+
+@dataclass(frozen=True, slots=True)
+class SearchJob:
+    """One search as the caller states it on stdin."""
+
+    directory: Path
+    digest: str
+    query: str
+    regex: bool = False
+    bounds: SearchBounds = field(default_factory=SearchBounds)
+    limits: Limits = field(default_factory=Limits)
+    max_hits: int = DEFAULT_MAX_SEARCH_HITS
+
+    @classmethod
+    def from_json(cls, payload: Mapping[str, object]) -> SearchJob:
+        directory = payload.get("document_directory")
+        digest = payload.get("digest")
+        query = payload.get("query")
+        if not isinstance(directory, str) or not directory:
+            raise ExtractionRefused("document_directory is absent or is not a nonempty string")
+        if not isinstance(digest, str) or not digest:
+            raise ExtractionRefused("digest is absent or is not a nonempty string")
+        if not isinstance(query, str) or not query:
+            raise ExtractionRefused("query is absent or is not a nonempty string")
+        regex = payload.get("regex", False)
+        if not isinstance(regex, bool):
+            raise ExtractionRefused("regex is not a boolean")
+        raw_bounds = payload.get("bounds", {})
+        raw_limits = payload.get("limits", {})
+        if not isinstance(raw_bounds, dict) or not isinstance(raw_limits, dict):
+            raise ExtractionRefused("bounds and limits are JSON objects")
+        return cls(
+            directory=Path(directory),
+            digest=digest,
+            query=query,
+            regex=regex,
+            bounds=SearchBounds.from_json(cast(Mapping[str, object], raw_bounds)),
+            limits=Limits.from_json(cast(Mapping[str, object], raw_limits)),
+            max_hits=_positive_int(payload, "max_hits", DEFAULT_MAX_SEARCH_HITS),
+        )
+
+
+def run_search(job: SearchJob) -> int:
+    """Run one search under every bound and print the matches it found."""
+    apply_limits(job.limits)
+    pattern = compile_query(job.query, regex=job.regex, bounds=job.bounds)
+    arm_wall_clock(job.bounds.wall_clock_seconds)
+    matches = search_chunks(job.directory, job.digest, pattern, job.bounds, job.max_hits)
+    disarm_wall_clock()
+    print(json.dumps({"status": "searched", "matches": matches}))
+    return 0
+
+
 # --- the job ------------------------------------------------------------------
 
 
@@ -1138,6 +1493,7 @@ def run(job: Job) -> DocumentRecord:
         chunks=tuple(chunks),
         warnings=extraction.warnings,
         requires_ocr=extraction.requires_ocr,
+        state=extraction.state(),
         network_isolation=job.network_isolation,
     )
     write_outputs(job.output_directory, record, extraction.text)
@@ -1172,13 +1528,14 @@ def read_chunks(directory: Path, record: DocumentRecord) -> Iterator[tuple[Chunk
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Read one job on stdin, extract, and report the record or the refusal."""
+    """Read one job on stdin, run its mode, and report the answer or the refusal."""
     arguments = list(sys.argv[1:] if argv is None else argv)
     if arguments:
         print(
             f"usage: {os.path.basename(sys.argv[0])} < job.json\n"
-            "The job is one JSON object naming input_path, filename, media_type, "
-            "output_directory, and limits.",
+            "An extract job names input_path, filename, media_type, output_directory, "
+            "and limits; a search job names mode, document_directory, digest, query, "
+            "regex, and bounds.",
             file=sys.stderr,
         )
         return 2
@@ -1186,9 +1543,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload: object = json.loads(sys.stdin.read())
         if not isinstance(payload, dict):
             raise ExtractionRefused("the job is not a JSON object")
-        job = Job.from_json(cast(Mapping[str, object], payload))
+        body = cast(Mapping[str, object], payload)
+        mode = body.get("mode", MODE_EXTRACT)
+        if mode == MODE_SEARCH:
+            return run_search(SearchJob.from_json(body))
+        if mode != MODE_EXTRACT:
+            raise ExtractionRefused(f"{mode!r} names no mode this worker runs")
+        job = Job.from_json(body)
         apply_limits(job.limits)
         record = run(job)
+    except SearchBounded as bounded:
+        print(
+            json.dumps({"status": "refused", "refusal": SEARCH_BOUNDED, "error": bounded.message})
+        )
+        return 1
     except ExtractionRefused as refusal:
         print(json.dumps({"status": "refused", "error": refusal.message}))
         return 1
@@ -1203,6 +1571,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "record": f"{record.sha256}.json",
                 "chunks": len(record.chunks),
                 "requires_ocr": list(record.requires_ocr),
+                "state": record.state,
             }
         )
     )

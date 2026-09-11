@@ -284,10 +284,73 @@ Plain text, Markdown, CSV, JSON, OOXML, and PDF extract; pypdf is pinned at
 venv without it extracts every other format. The routes are
 `POST /api/documents`, `GET /api/documents/<digest>`, and
 `POST /api/documents/<digest>/search`, each behind the session cookie.
+
+`POST /api/documents` is the one route declared `streams=True`: `web/app.py`
+hands it `Request.stream` over the bytes still in the socket and reads no
+body of its own, so `REQUEST_BODY_BYTE_CAP` keeps bounding every other route
+while `stage_body` copies this one into `<tmp>/documents/upload-<token>/`
+under the route's bound, block by block. A literal search scans the stored
+chunks in the gateway with `str.find`, which backtracks over nothing; a
+regular expression runs in the worker, where a bound can end the process.
+
+| Bound | Field | Default | Where it applies | What it answers |
+| --- | --- | ---: | --- | --- |
+| request body | `DocumentSettings.max_request_bytes` | 64 MiB | `stage_body`, at the declaration and again at each block | 413 |
+| extracted file | `DocumentSettings.max_upload_bytes` | 32 MiB | `DocumentService.extract`, on the staged file | 413 |
+| worker input | `Limits.max_input_bytes` | 32 MiB | `read_source`, before the read | worker refusal |
+| extraction deadline | `DocumentSettings.deadline_seconds` | 120 s | the parent, killing the process group | 504 |
+| pattern source | `SearchBounds.max_pattern_chars` | 200 | `compile_query`, ahead of the compile | `search_bounded` |
+| pattern groups | `SearchBounds.max_pattern_groups` | 20 | `compile_query`, on the compiled pattern | `search_bounded` |
+| candidate chunks | `SearchBounds.max_candidate_chunks` | 2048 | the regex path alone: the gateway ahead of the spawn, the worker ahead of the first match | `search_bounded` |
+| search wall clock | `SearchBounds.wall_clock_seconds` | 5 s | `arm_wall_clock` in the worker: SIGALRM at its default disposition | `search_bounded` |
+| hits | `DocumentSettings.max_search_hits` | 200 | the worker and the gateway | truncation |
+
+Every search bound belongs to the pattern rather than to the document, so a
+literal scan of a stored document is always admitted: 2048 chunks is about
+2.4 MB of text where `max_upload_bytes` admits 32 MiB, and a shared bound
+would store a document and then refuse every search of it. The request bound
+sits above the file cap because multipart framing rides between them, and `REQUEST_DEADLINE_SECONDS` (60 s) is the connection's own
+timeout, so a link slow enough to spend it ends an upload before 64 MiB does.
+`(a+)+$` against a thousand-character run answers `search_bounded` in 1.06 s
+against a 1-second bound: `_sre` reaches no bytecode boundary inside a match,
+so a Python-level handler never runs and the kernel's own default disposition
+for SIGALRM is what ends it.
+
+Each format states the boundary vocabulary a citation reads, and every
+fixture is written from its declaration in
+`tests/fixtures/documents/generate_fixtures.py`:
+
+| Format | Primary kind | Boundary kinds | Label | Fixture |
+| --- | --- | --- | --- | --- |
+| text, source, json | line | line | -- | `plain.txt`, `sample.c`, `record.json` |
+| markdown | heading | heading | the heading line | `notes.md` |
+| html | heading | heading | the heading text | `headings.html` |
+| csv, tsv | row | sheet, row | the file stem | `rows.csv`, `rows.tsv` |
+| docx | paragraph | page, heading, paragraph | the heading's text | `two-paragraphs.docx`, `headings.docx` |
+| xlsx | sheet | sheet, row | the sheet name, `Alpha!A1:B1` on a row | `two-sheets.xlsx` |
+| pptx | slide | slide | the slide's first line | `two-slides.pptx` |
+| pdf | page | page | -- | `text.pdf`, `scan.pdf` |
+
+`DocumentRecord.state` is `ocr_required` where the text is blank while pages
+carry images and `extracted` otherwise, so `scan.pdf` reports the reason its
+text is empty rather than reporting an empty extraction as a complete one; a
+mixed document keeps `extracted` and names its unreadable pages in
+`requires_ocr`. The record schema and the worker version are both 2, and
+`from_json` derives `state` from `requires_ocr` and `characters` where a
+record carries none, so a record written under 1 reads back self-consistent
+rather than reporting a scan as extracted -- which matters because the store
+answers a second upload of the same bytes from the copy it already holds.
+
 Recorded limits: RLIMIT_CPU is proven against a spin loop rather than an
-extractor, the search regular expression runs in the gateway process against
-stored chunks, and the upload size is checked after the body is read, so the
-server's body bound is the byte limit that matters.
+extractor; the multipart file part's own headers are read from the first
+64 KiB of the staged body, so a form placing more than that ahead of the file
+refuses by name; a body longer than its own Content-Length meets the copy's
+running count rather than the declaration, which the fixture reader in
+`tests/test_tools_documents.py` proves and an HTTP client cannot reach,
+because `BodyStream` clamps every read to the declared length; and a stream
+reads a declared length alone, so an upload naming any transfer encoding with
+no `Content-Length` -- none of which `BaseHTTPRequestHandler` decodes --
+answers 411 by name rather than reading as an empty body.
 
 `bootstrap.py` installs the lock and links the source tree in sequence when
 a checkout carries both, since the lock holds the third-party dependencies
