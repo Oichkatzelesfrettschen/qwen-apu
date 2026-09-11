@@ -182,8 +182,19 @@ def sha256_file(path: Path) -> str:
 
 
 def _read_lines(path: Path) -> list[str]:
-    """Every line of a file, with arbitrary bytes preserved through decoding."""
-    return path.read_text(encoding="utf-8", errors="surrogateescape").splitlines()
+    """Every record of a file, split the way awk splits on a newline alone.
+
+    `str.splitlines` also breaks on a carriage return, a form feed, and several
+    Unicode separators, which would drop a CRLF file's `\r` out of the field
+    an awk reader compares and admit a manifest the shell authority refuses.
+    """
+    # newline="" holds the universal-newline translation off, which would
+    # otherwise rewrite a CRLF pair as the newline awk splits on.
+    with path.open(encoding="utf-8", errors="surrogateescape", newline="") as stream:
+        records = stream.read().split("\n")
+    if records and records[-1] == "":
+        records.pop()
+    return records
 
 
 def _fields(line: str) -> list[str]:

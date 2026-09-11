@@ -219,24 +219,37 @@ def shell_environment(**overrides: str) -> dict[str, str]:
     return environment
 
 
-def shell_verify(root: Path, name: str, **overrides: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [SH or "sh", str(VERIFIER), str(root), name],
-        capture_output=True,
-        text=True,
-        env=shell_environment(**overrides),
-        check=False,
+@dataclass(frozen=True)
+class ShellResult:
+    """One shell authority's exit status and streams, decoded verbatim.
+
+    The streams are decoded rather than captured through `text=True`, whose
+    universal-newline translation would rewrite a carriage return the shell
+    printed inside a message field.
+    """
+
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def run_shell(argv: list[str], **overrides: str) -> ShellResult:
+    completed = subprocess.run(
+        argv, capture_output=True, env=shell_environment(**overrides), check=False
+    )
+    return ShellResult(
+        returncode=completed.returncode,
+        stdout=completed.stdout.decode("utf-8", errors="surrogateescape"),
+        stderr=completed.stderr.decode("utf-8", errors="surrogateescape"),
     )
 
 
-def shell_resolve(root: Path, **overrides: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [SH or "sh", str(RESOLVER), str(root)],
-        capture_output=True,
-        text=True,
-        env=shell_environment(**overrides),
-        check=False,
-    )
+def shell_verify(root: Path, name: str, **overrides: str) -> ShellResult:
+    return run_shell([SH or "sh", str(VERIFIER), str(root), name], **overrides)
+
+
+def shell_resolve(root: Path, **overrides: str) -> ShellResult:
+    return run_shell([SH or "sh", str(RESOLVER), str(root)], **overrides)
 
 
 def refuses_alike(fixture: Fixture) -> str:
@@ -1227,4 +1240,18 @@ def test_indented_section_reaches_one_parser_alone(fixture: Fixture) -> None:
     )
     assert refuses_alike(fixture) == (
         "bundle preset router-presets.ini disagrees with the bundled ledger"
+    )
+
+
+def test_carriage_return_stays_inside_the_compared_field(fixture: Fixture) -> None:
+    # awk splits records on a newline alone, so a CRLF manifest carries the
+    # carriage return into the field it compares; a reader splitting on every
+    # line boundary would admit the bundle this refuses.
+    fixture.manifest.write_bytes(
+        fixture.manifest.read_bytes().replace(
+            b"maximum_ledger_count\t2\n", b"maximum_ledger_count\t2\r\n"
+        )
+    )
+    assert refuses_alike(fixture) == (
+        "bundle ledger maximum count 2 disagrees with the declared 2\r"
     )
