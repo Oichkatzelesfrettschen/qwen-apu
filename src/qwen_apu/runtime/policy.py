@@ -626,6 +626,117 @@ def _parse_preset(path: Path, refusals: list[str]) -> list[_PresetSection]:
     return sections
 
 
+@dataclass(frozen=True, slots=True)
+class PresetSectionView:
+    """One router preset section, read once for every caller that needs it.
+
+    The INI under `--models-preset` is the deployment's own claim about what it
+    serves, and three callers act on it: the policy validates each section's
+    tuple against the registry, the launch selects the largest resident subject
+    for the memory preflight, and the gateway roster names the sections a
+    picker may offer. One reader keeps those three answering from the same
+    scan.
+    """
+
+    name: str
+    values: Mapping[str, str]
+    counts: Mapping[str, int]
+
+    def value(self, key: str) -> str:
+        return self.values.get(key, "")
+
+    def count(self, key: str) -> int:
+        return self.counts.get(key, 0)
+
+
+def preset_sections(path: Path | str) -> tuple[PresetSectionView, ...]:
+    """Every named section of one router preset, the `*` defaults left out.
+
+    Refusals the scan collects are raised together, the way the shell's AWK
+    reports every defective section in one run rather than the first.
+    """
+    refusals: list[str] = []
+    sections = _parse_preset(Path(path), refusals)
+    if refusals:
+        raise PolicyError(*refusals)
+    return tuple(
+        PresetSectionView(name=entry.name, values=dict(entry.values), counts=dict(entry.counts))
+        for entry in sections
+        if entry.name not in ("", "*")
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RouterSubject:
+    """The preset section whose resident bytes the memory preflight is charged.
+
+    A draft-pair section holds two checkpoints at once, since
+    `common_speculative_init_result` loads the draft path as its own model
+    beside the target rather than reusing the target's buffers, so the
+    section's subject is the sum of both artifacts.
+    """
+
+    section: str
+    model: Path
+    model_bytes: int
+    draft: Path | None
+    draft_bytes: int
+
+    @property
+    def resident_bytes(self) -> int:
+        return self.model_bytes + self.draft_bytes
+
+
+def router_preflight_subject(presets: Path | str) -> RouterSubject:
+    """The largest resident section of one preset, the subject qwen-launch.sh charges.
+
+    Router presets carry their own model and projector paths, so the largest
+    registry subject replaces any explicit single-model path: a preflight run
+    against a smaller checkpoint reports headroom for a load that never
+    happens.
+    """
+    path = Path(presets)
+    largest: RouterSubject | None = None
+    sections = preset_sections(path)
+    refusals: list[str] = []
+    for section in sections:
+        model_count = section.count("LLAMA_ARG_MODEL")
+        if model_count != 1:
+            refusals.append(
+                f"router preflight section {section.name} requires exactly one "
+                f"LLAMA_ARG_MODEL, found {model_count}"
+            )
+            continue
+        draft_count = section.count("LLAMA_ARG_SPEC_DRAFT_MODEL")
+        if draft_count > 1:
+            refusals.append(
+                f"router preflight section {section.name} carries {draft_count} "
+                "LLAMA_ARG_SPEC_DRAFT_MODEL keys"
+            )
+            continue
+        model = Path(section.value("LLAMA_ARG_MODEL"))
+        if not model.is_file():
+            raise PolicyError(f"router preflight model is not a regular file: {model}")
+        draft_text = section.value("LLAMA_ARG_SPEC_DRAFT_MODEL")
+        draft = Path(draft_text) if draft_text else None
+        if draft is not None and not draft.is_file():
+            raise PolicyError(f"router preflight draft model is not a regular file: {draft}")
+        candidate = RouterSubject(
+            section=section.name,
+            model=model,
+            model_bytes=model.stat().st_size,
+            draft=draft,
+            draft_bytes=draft.stat().st_size if draft is not None else 0,
+        )
+        if largest is None or candidate.resident_bytes > largest.resident_bytes:
+            largest = candidate
+    if refusals:
+        raise PolicyError(*refusals)
+    if largest is None:
+        raise PolicyError("router preflight carries no model section")
+    return largest
+
+
 # ---------------------------------------------------------------------------
 # validate_router_preset_tuples
 # ---------------------------------------------------------------------------
