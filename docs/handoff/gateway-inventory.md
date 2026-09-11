@@ -144,12 +144,25 @@ runs the router lane; the gateway executes both web tools itself.
 ## The web executor: `POST /api/tools`
 
 `tools/web.py` answers one route with two tools, and `tools/registry.py`
-answers `GET /api/tools` beside it. Availability is computed rather than
-declared: `web_search` and `read_url` read `served` where
-`web/assemble.py` resolved a `remote/web-profiles.tsv` row whose provider is
-`searxng` and whose `searxng_url` is set, and `planned` otherwise, so a
-gateway serving chat alone states the two rows as planned rather than
-answering a refusal at the first call.
+answers `GET /api/tools` beside it. Availability and the request schema are
+computed rather than declared: `web_search` and `read_url` read `served` and
+carry a `definition` where `web/assemble.py` resolved a
+`remote/web-profiles.tsv` row whose provider is `searxng` and whose
+`searxng_url` is set, and read `planned` carrying none otherwise, so a gateway
+serving chat alone states the two rows as planned rather than answering a
+refusal at the first call.
+
+One answer serves both readers. `static/js/tools.js` composes a turn's
+`body.tools` from the `tools` array of that `qwen.tool-registry` document,
+filtering on `tool_id` and `availability` and stripping the `authorization`
+property before a definition reaches a request; `static/js/models.js` reads the
+same document to decide whether a roster row can act on the Web toggle. The
+schema states what this executor serves rather than what the tool lane admits,
+so `published_after`, `published_before`, and `max_age_hours` are absent: the
+SearXNG JSON API carries no publication interval and
+`SearxngProvider.refuse_unhonored_arguments` refuses all three. The image
+lane's own listing in `static/js/artifacts.js` still reads the router's array
+shape, which is the one listing consumer this pass leaves on the MCP child.
 
 | Route | Body | Authority | Answer |
 | --- | --- | --- | --- |
