@@ -29,16 +29,26 @@ Environment variables this module reads, under the shell's own names:
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from qwen_apu.config.models import load_model_artifacts, model_by_id
+from qwen_apu.install.models import model_plan
+from qwen_apu.runtime.deployment import ActiveDeployment, DeploymentError, resolve_active
 from qwen_apu.runtime.environment import radv_icd
+from qwen_apu.runtime.paths import RuntimePaths
+from qwen_apu.tools.approvals import signing_key_digest
+from qwen_apu.tools.ledger import ToolError
 
+DIGEST_CHUNK_BYTES = 1 << 20
 MIB_BYTES = 1048576
 DEFAULT_DESKTOP_RESERVE_MIB = 4096
 DEFAULT_VULKAN_MARGIN_MIB = 512
@@ -255,3 +265,192 @@ def build_report(
         vulkan_headroom="short" if vulkan_surplus < 0 else "ample",
         vulkan_surplus_bytes=vulkan_surplus,
     )
+
+
+# ---------------------------------------------------------------------------
+# The three refusals that precede a child: weights, signing key, deployment
+# ---------------------------------------------------------------------------
+#
+# Four windows of the shadow pass ended on the command side, and each one names
+# a precondition the launch assumed rather than reported: the checkpoint linked
+# under a directory the root does not resolve, the signing key absent, the
+# signing key random bytes where the reader requires UTF-8 text, and prompts
+# sent into a server that had not loaded. The first three are decidable before
+# a process starts, so they refuse here, by name, with nothing written.
+
+
+class ModelRefused(PreflightError):
+    """The registry, the runtime root, or the artifact ledger refuses the weights."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status=1)
+
+
+class SigningKeyRefused(PreflightError):
+    """The web token signing key fails a rule the approvals reader applies."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, status=1)
+
+
+class DeploymentRefused(PreflightError):
+    """The activated bundle is absent, incomplete, or fails its own verification."""
+
+    def __init__(self, message: str, details: Sequence[str] = ()) -> None:
+        super().__init__(message, status=1)
+        self.details: tuple[str, ...] = tuple(details)
+
+
+@dataclass(frozen=True, slots=True)
+class ModelPreflight:
+    """One checkpoint resolved from the typed registry and measured on disk.
+
+    `digest_state` is `verified` where remote/model-artifacts.tsv pins the row
+    and the file's bytes and SHA-256 both match, and `unrecorded` where the
+    ledger carries no pin for it. A derived checkpoint the appliance quantizes
+    itself has no publisher digest to compare against, so its absence is a
+    recorded skip rather than a refusal; a pin that exists and disagrees is a
+    refusal, because those are the bytes a measurement would have been read
+    against.
+    """
+
+    model_id: str
+    path: Path
+    bytes: int
+    digest_state: str
+    expected_sha256: str | None
+
+    def render(self) -> str:
+        return (
+            f"model_preflight id={self.model_id} path={self.path} bytes={self.bytes} "
+            f"digest={self.digest_state}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SigningKeyPreflight:
+    """The signing key's identity, which is the digest the broker's health reports."""
+
+    path: Path
+    sha256: str
+    mode: int
+
+    def render(self) -> str:
+        return f"signing_key_preflight path={self.path} mode={self.mode:04o} sha256={self.sha256}"
+
+
+def resolve_model(
+    paths: RuntimePaths,
+    model_id: str,
+    *,
+    model_root: Path | None = None,
+    models_path: Path | None = None,
+    artifacts_path: Path | None = None,
+) -> ModelPreflight:
+    """Resolve one registry id to a file under the runtime root and check its pin.
+
+    The path comes from `qwen_apu.install.models`, which is the one authority
+    that turns a registry row and its artifact pin into an install destination,
+    so a launch reads the same leaf a fetch wrote rather than a second
+    composition of publisher directory and filename. The resolved file is then
+    required to sit inside the model root, because a path that escapes it is a
+    checkpoint no `make install-models` placed and no ledger measured.
+    """
+    try:
+        row = model_by_id(model_id, models_path)
+    except (KeyError, ValueError, RuntimeError) as error:
+        raise ModelRefused(f"no registry row for model {model_id}: {error}") from None
+    root = model_root or paths["qwen_home_models"]
+    artifacts = {entry.model_id: entry for entry in load_model_artifacts(artifacts_path)}
+    try:
+        plan = model_plan(row, artifacts, root)
+    except RuntimeError as error:
+        raise ModelRefused(str(error)) from None
+
+    destination = plan.destination
+    if not destination.is_file():
+        raise ModelRefused(f"model {model_id} is not installed at {destination}")
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved_model = destination.resolve(strict=True)
+        resolved_model.relative_to(resolved_root)
+    except (OSError, ValueError) as error:
+        raise ModelRefused(
+            f"model {model_id} resolves outside the runtime root's model store: {error}"
+        ) from None
+
+    measured_bytes = destination.stat().st_size
+    if plan.expected_sha256 is None or plan.expected_bytes is None:
+        return ModelPreflight(model_id, destination, measured_bytes, "unrecorded", None)
+    if measured_bytes != plan.expected_bytes:
+        raise ModelRefused(
+            f"model {model_id} holds {measured_bytes} bytes against the ledger's "
+            f"{plan.expected_bytes}: {destination}"
+        )
+    measured = _sha256_file(destination)
+    if measured != plan.expected_sha256:
+        raise ModelRefused(
+            f"model {model_id} digests {measured} against the ledger's "
+            f"{plan.expected_sha256}: {destination}"
+        )
+    return ModelPreflight(model_id, destination, measured_bytes, "verified", plan.expected_sha256)
+
+
+def verify_signing_key(path: Path | str) -> SigningKeyPreflight:
+    """Apply the approvals reader's own rules to the key file, ahead of a grant.
+
+    `qwen_apu.tools.approvals.signing_key_digest` is the rule set, and calling
+    it is what keeps this check equal to the one a grant meets rather than a
+    second spelling of it: a regular file this user owns, no group or other
+    permission bit, nonempty, and UTF-8 text after the strip the HMAC key is
+    taken from. Hexadecimal is not among the rules, which one shadow window
+    established from the other side by supplying random bytes and meeting the
+    UTF-8 refusal.
+    """
+    try:
+        digest = signing_key_digest(path)
+    except ToolError as error:
+        raise SigningKeyRefused(f"{error}: {path}") from None
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    return SigningKeyPreflight(Path(path), digest, mode)
+
+
+def verify_deployment(
+    deployment_root: Path, *, registry_path: Path | None = None
+) -> ActiveDeployment:
+    """Resolve and verify the activated bundle, and require every member it names.
+
+    `resolve_active` takes the activation lock shared and verifies the bundle
+    whole, so a launch that passes here holds a bundle whose manifest, ledger,
+    and server digests were checked under the lock. The member check that
+    follows names which file an incomplete bundle is missing, since the bundle
+    verification reports the contract and a caller acts on the path.
+    """
+    try:
+        active = resolve_active(deployment_root, registry_path=registry_path)
+    except DeploymentError as error:
+        raise DeploymentRefused(str(error), error.details) from None
+    missing = [
+        str(member)
+        for member in (active.server, active.ledger, active.manifest)
+        if not member.is_file()
+    ]
+    if missing:
+        raise DeploymentRefused(f"deployment {active.name} is incomplete: {', '.join(missing)}")
+    if not os.access(active.server, os.X_OK):
+        raise DeploymentRefused(
+            f"deployment {active.name} server is not executable: {active.server}"
+        )
+    return active
+
+
+def _sha256_file(path: Path) -> str:
+    """The SHA-256 of one file, streamed so a 5 GiB checkpoint holds no buffer."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while True:
+            chunk = stream.read(DIGEST_CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()

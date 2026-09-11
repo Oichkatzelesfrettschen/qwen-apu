@@ -50,7 +50,14 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
-from .health import ListenerAbsent, health_is_serving, probe_listener, wait_ready
+from .health import (
+    DEFAULT_MODELS_PATH,
+    ListenerAbsent,
+    health_is_serving,
+    probe_listener,
+    probe_served_models,
+    wait_ready,
+)
 from .locks import LeaseBusy, WorkloadLease, hold
 from .paths import RuntimePaths
 from .process import Owned, read_start_time, spawn, terminate
@@ -188,6 +195,13 @@ class SupervisionPlan:
     deployment: str
     profile: str
     readiness_deadline_s: float
+    # `standalone` serves one checkpoint the argv names and `router` serves
+    # every preset section behind one listener, so the two differ in what a
+    # model probe may require: the single-model argv declares one alias and the
+    # router loads one section at a time out of several.
+    mode: str = "standalone"
+    expected_models: tuple[str, ...] = ()
+    models_path: str = DEFAULT_MODELS_PATH
     log_directory: Path | None = None
     cpu_affinity: frozenset[int] | None = None
     niceness: int | None = None
@@ -198,6 +212,16 @@ class SupervisionPlan:
     @property
     def health_url(self) -> str:
         return f"http://127.0.0.1:{self.port}{self.health_path}"
+
+    @property
+    def required_models(self) -> tuple[str, ...]:
+        """The names the model probe requires, which router mode leaves empty.
+
+        A router preset admits several checkpoints and `--models-max 1` keeps
+        one resident, so requiring every section name would refuse a healthy
+        router for serving exactly what it was configured to serve.
+        """
+        return () if self.mode == "router" else self.expected_models
 
     @classmethod
     def from_json(cls, payload: Mapping[str, Any]) -> SupervisionPlan:
@@ -213,6 +237,9 @@ class SupervisionPlan:
             deployment=str(payload["deployment"]),
             profile=str(payload["profile"]),
             readiness_deadline_s=float(payload["readiness_deadline_s"]),
+            mode=str(payload.get("mode", "standalone")),
+            expected_models=tuple(str(entry) for entry in payload.get("expected_models", ())),
+            models_path=str(payload.get("models_path", DEFAULT_MODELS_PATH)),
             log_directory=Path(str(log_directory)) if log_directory else None,
             cpu_affinity=frozenset(int(entry) for entry in affinity) if affinity else None,
             niceness=int(payload["niceness"]) if payload.get("niceness") is not None else None,
@@ -318,6 +345,7 @@ class Supervisor:
             workload_lease=self.lease.environment_value,
             hazard_source=str(self.hazard_source),
             hazard_skip_reason=skip_reason or "-",
+            mode=plan.mode,
             started_utc=utc_now(),
         )
 
@@ -333,8 +361,11 @@ class Supervisor:
             cpu_affinity=set(plan.cpu_affinity) if plan.cpu_affinity else None,
             niceness=plan.niceness,
         )
+        # The supervisor owns the child from here, and the model reaches the
+        # device tens of seconds later, so process ownership and model
+        # readiness are two records rather than one.
         self.record.transition(
-            "starting",
+            "loading",
             server_pid=owned.pid,
             server_pgid=owned.pgid,
             server_start_time=owned.start_time,
@@ -359,9 +390,22 @@ class Supervisor:
                 plan, owned, primary_failure=f"readiness_refused {readiness.reason}"
             )
 
+        models = probe_served_models(
+            plan.port,
+            path=plan.models_path,
+            pid=owned.pid,
+            start_time=owned.start_time,
+            require=plan.required_models,
+        )
+        if not models.ready:
+            if self._stop.requested:
+                return self._shut_down(plan, owned, primary_failure=None)
+            return self._shut_down(plan, owned, primary_failure=f"model_refused {models.reason}")
+
         self.record.transition(
-            "running",
+            "ready",
             listener_inode=readiness.listener.inode if readiness.listener else "-",
+            served_models=models.served_models,
         )
         primary_failure = self._supervise(plan, owned, watcher)
         return self._shut_down(plan, owned, primary_failure=primary_failure)
