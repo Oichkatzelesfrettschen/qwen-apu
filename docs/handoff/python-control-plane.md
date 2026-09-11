@@ -552,6 +552,150 @@ publication marker alone, since protocol version 1 admits three actions and
 `remote/image-service.py` implements no artifact deletion, which leaves the
 retracted pair's bytes for an operator rather than for the worker's sweep.
 
+
+## Phase 10: acceptance, canary, and the application deployment
+
+Three device-free surfaces carry the cutover decision. Each writes under the
+runtime root, spawns through argv lists alone, and leaves the checkout
+untouched; the device runs they are built for belong to a window.
+
+| Component | Python authority | Command | Test |
+| --- | --- | --- | --- |
+| Application deployment | `runtime.application_deployment` | `deployment build-application`, `verify-application`, `list-applications` | `tests/test_runtime_application_deployment.py` |
+| Launch acceptance | `runtime.acceptance` | `acceptance run` | `tests/test_runtime_acceptance.py` |
+| Parity canary | `runtime.canary` | `canary run` | `tests/test_runtime_canary.py` |
+
+### The application deployment is the page, the package, and every ledger
+
+`docs/handoff/application-deployment-20260911.md` states the identity a native
+bundle leaves out: one unchanged `llama-server` serves a different application
+when the static page, the control-plane package, the dependency lock, the
+conversation schema, or any registry ledger moves. `deployment
+build-application NAME` binds all of them into one immutable unit under
+`deployments/applications/<name>/`, and the wheel row that file left empty is
+now filled by a wheel this tree builds itself.
+
+Four members are payload the directory holds:
+`lib/qwen_apu-<version>-py3-none-any.whl`, `lib/requirements.lock`, `static/`,
+and `config/`. The wheel is written with `zipfile` alone under PEP 427 --
+`METADATA`, `WHEEL`, `entry_points.txt`, and a `RECORD` whose rows carry
+urlsafe-base64 SHA-256 with the `RECORD` row itself empty -- because a build
+backend would put a third-party dependency between a checkout and its own
+deployable form. Every member is stored sorted, uncompressed, at one fixed DOS
+timestamp and one fixed mode, so two builds from one commit produce one digest
+on any host; deflate is the thing the store replaces, since zlib 1.3 on the
+appliance re-encodes bytes the workstation wrote to a different stream with
+identical content and a deflated wheel would carry one digest per host. `pip
+install --no-index --target` reads the result offline, which is the check a
+missing `WHEEL` file fails.
+
+Everything else is a reference, and the boundary between the two is what makes
+a verification affordable. A payload member is re-digested from disk. A
+reference is resolved and compared against the identity its own authority
+sealed: `install/native.py` already seals every executable's size, digest,
+`PT_INTERP`, `DT_NEEDED`, and glibc requirement under `manifest_sha256`, so the
+content-addressed store at `opt/<engine>/<digest>/` is checked by that one value
+rather than by rehashing gigabytes, and the model store is referenced through
+the registry ids the activated router preset names beside the pin
+`remote/model-artifacts.tsv` carries. The manifest also records the source
+commit and whether the worktree matched it, the conversation migration set and
+its schema version, thirteen registry ledger digests, the activated bundle's
+server, ledger, preset, and Q4_K policy digests, the image profile ledger, the
+document extractor identities (`document_worker`'s version and record schema
+beside the pinned distribution), and the security policy summary the gateway
+enforces. `manifest_sha256` seals every other field.
+
+Immutability is a refusal rather than a file mode: a name that already exists
+refuses before the first byte, the tree is assembled under a private staging
+directory, and one `os.rename` publishes it whole. The suite builds one from
+this checkout into a temporary root, verifies it, and proves that a tampered
+static byte, a tampered wheel byte, a rewritten manifest field, an added member,
+and a resealed native manifest each refuse.
+
+### Acceptance is named checks with three outcomes
+
+`acceptance run --base URL --pairing-code CODE --report PATH` drives an already
+running gateway and writes a JSON report with a Markdown rendering beside it.
+Each item is a named check carrying pass, fail, or skipped with its reason and
+its evidence, and the third outcome is what keeps a migration readable: a 404
+from a route this branch does not mount reports skipped naming the path, while a
+401 or 403 is a live gate answering and stays a failure everywhere except the
+unauthenticated check, where it is the pass. The classification is read from the
+answer rather than from a table, since `tools/images.py` mounts
+`/api/tools/image/review` that an earlier gap list recorded as absent.
+
+Four items carry their own mechanism. The roster check re-derives role, tier,
+depth, projector, and quantization from `remote/models.tsv` and compares the
+answered id set with the sections `--router-presets` names, so both halves of
+the join are checked against their own authority. The vision check sends a
+three-bar PNG the module draws from a declaration in its own source beside an
+image-withheld control that retains the text part, so image presence is the
+single changed request dimension and two equal answers are the failure. The
+history check runs `--restart-command` between phases, because the temporary
+store lives in the process and under `tmp/conversations/<id>/` and only a second
+process reading the same root can state that it ended. The teardown phase runs
+`--stop-command` and only then reads `--lease-path` and `--appliance-state`,
+since an owned process, a socket, or a held lease is a claim about absence.
+
+`origin_reachable` runs ahead of every live item: an origin that refuses the
+connection makes every claim fail for one reason, so it reports one failure and
+one skip per live item rather than thirty copies of the same sentence, and every
+other check runs inside a transport guard so a reset mid-run fails that item
+alone. A driver that let the first `ConnectionRefusedError` leave the process
+would write no report at all, which is the one outcome an acceptance run cannot
+have.
+
+The image lane skips on a refused grant rather than failing, because every
+device-reaching call there passes one human approval and a single-use grant the
+driver holds none of; the web lane skips on its absent routes; and a PDF upload
+that meets an absent `pypdf` skips naming the distribution, since
+`tools/document_worker.py` imports it at call time and a venv without it
+extracts every other format. Both report destinations resolve through
+`RuntimePaths.is_inside_root` rather than a string prefix, so a sibling
+directory that prefixes the root's spelling refuses along with everything else
+outside it. The suite runs
+the driver against a gateway assembled over a temporary runtime root in front of
+a `_FakeUpstream` subclass carrying a configurable roster, a model-naming
+switch, and an image-sensitive answer, and a scripted client reaches the
+branches a device-free gateway cannot produce.
+
+### The canary alternates, and the rule is declared before the launch
+
+`canary run` runs both launch chains ABAB inside one window, measures one fixed
+prompt at one fixed token count against each, and writes the verdict with every
+arm's `predicted_per_second` and `prompt_per_second` behind it. Each arm is two
+argv lists: `remote/qwen-lan-launch.sh lan-authenticated low-async` with
+`remote/qwen-teardown.sh` on one side, `qwen-apu serve --daemon` with `qwen-apu
+stop` on the other. The canary waits on `/health` itself after each start and
+runs each stop whatever the measurement did, since an arm left running holds the
+one Vulkan device the next arm needs.
+
+The configuration is measured rather than assumed. Each arm's server is located
+by the process holding the listening socket, so argv, CPU affinity, and niceness
+come from `/proc` for both arms without either publishing a record the other
+lacks; the delivered clocks, the KSM state, and the thermal reading come from
+the sysfs files `--sysfs NAME=PATH` names, and a DPM ladder reports the level
+its driver marks rather than the whole ladder. A field that differs between arms
+refuses the verdict and names the field with both values.
+
+The rule travels beside the band it sits inside. The Python median holds at or
+above `--ratio` of the legacy median, default 0.90, and that 10% margin is
+admissible only because the arms alternate within one window;
+`docs/doctrine/hardware-and-measurement.md` puts a single-arm comparison across
+sweeps at about 20%, and the report states both numbers. A window of one
+alternation refuses outright, each metric carries its own ratio and verdict, and
+an absent timings block refuses rather than reading as a zero.
+
+### What Phase 10's three surfaces leave to the device
+
+- One `build-application` on the laptop against an activated native bundle and a
+  populated model store, and the `verify-application` that follows it.
+- One `acceptance run` against a live `appliance serve`, which is where the
+  vision, image, and web items answer something other than skipped, and where
+  the served-model field of the deployed server is read for the first time.
+- One `canary run` inside a device window, which is the measurement the cutover
+  decision rests on; every rate in the report until then comes from a fixture.
+
 ## Order of the remaining phases
 
 9. Shadow deployment on alternate loopback ports (first pass recorded in

@@ -22,7 +22,14 @@ from qwen_apu.config import models as registry
 from qwen_apu.config.native import load_native_builds
 from qwen_apu.install import build, doctor, native, source
 from qwen_apu.install import models as model_installer
-from qwen_apu.runtime import appliance, deployment, deployment_write
+from qwen_apu.runtime import (
+    acceptance,
+    appliance,
+    application_deployment,
+    canary,
+    deployment,
+    deployment_write,
+)
 from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError, render_paths
 from qwen_apu.web import assemble as gateway_assembly
@@ -101,6 +108,21 @@ def build_parser() -> argparse.ArgumentParser:
     deployment_sub.add_parser("show", help="resolve the active bundle").add_argument(
         "--root", type=Path, default=None
     )
+    build_application = deployment_sub.add_parser(
+        "build-application",
+        help="bind the page, the package, the lock, and every ledger into one immutable unit",
+    )
+    build_application.add_argument("name")
+    build_application.add_argument("--root", type=Path, default=None)
+    verify_application = deployment_sub.add_parser(
+        "verify-application", help="re-digest every payload member and resolve every reference"
+    )
+    verify_application.add_argument("name")
+    verify_application.add_argument("--root", type=Path, default=None)
+    list_applications = deployment_sub.add_parser(
+        "list-applications", help="every application deployment the root holds"
+    )
+    list_applications.add_argument("--root", type=Path, default=None)
     serve = sub.add_parser("serve", help="run one llama-server under the supervisor")
     serve.add_argument(
         "--router",
@@ -157,6 +179,87 @@ def build_parser() -> argparse.ArgumentParser:
     )
     appliance_sub.add_parser("stop", help="signal every identity the record names")
     appliance_sub.add_parser("status", help="the published application record")
+    acceptance_parser = sub.add_parser(
+        "acceptance", help="the launch acceptance driver over a running gateway"
+    )
+    acceptance_sub = acceptance_parser.add_subparsers(dest="acceptance_command", required=True)
+    acceptance_run = acceptance_sub.add_parser("run", help="run every check and write the report")
+    acceptance_run.add_argument(
+        "--base", required=True, help="the gateway origin, as http://host:port"
+    )
+    acceptance_run.add_argument("--pairing-code", required=True)
+    acceptance_run.add_argument(
+        "--report", type=Path, required=True, help="JSON report path under the runtime root"
+    )
+    acceptance_run.add_argument(
+        "--model",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="one text model to take a turn on; repeat to name the class ladder",
+    )
+    acceptance_run.add_argument(
+        "--vision-model",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="one admitted vision profile",
+    )
+    acceptance_run.add_argument(
+        "--restart-command",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="one argv word of the gateway restart; repeat to build the command",
+    )
+    acceptance_run.add_argument(
+        "--stop-command",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="one argv word of the stop the teardown phase runs; repeat to build the command",
+    )
+    acceptance_run.add_argument("--lease-path", type=Path, default=None)
+    acceptance_run.add_argument("--appliance-state", type=Path, default=None)
+    acceptance_run.add_argument("--router-presets", type=Path, default=None)
+    acceptance_run.add_argument("--document-fixtures", type=Path, default=None)
+    acceptance_run.add_argument("--file-search-root", type=Path, default=None)
+    canary_parser = sub.add_parser(
+        "canary", help="the legacy and Python parity canary over one declared window"
+    )
+    canary_sub = canary_parser.add_subparsers(dest="canary_command", required=True)
+    canary_run = canary_sub.add_parser("run", help="alternate both arms and write the verdict")
+    canary_run.add_argument(
+        "--report", type=Path, required=True, help="JSON report path under the runtime root"
+    )
+    canary_run.add_argument("--repeats", type=int, default=canary.DEFAULT_REPEATS)
+    canary_run.add_argument("--ratio", type=float, default=canary.DEFAULT_RATIO)
+    canary_run.add_argument("--base", default=canary.DEFAULT_BASE)
+    canary_run.add_argument("--prompt", default=canary.DEFAULT_PROMPT)
+    canary_run.add_argument("--tokens", type=int, default=canary.DEFAULT_TOKENS)
+    canary_run.add_argument("--model", default="")
+    canary_run.add_argument(
+        "--readiness-deadline-s",
+        type=float,
+        default=canary.DEFAULT_READINESS_DEADLINE_SECONDS,
+        help="how long each arm may take to report /health ok before it refuses",
+    )
+    for name, help_text in (
+        ("legacy-start", "one argv word of the legacy launch"),
+        ("legacy-stop", "one argv word of the legacy teardown"),
+        ("python-start", "one argv word of the Python launch"),
+        ("python-stop", "one argv word of the Python teardown"),
+    ):
+        canary_run.add_argument(
+            f"--{name}", action="append", default=[], metavar="ARG", help=f"{help_text}; repeat"
+        )
+    canary_run.add_argument(
+        "--sysfs",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+        help="one sysfs file the configuration snapshot reads; repeat",
+    )
     gateway = sub.add_parser("gateway", help="serve the one-origin browser gateway")
     gateway.add_argument("--port", type=int, default=gateway_assembly.DEFAULT_GATEWAY_PORT)
     gateway.add_argument(
@@ -323,6 +426,18 @@ def cmd_deployment(paths: RuntimePaths, args: argparse.Namespace) -> int:
         )
         print(f"bundle={identity.name} server_sha256={identity.server_sha256}")
         return 0
+    if args.deployment_command == "build-application":
+        application = application_deployment.build_application(paths, args.name, root=args.root)
+        sys.stdout.write(application.render())
+        return 0
+    if args.deployment_command == "verify-application":
+        report = application_deployment.verify_application(paths, args.name, root=args.root)
+        sys.stdout.write(report.render())
+        return 0 if report.verified else 1
+    if args.deployment_command == "list-applications":
+        for name in application_deployment.applications(paths, args.root):
+            print(name)
+        return 0
     if args.deployment_command == "show":
         sys.stdout.write(deployment.render(deployment.resolve_active(root)))
         return 0
@@ -438,6 +553,45 @@ def main(argv: Sequence[str] | None = None) -> int:
             return serving.stop(paths)
         if args.command == "appliance":
             return cmd_appliance(paths, args)
+        if args.command == "acceptance":
+            return acceptance.run(
+                paths,
+                acceptance.AcceptanceRequest(
+                    base=args.base,
+                    pairing_code=args.pairing_code,
+                    report=args.report,
+                    text_models=tuple(args.model) or acceptance.DEFAULT_TEXT_MODELS,
+                    vision_models=tuple(args.vision_model) or acceptance.DEFAULT_VISION_MODELS,
+                    restart_command=tuple(args.restart_command),
+                    stop_command=tuple(args.stop_command),
+                    lease_path=args.lease_path,
+                    appliance_record=args.appliance_state,
+                    router_presets=args.router_presets,
+                    document_fixtures=args.document_fixtures,
+                    file_search_root=args.file_search_root,
+                ),
+            )
+        if args.command == "canary":
+            return canary.run(
+                paths,
+                canary.CanaryRequest(
+                    report=args.report,
+                    repeats=args.repeats,
+                    ratio=args.ratio,
+                    base=args.base,
+                    prompt=args.prompt,
+                    tokens=args.tokens,
+                    model=args.model,
+                    legacy=canary.ArmCommands(
+                        start=tuple(args.legacy_start), stop=tuple(args.legacy_stop)
+                    ),
+                    python=canary.ArmCommands(
+                        start=tuple(args.python_start), stop=tuple(args.python_stop)
+                    ),
+                    sysfs=canary.sysfs_from_request(args.sysfs),
+                    readiness_deadline_s=args.readiness_deadline_s,
+                ),
+            )
         if args.command == "gateway":
             return gateway_assembly.run(
                 paths,
