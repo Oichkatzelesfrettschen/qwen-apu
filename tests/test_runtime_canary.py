@@ -370,7 +370,7 @@ def test_equal_configurations_compute_the_verdict(paths: RuntimePaths) -> None:
 def test_a_differing_argv_refuses_by_name(paths: RuntimePaths) -> None:
     results = [
         _measured("legacy", 1),
-        _measured("python", 1, argv=("llama-server", "--port", "8081")),
+        _measured("python", 1, argv=("llama-server", "--ctx-size", "16384")),
         _measured("legacy", 2),
         _measured("python", 2),
     ]
