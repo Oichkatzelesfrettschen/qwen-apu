@@ -32,6 +32,7 @@ from qwen_apu.runtime import state as runtime_state
 from qwen_apu.runtime.health import ListenerAbsent, ListenerIdentity, probe_listener
 
 CHAT_COMPLETIONS_PATH = "/v1/chat/completions"
+TOKENIZE_PATH = "/tokenize"
 MODELS_PATH = "/v1/models"
 HEALTH_PATH = "/health"
 
@@ -210,6 +211,12 @@ class LlamaClient:
         forwarded.setdefault("content-type", "application/json")
         return self.request(
             "POST", CHAT_COMPLETIONS_PATH, body=body, headers=forwarded, stream=True
+        )
+
+    def tokenize(self, body: bytes) -> UpstreamAnswer:
+        """One buffered `/tokenize` exchange: the token array for a text."""
+        return self.request(
+            "POST", TOKENIZE_PATH, body=body, headers={"content-type": "application/json"}
         )
 
 

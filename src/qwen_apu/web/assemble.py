@@ -55,7 +55,7 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
     state = paths["qwen_home_state"]
     state.mkdir(parents=True, exist_ok=True)
     state.chmod(0o700)
-    static_root = request.static_root or paths.tree / "webui"
+    static_root = request.static_root or paths.tree / "static"
     if request.port <= 0:
         raise ValueError("the gateway names its own origin, so the port must be explicit")
     # One origin serves the page and the routes, so the page origin the

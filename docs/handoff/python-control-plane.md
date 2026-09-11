@@ -217,11 +217,30 @@ server's body bound is the byte limit that matters.
 a checkout carries both, since the lock holds the third-party dependencies
 and the link holds the package and its console script.
 
+## Phase 8: the page as ES modules on one origin
+
+`static/index.html`, `static/app.css`, and ten modules under `static/js/`
+replace the 5100-line `webui/index.html`; `web/app.py` computes
+`script-src 'self'; style-src 'self'` over the page since no inline script
+or style remains, and every `fetch` names an `/api/` route on the page's own
+origin (`docs/handoff/webui-split-plan.md` carries the call map). The page
+pairs through `POST /api/pair`, counts a text attachment through
+`POST /api/models/tokenize`, and exports its saved history in the document
+shape `web/browser_import.py` reads. `tests/webui/` runs under `node --test`
+in the hosted workflow and `tests/test_static_page.py` proves the served
+page against the policy; `all.mjs` enrolls every test file by directory
+listing. Recorded gaps: `GET /api/tools` answers the static registry rather
+than a per-model offering, so the web and image lanes route on an unproven
+row until a 403 excludes it; the review button stays hidden until a claim
+ledger names a review model; image cancel and `/api/tools/image/review`
+have no route; the ten `remote/test-fallback-webui-*.mjs` and
+`webui/index.html` leave with their gate cells in Phase 10.
+
 ## Order of the remaining phases
 
-8. WebUI split into ES modules.
 9. Shadow deployment on alternate loopback ports (first pass recorded in
-   `docs/handoff/shadow-deployment-20260911.md`).
+   `docs/handoff/shadow-deployment-20260911.md`; the split page and the
+   document routes need a second pass).
 10. Cutover, shell deletion in batches, Makefile removal last.
 
 ## Size receipt at Phase 1 (scc)
