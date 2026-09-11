@@ -4,9 +4,10 @@ A tool row states three facts a caller cannot infer from a name: the artifact
 in this tree that executes the call, whether a human approves the call
 explicitly or the model proposes it inside an already-approved boundary, and
 whether that artifact exists yet. The third is what separates a tool the
-appliance serves from one the roadmap names, so `GET /api/tools` answers with
-the same table under both and a page renders a planned tool as planned rather
-than discovering the absence at call time.
+appliance serves from one the roadmap names, and it is a property of the tree
+rather than of a launch: `qwen_apu.tools.matrix` joins this table against the
+ledgers and the running gateway to answer what one selected model can actually
+reach, so a page renders a refusal rather than discovering it at call time.
 
 Approval follows what a call reaches rather than what it costs. A call that
 leaves the machine or takes the device -- a web search, a generation --
@@ -20,18 +21,16 @@ grant that admitted the first call bounds the second.
 The read-only local set is `read_file`, `file_glob_search`, `grep_search`, and
 AGENTS.md fixes that boundary: `--tools all` grants shell execution and file
 writing to a prompt-injectable model, and a server holding that grant stays
-off the LAN. The appliance launches without `--tools`, so the local rows read
-as planned rather than served and each carries `user-explicit`.
+off the LAN. The appliance launches without `--tools`, so the router arms none
+of them; the gateway's own `src/qwen_apu/tools/files.py` serves the scoped
+search over the roots a launch declares, and `code_tools` stays planned because
+no preset in this tree arms it.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from enum import StrEnum
-
-from qwen_apu.web.http import Request, Response, Route
-
-TOOLS_PATH = "/api/tools"
 
 
 class Approval(StrEnum):
@@ -146,10 +145,11 @@ TOOL_TABLE: tuple[ToolEntry, ...] = (
         lane="documents",
         execution_path="src/qwen_apu/tools/documents.py",
         approval=Approval.USER_EXPLICIT,
-        availability=Availability.PLANNED,
+        availability=Availability.SERVED,
         summary=(
-            "reading a document the user attaches belongs to the Phase 7 surface; "
-            "no artifact in this tree executes it yet"
+            "an upload extracts in an owned worker process under its own CPU, address "
+            "space, and wall-clock limits, and one record lands under "
+            "artifacts/documents/<sha256>/ after a rename from staging"
         ),
     ),
     ToolEntry(
@@ -158,23 +158,23 @@ TOOL_TABLE: tuple[ToolEntry, ...] = (
         lane="local",
         execution_path="src/qwen_apu/tools/calculator.py",
         approval=Approval.MODEL_SUGGESTED,
-        availability=Availability.PLANNED,
+        availability=Availability.SERVED,
         summary=(
-            "an arithmetic evaluator reaches neither the network nor the device, "
-            "so the model proposes it inside the turn; the Phase 7 surface owns it"
+            "an arithmetic expression evaluates over a closed grammar inside the "
+            "gateway process, reaching neither the network nor the device"
         ),
     ),
     ToolEntry(
         tool_id="local_file_search",
         title="Local file search",
         lane="local",
-        execution_path="llama-server --tools read_file,file_glob_search,grep_search",
+        execution_path="src/qwen_apu/tools/files.py",
         approval=Approval.USER_EXPLICIT,
-        availability=Availability.PLANNED,
+        availability=Availability.SERVED,
         summary=(
-            "the read-only set is read_file, file_glob_search, and grep_search; a "
-            "server holding that grant stays off the LAN, and the appliance "
-            "launches without --tools, so no served preset offers it"
+            "the gateway searches the roots the launch declares and refuses a symlink "
+            "escape; the appliance launches without --tools, so the router's own "
+            "read_file, file_glob_search, and grep_search set stays unarmed"
         ),
     ),
     ToolEntry(
@@ -220,19 +220,14 @@ def served() -> tuple[ToolEntry, ...]:
 
 
 def as_payload() -> dict[str, object]:
-    """Return the listing `GET /api/tools` answers with."""
+    """Return the tool identity table, which carries no per-model state.
+
+    `qwen_apu.tools.matrix` owns `GET /api/tools` and joins this table against
+    the ledgers and the launch, so this function answers what a tool is while
+    that module answers what it does for one selection.
+    """
     return {
         "schema": "qwen.tool-registry",
         "version": 1,
         "tools": [asdict(row) for row in TOOL_TABLE],
     }
-
-
-def _handle_tools(request: Request) -> Response:
-    del request
-    return Response.json(as_payload())
-
-
-def routes() -> tuple[Route, ...]:
-    """Return the registry route mounted under the gateway."""
-    return (Route.make("GET", TOOLS_PATH, _handle_tools),)

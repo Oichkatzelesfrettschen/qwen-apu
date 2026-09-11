@@ -13,11 +13,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from qwen_apu.engines.image import ImageControlClient
+from qwen_apu.engines.image import SOCKET_FILE_NAME, ImageControlClient
 from qwen_apu.engines.llama import LlamaClient, binding_from_runtime
 from qwen_apu.runtime import deployment, preflight
 from qwen_apu.runtime.paths import RuntimePaths
-from qwen_apu.tools import approvals, calculator, documents, files, images, registry
+from qwen_apu.tools import approvals, calculator, documents, files, images, matrix
 from qwen_apu.tools.ledger import Ledger
 from qwen_apu.web import artifacts, chat, conversations, status
 from qwen_apu.web.app import Gateway, GatewayConfig, RequestRefused
@@ -146,8 +146,9 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         )
 
     artifact_directory = state / "artifacts"
+    image_socket = state / SOCKET_FILE_NAME
     image_settings = images.ImageToolSettings(
-        client=ImageControlClient(state / "image-service.sock", timeout=30.0),
+        client=ImageControlClient(image_socket, timeout=30.0),
         artifacts=artifacts.ArtifactDirectory(artifact_directory),
         review_model=request.review_model,
         spend_grant=spend_grant,
@@ -200,7 +201,18 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
             approval_identity=identity,
         ),
         _Providers(approvals.routes(approval_service)),
-        _Providers(registry.routes()),
+        _Providers(
+            matrix.routes(
+                matrix.MatrixSettings(
+                    approval_profile=approval_settings.profile,
+                    image_profile=approval_settings.image_profile,
+                    provider=approval_settings.provider,
+                    open_lan=approval_settings.open_lan,
+                    image_socket=image_socket,
+                    file_roots=file_roots,
+                )
+            )
+        ),
         _Providers(
             artifacts.routes(
                 artifacts.ArtifactSettings(

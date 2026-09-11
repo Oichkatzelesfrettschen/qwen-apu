@@ -191,7 +191,7 @@ def build_request(
 
 
 def call(service: ApprovalService, request: Request) -> Response:
-    found = match(approvals.routes(service) + registry.routes(), request.method, request.path)
+    found = match(approvals.routes(service), request.method, request.path)
     assert found is not None, f"no route for {request.method} {request.path}"
     route, params = found
     answer = route.handler(replace(request, path_params=params))
@@ -1358,18 +1358,16 @@ def test_a_network_or_device_reaching_tool_takes_an_explicit_approval() -> None:
         assert registry.entry(tool_id).approval is registry.Approval.MODEL_SUGGESTED
 
 
-def test_the_local_rows_stay_planned_under_the_read_only_boundary() -> None:
-    """The appliance launches without --tools, so no preset serves a local row."""
-    for tool_id in ("local_file_search", "code_tools"):
-        row = registry.entry(tool_id)
-        assert row.availability is registry.Availability.PLANNED
-        assert row.approval is registry.Approval.USER_EXPLICIT
+def test_the_router_tool_grant_stays_planned_under_the_read_only_boundary() -> None:
+    """`--tools all` arms no preset in this tree, so the code row states a plan."""
+    row = registry.entry("code_tools")
+    assert row.availability is registry.Availability.PLANNED
+    assert row.approval is registry.Approval.USER_EXPLICIT
 
 
-def test_the_tools_route_answers_the_table(workspace: Path) -> None:
-    service = make_service(workspace)
-    response = call(service, build_request("GET", registry.TOOLS_PATH, secret=""))
-    assert response.status == 200
-    payload = body_of(response)
-    assert payload["schema"] == "qwen.tool-registry"
-    assert len(payload["tools"]) == len(registry.TOOL_TABLE)
+def test_the_scoped_file_search_names_the_gateway_as_its_executor() -> None:
+    """The router's own read-only grant stays unarmed; the gateway serves the search."""
+    row = registry.entry("local_file_search")
+    assert row.execution_path == "src/qwen_apu/tools/files.py"
+    assert row.availability is registry.Availability.SERVED
+    assert row.approval is registry.Approval.USER_EXPLICIT
