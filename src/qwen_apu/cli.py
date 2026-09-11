@@ -22,7 +22,7 @@ from qwen_apu.config import models as registry
 from qwen_apu.config.native import load_native_builds
 from qwen_apu.install import build, doctor, native, source
 from qwen_apu.install import models as model_installer
-from qwen_apu.runtime import deployment, deployment_write
+from qwen_apu.runtime import appliance, deployment, deployment_write
 from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError, render_paths
 from qwen_apu.web import assemble as gateway_assembly
@@ -102,6 +102,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--root", type=Path, default=None
     )
     serve = sub.add_parser("serve", help="run one llama-server under the supervisor")
+    serve.add_argument(
+        "--router",
+        action="store_true",
+        help="serve every section of the activated deployment's router preset",
+    )
+    serve.add_argument("--router-max", type=int, default=serving.DEFAULT_ROUTER_MAX)
     serve.add_argument("--model", default=serving.DEFAULT_MODEL)
     serve.add_argument("--profile", default=serving.DEFAULT_PROFILE)
     serve.add_argument("--port", type=int, default=serving.DEFAULT_PORT)
@@ -118,6 +124,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="research arm on a host without RADV; the appliance keeps the check",
     )
     sub.add_parser("stop", help="stop the supervised server and prove absence")
+    appliance = sub.add_parser(
+        "appliance", help="the whole application: router, gateway, and lane children"
+    )
+    appliance_sub = appliance.add_subparsers(dest="appliance_command", required=True)
+    appliance_serve = appliance_sub.add_parser("serve", help="start every owned process")
+    appliance_serve.add_argument("--router", action="store_true")
+    appliance_serve.add_argument("--model", default=serving.DEFAULT_MODEL)
+    appliance_serve.add_argument("--profile", default=serving.DEFAULT_PROFILE)
+    appliance_serve.add_argument("--port", type=int, default=serving.DEFAULT_PORT)
+    appliance_serve.add_argument(
+        "--gateway-port", type=int, default=gateway_assembly.DEFAULT_GATEWAY_PORT
+    )
+    appliance_serve.add_argument("--bind-host", default="127.0.0.1")
+    appliance_serve.add_argument("--web-profile", default=gateway_assembly.DEFAULT_WEB_PROFILE)
+    appliance_serve.add_argument("--image-profile", default="")
+    appliance_serve.add_argument("--static", type=Path, default=None)
+    appliance_serve.add_argument("--file-root", type=Path, action="append", default=[])
+    appliance_serve.add_argument(
+        "--image-service",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="one argv word of the image worker; repeat to build the command",
+    )
+    appliance_serve.add_argument(
+        "--searxng",
+        action="append",
+        default=[],
+        metavar="ARG",
+        help="one argv word of the search instance; repeat to build the command",
+    )
+    appliance_sub.add_parser("stop", help="signal every identity the record names")
+    appliance_sub.add_parser("status", help="the published application record")
     gateway = sub.add_parser("gateway", help="serve the one-origin browser gateway")
     gateway.add_argument("--port", type=int, default=gateway_assembly.DEFAULT_GATEWAY_PORT)
     gateway.add_argument(
@@ -128,6 +167,11 @@ def build_parser() -> argparse.ArgumentParser:
     gateway.add_argument("--image-profile", default="")
     gateway.add_argument("--static", type=Path, default=None)
     gateway.add_argument("--file-root", type=Path, action="append", default=[])
+    gateway.add_argument(
+        "--no-deployment",
+        action="store_true",
+        help="research arm: read the upstream's own roster where no bundle is activated",
+    )
     status = sub.add_parser("status", help="runtime root binding and declared paths")
     status.add_argument("--json", action="store_true")
     sub.add_parser("doctor", help="prerequisites a user-space installer can only detect")
@@ -294,6 +338,42 @@ def cmd_deployment(paths: RuntimePaths, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
+    if args.appliance_command == "status":
+        sys.stdout.write(appliance.render(appliance.status(paths)))
+        return 0
+    if args.appliance_command == "stop":
+        signalled = appliance.stop(paths)
+        print(f"signalled={','.join(str(pid) for pid in signalled) or '-'}")
+        record = appliance.status(paths)
+        return 0 if record is None or record.state == "stopped" else 1
+    image, searxng = appliance.child_specs_from_request(
+        paths, image_service=args.image_service, searxng=args.searxng
+    )
+    return appliance.serve(
+        paths,
+        appliance.ApplianceRequest(
+            serve=serving.ServeRequest(
+                router=args.router,
+                model_id=args.model,
+                profile=args.profile,
+                port=args.port,
+            ),
+            gateway=gateway_assembly.GatewayRequest(
+                port=args.gateway_port,
+                upstream_port=args.port,
+                bind_host=args.bind_host,
+                web_profile=args.web_profile,
+                image_profile=args.image_profile,
+                static_root=args.static,
+                file_roots=tuple(args.file_root),
+            ),
+            image_service=image,
+            searxng=searxng,
+        ),
+    )
+
+
 def cmd_export(paths: RuntimePaths, output: Path) -> int:
     store = ConversationStore(paths["qwen_home_state"])
     document = store.export_all()
@@ -340,6 +420,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return code or serving.status(paths)
         if args.command == "serve":
             request = serving.ServeRequest(
+                router=args.router,
+                router_max=args.router_max,
                 model_id=args.model,
                 profile=args.profile,
                 port=args.port,
@@ -354,6 +436,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return serving.serve(paths, request)
         if args.command == "stop":
             return serving.stop(paths)
+        if args.command == "appliance":
+            return cmd_appliance(paths, args)
         if args.command == "gateway":
             return gateway_assembly.run(
                 paths,
@@ -365,6 +449,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     image_profile=args.image_profile,
                     static_root=args.static,
                     file_roots=tuple(args.file_root),
+                    require_deployment=not args.no_deployment,
                 ),
             )
         if args.command == "export":
