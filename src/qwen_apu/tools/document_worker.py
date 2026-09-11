@@ -93,6 +93,12 @@ RECORD_SCHEMA = "qwen-apu-document-record-2"
 STATE_EXTRACTED = "extracted"
 STATE_OCR_REQUIRED = "ocr_required"
 
+
+def state_of(requires_ocr: Sequence[int], characters: int) -> str:
+    """The state one pair of numbers reports: pages needing OCR and no characters."""
+    return STATE_OCR_REQUIRED if requires_ocr and characters == 0 else STATE_EXTRACTED
+
+
 CHUNK_MAX_CHARS = 1200
 TOKEN_ESTIMATE_CHARS = 4
 # The name stays free of the word a secret scanner reserves; the value is the
@@ -360,6 +366,21 @@ class Chunk:
         )
 
 
+def _recorded_state(payload: Mapping[str, object], requires_ocr: Sequence[int]) -> str:
+    """The state a record states, or the one its own numbers imply.
+
+    A record written under schema 1 carries no `state`, and the pair that
+    field reports survives in it: pages that require OCR beside a zero
+    character count is the document that yielded nothing. Deriving it here
+    keeps a stored record self-consistent, which matters because the store
+    answers a second upload of the same bytes from the copy it already holds.
+    """
+    named = payload.get("state")
+    if isinstance(named, str) and named:
+        return named
+    return state_of(requires_ocr, int(cast(int, payload["characters"])))
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentRecord:
     """What one extraction established about one source, written beside its chunks."""
@@ -409,6 +430,7 @@ class DocumentRecord:
         chunks = cast(Sequence[Mapping[str, object]], payload.get("chunks", []))
         warnings = cast(Sequence[object], payload.get("warnings", []))
         ocr = cast(Sequence[object], payload.get("requires_ocr", []))
+        pages = tuple(int(cast(int, entry)) for entry in ocr)
         return cls(
             sha256=str(payload["sha256"]),
             filename=str(payload["filename"]),
@@ -423,8 +445,8 @@ class DocumentRecord:
             boundaries=tuple(Boundary.from_json(entry) for entry in boundaries),
             chunks=tuple(Chunk.from_json(entry) for entry in chunks),
             warnings=tuple(str(entry) for entry in warnings),
-            requires_ocr=tuple(int(cast(int, entry)) for entry in ocr),
-            state=str(payload.get("state", STATE_EXTRACTED)),
+            requires_ocr=pages,
+            state=_recorded_state(payload, pages),
             network_isolation=str(payload.get("network_isolation", "unrecorded")),
             schema=str(payload.get("schema", RECORD_SCHEMA)),
         )
@@ -448,9 +470,7 @@ class Extraction:
         `requires_ocr`, because it answers with the text it holds; a document
         that yielded nothing states the reason instead.
         """
-        if self.requires_ocr and not self.text.strip():
-            return STATE_OCR_REQUIRED
-        return STATE_EXTRACTED
+        return state_of(self.requires_ocr, len(self.text.strip()))
 
 
 # --- limits ------------------------------------------------------------------

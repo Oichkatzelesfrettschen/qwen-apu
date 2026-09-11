@@ -30,6 +30,7 @@ import pytest
 
 from qwen_apu.tools.document_worker import (
     ESTIMATE_BASIS,
+    DocumentRecord,
     Extraction,
     ExtractionRefused,
     Limits,
@@ -1402,3 +1403,30 @@ def test_a_text_record_states_that_it_extracted(service: DocumentService) -> Non
     assert record.state == "extracted"
     assert record.extractor_version == "2"
     assert record.schema == "qwen-apu-document-record-2"
+
+
+def test_a_schema_one_record_reads_back_with_the_state_its_numbers_imply(
+    service: DocumentService, tmp_path: Path
+) -> None:
+    """A record stored before the field existed stays self-consistent when it is read."""
+    payload: dict[str, object] = {
+        "schema": "qwen-apu-document-record-1",
+        "sha256": "0" * 64,
+        "filename": "scan.pdf",
+        "media_type": "application/pdf",
+        "detected_format": "pdf",
+        "extractor": "qwen-apu-document-worker",
+        "extractor_version": "1",
+        "source_bytes": 1024,
+        "characters": 0,
+        "approximate_tokens": 0,
+        "approximate_tokens_basis": "chars/4",
+        "boundaries": [],
+        "chunks": [],
+        "warnings": [],
+        "requires_ocr": [1],
+    }
+    assert DocumentRecord.from_json(payload).state == "ocr_required"
+    payload["requires_ocr"] = []
+    payload["characters"] = 12
+    assert DocumentRecord.from_json(payload).state == "extracted"

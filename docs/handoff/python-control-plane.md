@@ -260,7 +260,10 @@ carry images and `extracted` otherwise, so `scan.pdf` reports the reason its
 text is empty rather than reporting an empty extraction as a complete one; a
 mixed document keeps `extracted` and names its unreadable pages in
 `requires_ocr`. The record schema and the worker version are both 2, and
-`from_json` defaults `state` so a record written under 1 reads back.
+`from_json` derives `state` from `requires_ocr` and `characters` where a
+record carries none, so a record written under 1 reads back self-consistent
+rather than reporting a scan as extracted -- which matters because the store
+answers a second upload of the same bytes from the copy it already holds.
 
 Recorded limits: RLIMIT_CPU is proven against a spin loop rather than an
 extractor; the multipart file part's own headers are read from the first
