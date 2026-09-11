@@ -186,9 +186,25 @@ def _behavior() -> Iterator[None]:
     _reset_behavior()
 
 
+class _QuietUpstreamServer(ThreadingHTTPServer):
+    """A server whose log stays free of the cancel check's own disconnects.
+
+    `BaseHTTPRequestHandler.finish` flushes the write file after the handler
+    returns, and the mid-stream cancel check closes its socket while frames are
+    still pending, so the default `handle_error` prints a traceback for a
+    disconnect the test deliberately caused. Every other error still prints.
+    """
+
+    def handle_error(self, request: object, client_address: object) -> None:
+        kind = sys.exc_info()[0]
+        if kind is not None and issubclass(kind, ConnectionError):
+            return
+        super().handle_error(request, client_address)  # type: ignore[arg-type]
+
+
 @pytest.fixture(scope="module")
 def upstream() -> Iterator[ThreadingHTTPServer]:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _AcceptanceUpstream)
+    server = _QuietUpstreamServer(("127.0.0.1", 0), _AcceptanceUpstream)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
     thread.start()
@@ -658,3 +674,43 @@ def test_the_teardown_phase_runs_the_stop_argv_and_then_reads_absence(
     assert results["stop_command"].status == PASS
     assert results["vulkan_lease_free"].status == PASS
     assert results["teardown_leaves_no_residue"].status == PASS
+
+
+def test_an_origin_that_answers_nothing_reports_one_failure(
+    root: RuntimePaths, tmp_path: Path
+) -> None:
+    """A refused connection is one named failure and a skip per live item.
+
+    A driver that let the first `ConnectionRefusedError` leave the process would
+    write no report at all, which is the one outcome an acceptance run cannot
+    have.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed = int(probe.getsockname()[1])
+    request = AcceptanceRequest(
+        base=f"http://127.0.0.1:{closed}",
+        pairing_code="code",
+        report=Path("unreachable/report.json"),
+    )
+    assert acceptance.run(root, request) == 1
+    document = json.loads(
+        (root["qwen_home_results"] / "unreachable" / "report.json").read_text(encoding="utf-8")
+    )
+    results = {entry["name"]: entry for entry in document["checks"]}
+    assert results["origin_reachable"]["status"] == FAIL
+    assert "answered nothing" in results["origin_reachable"]["reason"]
+    assert results["pairing"]["status"] == SKIPPED
+    assert results["roster_join"]["status"] == SKIPPED
+    assert document["counts"][FAIL] == 1
+
+
+def test_a_transport_failure_mid_run_fails_that_item_alone(root: RuntimePaths) -> None:
+    def refuse() -> None:
+        raise ConnectionResetError("the peer reset the connection")
+
+    run = _scripted(root, {})
+    run.guarded("calculator", refuse)
+    result = _by_name(run.results)["calculator"]
+    assert result.status == FAIL
+    assert "the exchange refused" in result.reason

@@ -637,6 +637,14 @@ process reading the same root can state that it ended. The teardown phase runs
 `--stop-command` and only then reads `--lease-path` and `--appliance-state`,
 since an owned process, a socket, or a held lease is a claim about absence.
 
+`origin_reachable` runs ahead of every live item: an origin that refuses the
+connection makes every claim fail for one reason, so it reports one failure and
+one skip per live item rather than thirty copies of the same sentence, and every
+other check runs inside a transport guard so a reset mid-run fails that item
+alone. A driver that let the first `ConnectionRefusedError` leave the process
+would write no report at all, which is the one outcome an acceptance run cannot
+have.
+
 The image lane skips on a refused grant rather than failing, because every
 device-reaching call there passes one human approval and a single-use grant the
 driver holds none of; the web lane skips on its absent routes; and a PDF upload
