@@ -307,6 +307,8 @@ def listener_pid(port: int) -> int:
 
 
 PRESET_FLAG = "--models-preset"
+LAUNCH_EXIT_GRACE_SECONDS = 60.0
+LAUNCH_SETTLE_SECONDS = 1.0
 TRANSPORT_FLAGS = frozenset({"--host", "--port", "--api-key-file", "--cors-origins"})
 
 
@@ -461,6 +463,52 @@ def wait_ready(endpoint: Endpoint, deadline_s: float) -> str:
     return f"the server did not report ready within {deadline_s:.0f} s: {last}"
 
 
+def wait_ready_or_exit(
+    endpoint: Endpoint, deadline_s: float, launch: subprocess.Popen[bytes]
+) -> str:
+    """Wait for ready while the launch runs; a launch that exits first names its status."""
+    deadline = time.monotonic() + deadline_s
+    last = "no answer"
+    while time.monotonic() < deadline:
+        code = launch.poll()
+        if code is not None and code != 0:
+            _, stderr = launch.communicate(timeout=5)
+            return f"the launch exited {code}: {stderr.decode('utf-8', 'replace')[:300]}"
+        try:
+            status, body = endpoint.get("/health", timeout_s=5.0)
+        except OSError as error:
+            last = str(error)
+        else:
+            if status == 200:
+                try:
+                    payload = json.loads(body.decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    payload = {}
+                if isinstance(payload, dict) and payload.get("status") == "ok":
+                    return _launch_settled(launch)
+                last = f"/health answered {payload}"
+            else:
+                last = f"/health answered {status}"
+        time.sleep(READINESS_POLL_SECONDS)
+    return f"the server did not report ready within {deadline_s:.0f} s: {last}"
+
+
+def _launch_settled(launch: subprocess.Popen[bytes]) -> str:
+    """Give a returning launch a moment to report; a non-zero status refuses the arm.
+
+    A server that already answers can precede the launch's own exit by a
+    tick, and the launch's status is the launch's verdict on what it started.
+    """
+    try:
+        launch.wait(timeout=LAUNCH_SETTLE_SECONDS)
+    except subprocess.TimeoutExpired:
+        return ""
+    if launch.returncode != 0:
+        _, stderr = launch.communicate(timeout=5)
+        return f"the launch exited {launch.returncode}: {stderr.decode('utf-8', 'replace')[:300]}"
+    return ""
+
+
 def read_timings(payload: object) -> dict[str, float]:
     """The server's own timing block, wherever the completion carries it.
 
@@ -499,17 +547,16 @@ def run_arm(
             Configuration(reason="the arm names no start and stop argv"),
             failure=f"the {arm} arm names no start and stop argv",
         )
-    started = subprocess.run(list(commands.start), capture_output=True, check=False)  # noqa: S603
-    if started.returncode != 0:
-        return ArmResult(
-            arm,
-            ordinal,
-            Configuration(reason="the launch exited non-zero"),
-            failure=f"the {arm} launch exited {started.returncode}: "
-            f"{started.stderr.decode('utf-8', 'replace')[:300]}",
-        )
+    # A launch either returns once its server is up (the shell chain) or holds
+    # the foreground for the server's life (the appliance), so the start runs
+    # as a child the readiness wait watches: an exit before ready is the
+    # launch's own refusal, and a child still running at ready is left to the
+    # stop argv, which ends it the way it ends the server.
+    started = subprocess.Popen(  # noqa: S603
+        list(commands.start), stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
     try:
-        waited = wait_ready(endpoint, request.readiness_deadline_s)
+        waited = wait_ready_or_exit(endpoint, request.readiness_deadline_s, started)
         if waited:
             return ArmResult(arm, ordinal, Configuration(reason=waited), failure=waited)
         configuration = snapshot(endpoint.port, request.sysfs)
@@ -543,6 +590,16 @@ def run_arm(
         return ArmResult(arm, ordinal, configuration, timings=timings, failure=failure)
     finally:
         subprocess.run(list(commands.stop), capture_output=True, check=False)  # noqa: S603
+        _end_launch(started)
+
+
+def _end_launch(launch: subprocess.Popen[bytes]) -> None:
+    """Let a foreground launch leave after its server stopped; end one that lingers."""
+    try:
+        launch.communicate(timeout=LAUNCH_EXIT_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        launch.kill()
+        launch.communicate(timeout=5)
 
 
 # ---------------------------------------------------------------------------

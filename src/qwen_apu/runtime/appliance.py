@@ -28,6 +28,7 @@ which is what makes `stop` able to signal exactly what this process started.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import signal
@@ -277,9 +278,18 @@ class Appliance:
 
     # -- the run ---------------------------------------------------------
 
+    def _serve_request(self) -> serving.ServeRequest:
+        """The router's serve request with the authorizer marker set.
+
+        This process owns the gateway whose approval routes and single-use
+        grants the web preset sections assume, so the marker the policy
+        requires for those sections is true here and nowhere else.
+        """
+        return dataclasses.replace(self.request.serve, web_authorizer_ready=True)
+
     def run(self) -> int:
         """Start every owned process, serve, and report residue in the exit status."""
-        for line in serving.run_preflights(self.paths, self.request.serve):
+        for line in serving.run_preflights(self.paths, self._serve_request()):
             print(line, flush=True)
         for line in gateway_assembly.preflight_gateway(self.paths, self.request.gateway):
             print(line, flush=True)
@@ -290,7 +300,7 @@ class Appliance:
             supervisor_start_time=read_start_time(os.getpid()) or 0,
             started_utc=utc_now(),
         )
-        plan = serving.build_plan(self.paths, self.request.serve)
+        plan = serving.build_plan(self.paths, self._serve_request())
         plan_path = self.paths["qwen_home_state"] / "launch-plan.json"
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         plan_path.write_text(

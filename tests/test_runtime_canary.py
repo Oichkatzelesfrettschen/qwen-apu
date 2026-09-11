@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 from collections.abc import Iterator
@@ -505,3 +506,46 @@ def test_an_endpoint_sends_the_bearer_it_read(tmp_path: Path) -> None:
         server.server_close()
     with pytest.raises(canary.CanaryRefused):
         canary.Endpoint.parse("http://127.0.0.1:1", tmp_path / "absent")
+
+
+def test_a_foreground_launch_is_left_to_the_stop(tmp_path: Path) -> None:
+    """A start that holds the foreground while its server answers is admitted."""
+    server = HTTPServer(("127.0.0.1", 0), _OkHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        endpoint = canary.Endpoint.parse(f"http://127.0.0.1:{server.server_port}")
+        launch = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(600)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert canary.wait_ready_or_exit(endpoint, 10.0, launch) == ""
+        assert launch.poll() is None
+        canary.LAUNCH_EXIT_GRACE_SECONDS = 0.2
+        canary._end_launch(launch)
+        assert launch.poll() is not None
+        failing = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.stderr.write('refused'); sys.exit(3)"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        failing.wait(timeout=10)
+        assert "the launch exited 3: refused" == canary.wait_ready_or_exit(
+            canary.Endpoint.parse("http://127.0.0.1:1"), 5.0, failing
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+class _OkHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802
+        body = b'{"status":"ok"}'
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args: object) -> None:
+        pass
