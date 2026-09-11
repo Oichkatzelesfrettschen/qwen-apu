@@ -273,6 +273,11 @@ class Appliance:
         self.request = request
         self.record = ApplianceRecord(path=record_path(paths))
         self.runtime_record = paths["qwen_home_runtime_state"]
+        # The previous run's record survives its stop, so the first reads of
+        # this run land on it; the supervisor pid it names is passed over
+        # until this run's supervisor publishes its own.
+        previous = runtime_state.read(self.runtime_record)
+        self._superseded_pid = previous.supervisor_pid if previous is not None else 0
         self._children: list[tuple[ChildSpec, Owned]] = []
         self._stop = threading.Event()
 
@@ -363,6 +368,17 @@ class Appliance:
         gateway, session = gateway_assembly.assemble(self.paths, self.request.gateway)
         return gateway, session, session.start()
 
+    def _router_record(self) -> runtime_state.RuntimeState | None:
+        """This run's router record; the previous run's is read as none."""
+        router = runtime_state.read(self.runtime_record)
+        if (
+            router is not None
+            and self._superseded_pid
+            and router.supervisor_pid == self._superseded_pid
+        ):
+            return None
+        return router
+
     def _watch(self) -> str | None:
         """Sample the owned children and republish readiness until something ends it."""
         deadline = time.monotonic() + self.request.readiness_deadline_s
@@ -372,7 +388,7 @@ class Appliance:
                 if owned.has_exited():
                     status = owned.exit_status()
                     return f"{spec.name}_exited status={'-' if status is None else status}"
-            router = runtime_state.read(self.runtime_record)
+            router = self._router_record()
             router_state = router.state if router is not None else "-"
             served = tuple(router.served_models) if router is not None else ()
             if router is not None and router.is_terminal:

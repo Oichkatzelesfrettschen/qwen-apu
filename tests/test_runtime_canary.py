@@ -549,3 +549,11 @@ class _OkHandler(BaseHTTPRequestHandler):
 
     def log_message(self, *args: object) -> None:
         pass
+
+
+def test_listener_pid_finds_a_listener_on_any_local_address() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("0.0.0.0", 0))  # noqa: S104 -- the read under test admits any local address
+        listener.listen(1)
+        assert canary.listener_pid(listener.getsockname()[1]) == os.getpid()

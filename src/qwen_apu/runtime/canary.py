@@ -280,7 +280,7 @@ def read_sysfs(named: Mapping[str, Path]) -> dict[str, str]:
 
 
 def listener_pid(port: int) -> int:
-    """The pid holding the listening socket on one loopback port.
+    """The pid holding the listening socket on one port at any local address.
 
     Neither arm cooperates with this read: the legacy launch publishes its pids
     in a session status file and the Python launch publishes `state/runtime.json`,
@@ -288,7 +288,7 @@ def listener_pid(port: int) -> int:
     the other through another. The socket inode is the one identity both arms
     carry, and `/proc/<pid>/fd` is where it resolves to a process.
     """
-    inodes = set(_listening_inodes(port))
+    inodes = set(_listening_inodes(port, address=None))
     if not inodes:
         return 0
     for entry in sorted(Path("/proc").iterdir()):  # appliance-path: named
