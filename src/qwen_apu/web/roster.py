@@ -101,16 +101,16 @@ class Admission:
 
 
 def resolve_admission(
-    record_path: Path, sections: Sequence[str], upstream: UpstreamRoster
+    record_path: Path | None, sections: Sequence[str], upstream: UpstreamRoster
 ) -> Admission:
     """Join the runtime record, the preset sections, and the live roster.
 
-    A record the supervisor never wrote, or one in a terminal state, admits the
-    names the upstream itself reports: a gateway pointed at a server it did not
-    supervise still serves, and the upstream's own roster is then the only claim
-    available about what that server answers for.
+    A record the supervisor never wrote, an absent path, or one in a terminal
+    state admits the names the upstream itself reports: a gateway pointed at a
+    server it did not supervise still serves, and the upstream's own roster is
+    then the only claim available about what that server answers for.
     """
-    record = runtime_state.read(record_path)
+    record = runtime_state.read(record_path) if record_path is not None else None
     mode = record.mode if record is not None else "standalone"
     if mode == "router":
         admitted = frozenset(sections) | frozenset(upstream.names)
@@ -202,9 +202,21 @@ def build(
 
     candidates: list[str] = []
     if sections is not None:
+        # A preset section the registry carries no row for is a deployment
+        # claim this tree cannot describe, so it stays in the answer as
+        # `refused` rather than disappearing from it.
         candidates.extend(sections)
     else:
-        candidates.extend(sorted(admission.admitted))
+        # The standalone launch names its server `--alias qwen-apu`, so the
+        # upstream reports the alias beside the registry id the record carries
+        # and the admitted set holds both. Listing both would put two picker
+        # rows behind one served checkpoint, one of them a name no registry row
+        # describes, so the candidates here are the admitted names the registry
+        # does describe. A gateway against a server it did not supervise
+        # matches no row at all, and then the upstream's own names are the only
+        # claim available and stand as the answer.
+        described = [name for name in sorted(admission.admitted) if name in by_id]
+        candidates.extend(described or sorted(admission.admitted))
     if research:
         candidates.extend(row.id for row in rows)
 

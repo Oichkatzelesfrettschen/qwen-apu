@@ -36,6 +36,11 @@ REPORTED_STATE_FIELDS: tuple[str, ...] = (
     "listener_inode",
     "port",
     "model_id",
+    # The names the upstream answered `/v1/models` with, and whether the launch
+    # serves one checkpoint or a router preset. A page that shows readiness per
+    # model reads these beside `state`.
+    "served_models",
+    "mode",
     "deployment",
     "profile",
     "primary_failure",
