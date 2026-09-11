@@ -136,6 +136,68 @@ Origin sets, HttpOnly session cookie from a one-time pairing), `web/chat.py`
 and `engines/llama.py` (streaming proxy to the router on loopback),
 `tools/approvals.py` and `tools/ledger.py` (the broker's gate chain and the
 shared ledger), `web/artifacts.py`, `engines/image.py`, and `tools/images.py`
-(the artifact rules and the worker's control socket). The MCP child
-`server.py` stays the router's stdio tool child until the router tools proxy
-is replaced by the gateway's own tool execution.
+(the artifact rules and the worker's control socket), and `tools/web.py` (the
+search and the page read the router tools proxy previously carried). The MCP
+child `server.py` stays the router's stdio tool child for a launch that still
+runs the router lane; the gateway executes both web tools itself.
+
+## The web executor: `POST /api/tools`
+
+`tools/web.py` answers one route with two tools, and `tools/registry.py`
+answers `GET /api/tools` beside it. Availability is computed rather than
+declared: `web_search` and `read_url` read `served` where
+`web/assemble.py` resolved a `remote/web-profiles.tsv` row whose provider is
+`searxng` and whose `searxng_url` is set, and `planned` otherwise, so a
+gateway serving chat alone states the two rows as planned rather than
+answering a refusal at the first call.
+
+| Route | Body | Authority | Answer |
+| --- | --- | --- | --- |
+| `POST /api/tools` `tool: web_search` | `query`, `max_results`, `include_domains`, `exclude_domains`, `authorization` | the `search-authorization` grant `POST /api/tools/grant` signed, rebuilt through `approvals.authorization_claim` and compared field by field, then spent once through `Ledger.consume_grant` | the rendered result blocks, each carrying one signed Result ID |
+| `POST /api/tools` `tool: read_url` | `result_id`, `start_index`, `max_chars` | the Result ID the approved search signed, plus one unit of the fetch allowance `Ledger.open_search` opened and `Ledger.spend_fetch` spends | one `wrap_untrusted` frame over the window |
+
+The grant covers a query and signs no URL, so `read_url` carries the search's
+own signed reference rather than a second grant: one approval admits one
+search and as many of that search's own results as the profile's `max_fetches`
+names. A replayed grant meets the `grants` table's primary key, a Result ID
+naming a URL its search never returned meets the `search_results` rows, and an
+exhausted allowance answers `budget_exhausted`.
+
+Bounds, all ported from `remote/web-mcp/server.py` and carried by the profile
+row where the row states one:
+
+| Bound | Value | Authority |
+| --- | --- | --- |
+| Query | 512 characters | `web.QUERY_CHARACTER_CAP` |
+| Results | the profile's `max_results`, at most 10 | `web-profiles.tsv`, `web.RESULT_COUNT_CAP` |
+| Fetches per search | the profile's `max_fetches` | `web-profiles.tsv`, `Ledger.spend_fetch` |
+| Window | the profile's `max_chars_per_fetch`, at most 24000 | `web-profiles.tsv`, `web.WINDOW_CHARACTER_CAP` |
+| Document | 131072 characters | `web.DOCUMENT_CHARACTER_CAP` |
+| HTTP body | 4 MiB, read one byte past the cap | `web.HTTP_RESPONSE_BYTE_CAP` |
+| Request | 20 seconds on the socket | `web.REQUEST_TIMEOUT_SECONDS` |
+| Request body | 16384 bytes | `web.REQUEST_BODY_BYTE_CAP` |
+| Content types | `text/html`, `application/xhtml+xml`, `text/plain`, UTF-8 or ASCII | `web.DOCUMENT_CONTENT_TYPES` |
+
+Two properties differ from the predecessor by mechanism rather than by policy.
+The deadline lives on the socket rather than in a POSIX interval timer, because
+`signal.setitimer` belongs to the main thread and the gateway answers every
+request on a worker. Each ledger writer opens its own connection and closes it,
+because `sqlite3` binds a connection to its creating thread; `BEGIN IMMEDIATE`
+and the 10-second busy timeout serialize the writers.
+
+Every answer carries the one record `qwen.web-tool-outcome` names, with `state`
+and `provenance` added: `state` reads `complete` or `incomplete`, and the
+provenance names the operation, the query or the URL, the status term from the
+ledger's audit vocabulary, the provider bytes, the returned characters, the
+SHA-256 of the text the record holds, the UTC instant, and the latency. A
+retrieval that reached the network and failed answers HTTP 200 with `state` of
+`incomplete` and a reason, so the model reads that the page did not arrive;
+`static/js/chat.js` renders that state beside the turn. A refused call -- no
+session, an unverified or replayed grant, an argument outside a bound --
+answers its own status carrying the same document.
+
+Recorded scope cuts: the `content` snapshot table, so a second window of one
+document retrieves the source again rather than reading a stored copy; the Exa
+provider, so `searxng` is the one provider this executor reads; and the audit
+trail, which `Ledger.record` still serves for the approval routes while the
+executor writes no row of its own.
