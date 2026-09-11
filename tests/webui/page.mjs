@@ -399,13 +399,13 @@ function webToolDefinitionFixture(name) {
 }
 
 // A matrix whose web lane runs. A row in an executing state carries the
-// function object the executor declares, and `search_exa` advertises an
+// function object the executor declares, and `web_search` advertises an
 // `authorization` property the gateway alone issues, which the page strips.
 export const WEB_TOOL_MATRIX = toolMatrix([
   toolRow('web_search', 'available_through_helper',
-    { helper: 'searxng', definition: webToolDefinitionFixture('web_search_exa') }),
+    { helper: 'searxng', definition: webToolDefinitionFixture('web_search') }),
   toolRow('read_url', 'available_through_helper',
-    { helper: 'searxng', definition: webToolDefinitionFixture('web_fetch_exa') }),
+    { helper: 'searxng', definition: webToolDefinitionFixture('read_url') }),
   toolRow('image_generation', 'not_installed'),
   toolRow('image_review', 'not_installed'),
   toolRow('calculator', 'available')

@@ -21,7 +21,7 @@ import { install, jsonResponse, newHarness, toolMatrix, toolRow } from './page.m
 const TOOL_FREE_MODEL = 'qwen38-2b-distill';
 const WEB_PROFILE = 'web-open';
 
-// The function object the executor declares. `search_exa` advertises an
+// The function object the executor declares. `web_search` advertises an
 // `authorization` property the gateway alone issues, so a model that read it
 // could only author a token the served path refuses.
 function definitionFor(name) {
@@ -41,9 +41,9 @@ function definitionFor(name) {
 
 const WEB_MATRIX = toolMatrix([
   toolRow('web_search', 'available_through_helper',
-    { helper: 'searxng', definition: definitionFor('web_search_exa') }),
+    { helper: 'searxng', definition: definitionFor('web_search') }),
   toolRow('read_url', 'available_through_helper',
-    { helper: 'searxng', definition: definitionFor('web_fetch_exa') }),
+    { helper: 'searxng', definition: definitionFor('read_url') }),
   toolRow('calculator', 'available')
 ]);
 
