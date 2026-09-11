@@ -106,7 +106,11 @@ class _FakeUpstream(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 -- BaseHTTPRequestHandler names the verb
         length = int(self.headers.get("Content-Length", "0"))
-        self.rfile.read(length)
+        body = self.rfile.read(length)
+        if self.path == "/tokenize":
+            content = json.loads(body).get("content", "")
+            self._json({"tokens": list(range(len(content.split())))})
+            return
         if self.path != "/v1/chat/completions":
             self._json({"error": "no such endpoint"}, status=404)
             return
@@ -519,6 +523,39 @@ def test_streaming_reaches_the_client_chunk_by_chunk(gateway: Fixture) -> None:
     # The served model name is the upstream's own, carried through unrewritten.
     first = json.loads(body.split(b"data: ", 1)[1].split(b"\n\n", 1)[0])
     assert first["model"] == SERVED_MODEL
+
+
+def test_tokenize_counts_through_the_served_tokenizer(gateway: Fixture) -> None:
+    paired, _ = _pair(gateway, gateway.code)
+    cookie = _session_cookie(paired)
+    body = json.dumps({"model": SERVED_MODEL, "content": "three short words"}).encode("utf-8")
+    response, answer = _exchange(
+        gateway,
+        "POST",
+        "/api/models/tokenize",
+        body=body,
+        headers={"Content-Type": "application/json", "Cookie": cookie},
+    )
+    assert response.status == 200
+    assert json.loads(answer)["tokens"] == [0, 1, 2]
+
+    refused, _ = _exchange(
+        gateway,
+        "POST",
+        "/api/models/tokenize",
+        body=json.dumps({"model": SERVED_MODEL}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Cookie": cookie},
+    )
+    assert refused.status == 400
+
+    unpaired, _ = _exchange(
+        gateway,
+        "POST",
+        "/api/models/tokenize",
+        body=body,
+        headers={"Content-Type": "application/json"},
+    )
+    assert unpaired.status == 401
 
 
 def test_models_roster_equals_the_registry_filter(gateway: Fixture) -> None:

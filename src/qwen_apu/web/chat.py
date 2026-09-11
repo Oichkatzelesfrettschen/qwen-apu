@@ -79,7 +79,24 @@ class ChatService:
         return (
             Route.make("POST", "/api/chat", self.chat),
             Route.make("GET", "/api/models", self.models),
+            Route.make("POST", "/api/models/tokenize", self.tokenize),
         )
+
+    def tokenize(self, request: Request) -> Response:
+        """Count a text attachment's tokens through the served model's tokenizer.
+
+        The page attaches a text file only after this count, since the LAN
+        prompt bound is measured in the model's own tokens; the body reaches
+        the server whole and the answer returns whole with the server's status.
+        """
+        payload = request.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("content"), str):
+            raise RequestRefused(400, "the request body names no 'content' string")
+        try:
+            answer = self.client_factory().tokenize(request.body)
+        except UpstreamRefused as error:
+            raise RequestRefused(502, str(error)) from error
+        return Response(answer.status, b"".join(answer.chunks), dict(answer.headers))
 
     def chat(self, request: Request) -> Response | StreamingResponse:
         """Proxy one completion, streaming where the upstream streams.
