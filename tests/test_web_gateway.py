@@ -791,3 +791,27 @@ def test_a_streaming_route_that_stops_reading_closes_the_connection(gateway: Fix
     )
     assert response.status == 413
     assert (response.getheader("Connection") or "").lower() == "close"
+
+
+def test_a_streaming_route_refuses_a_chunked_body_by_name(gateway: Fixture) -> None:
+    """A stream reads a declared length, and the handler decodes no chunked body."""
+    _mount(
+        gateway,
+        Route.make("POST", "/api/fixture-chunked", lambda request: Response(204), streams=True),
+    )
+    head = (
+        f"POST /api/fixture-chunked HTTP/1.1\r\nHost: 127.0.0.1:{gateway.port}\r\n"
+        "Content-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "4\r\nbody\r\n0\r\n\r\n"
+    ).encode("ascii")
+    address = ("127.0.0.1", gateway.port)
+    with socket.create_connection(address, timeout=EXCHANGE_DEADLINE_SECONDS) as client:
+        client.sendall(head)
+        answer = b""
+        while True:
+            block = client.recv(4096)
+            if not block:
+                break
+            answer += block
+    assert answer.startswith(b"HTTP/1.1 411 ")
+    assert b"declared length" in answer

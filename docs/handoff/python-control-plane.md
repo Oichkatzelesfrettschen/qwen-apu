@@ -268,10 +268,13 @@ answers a second upload of the same bytes from the copy it already holds.
 Recorded limits: RLIMIT_CPU is proven against a spin loop rather than an
 extractor; the multipart file part's own headers are read from the first
 64 KiB of the staged body, so a form placing more than that ahead of the file
-refuses by name; and a body longer than its own Content-Length meets the
-copy's running count rather than the declaration, which the fixture reader in
+refuses by name; a body longer than its own Content-Length meets the copy's
+running count rather than the declaration, which the fixture reader in
 `tests/test_tools_documents.py` proves and an HTTP client cannot reach,
-because `BodyStream` clamps every read to the declared length.
+because `BodyStream` clamps every read to the declared length; and a stream
+reads a declared length alone, so an upload naming any transfer encoding with
+no `Content-Length` -- none of which `BaseHTTPRequestHandler` decodes --
+answers 411 by name rather than reading as an empty body.
 
 `bootstrap.py` installs the lock and links the source tree in sequence when
 a checkout carries both, since the lock holds the third-party dependencies

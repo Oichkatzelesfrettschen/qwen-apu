@@ -425,7 +425,18 @@ class _Handler(BaseHTTPRequestHandler):
         The gateway's byte cap stays off this path, which is what lets one
         upload route admit a body every JSON route refuses; the route's own
         bound is what the stream meets.
+
+        Content-Length is what a stream reads: `BaseHTTPRequestHandler`
+        decodes no chunked body, so a request that names a transfer encoding
+        and no length is refused by name here rather than read as an empty
+        body.
         """
+        if self.headers.get("Transfer-Encoding", "") and "Content-Length" not in self.headers:
+            raise RequestRefused(
+                411,
+                "this route reads a body of a declared length; "
+                f"{self.headers.get('Transfer-Encoding', '')} declares none",
+            )
         raw = self.headers.get("Content-Length", "0")
         try:
             length = int(raw)
