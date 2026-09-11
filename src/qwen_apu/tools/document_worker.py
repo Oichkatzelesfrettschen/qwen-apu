@@ -952,7 +952,7 @@ def resolve_format(filename: str, media_type: str) -> str:
         return "source"
     if suffix in FORMAT_EXTENSIONS:
         return FORMAT_EXTENSIONS[suffix]
-    normalized = media_type.split(";")[0].strip().lower()
+    normalized = media_type.split(";", maxsplit=1)[0].strip().lower()
     if normalized in FORMAT_MEDIA_TYPES:
         return FORMAT_MEDIA_TYPES[normalized]
     raise ExtractionRefused(
