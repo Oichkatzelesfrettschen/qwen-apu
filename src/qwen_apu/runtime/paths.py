@@ -236,6 +236,10 @@ class RuntimePaths:
         self.root.mkdir(parents=True, exist_ok=True)
         for relative in LAYOUT_DIRECTORIES:
             (self.root / relative).mkdir(parents=True, exist_ok=True)
+        # The state directory holds the session secret, the signing key, and
+        # the tool ledger, and the ledger refuses a directory another user can
+        # read, so the layout closes it to the owner.
+        (self.root / "state").chmod(0o700)
         self.write_marker()
         return outcome
 

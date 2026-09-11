@@ -155,9 +155,35 @@ device on purpose. The end-to-end run with a live model belongs on the
 appliance inside a device window, since the laptop serves production on its
 one Vega device and two cores; it is the first item of Phase 9.
 
+## Phase 5: one origin
+
+`qwen-apu gateway --port N` serves the static page and every `/api/*` route
+from one address: `web/app.py` (closed Host set, Origin allowlist, CSP,
+streaming), `web/auth.py` (a one-time pairing code printed at start, an
+HttpOnly SameSite session cookie, no bearer in any URL or browser store),
+`web/chat.py` and `engines/llama.py` (the router proxied on loopback, bound
+to the server's pid through `runtime.json`), `web/status.py` (gateway pid
+and start time, the approval profile, image profile, provider, and
+signing-key digest the session script read from the broker's health),
+`tools/approvals.py` and `tools/ledger.py` (the broker's gate chain and the
+shared `web-mcp-state.sqlite3` in DELETE journal mode, since WAL would leave
+fetched page text in a sidecar and convert the file for the MCP child),
+`tools/registry.py`, `web/artifacts.py` (bearer-or-session before existence,
+digest names by pattern), `engines/image.py` and `tools/images.py` (the
+worker's control socket, the grant spent once through the ledger between
+admission and the job, review reporting completion, schema validity, and
+judgment apart). `docs/handoff/gateway-inventory.md` names the services and
+the invariants each module carries.
+
+Recorded gaps against the shell services: the meters and the audit trail
+live in memory until Phase 6's SQLite owns them; pairing's eight attempts
+are global rather than per client; the artifact index is new surface; the
+image lane runs `real` mode alone, so the withheld and swapped review
+controls have no route yet; and the checked-in page still targets sibling
+broker and artifact origins through its meta tags, which Phase 8 retargets.
+
 ## Order of the remaining phases
 
-5. Gateway: one origin over the broker, web MCP, artifact, and image services.
 6. Conversations in SQLite with a Temporary mode.
 7. Documents, calculator, file search, artifact export.
 8. WebUI split into ES modules.
