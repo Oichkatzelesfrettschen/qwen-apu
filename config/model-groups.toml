@@ -1,0 +1,45 @@
+# One curated named group of artifact IDs a single install pass admits
+# together. Every id under [groups] names a row of remote/models.tsv except
+# the `image` group, whose three ids name rows of remote/image-artifacts.tsv
+# instead -- the SDXS-512 diffusion, VAE, and text-encoder components the
+# model funnel's first stage loads as one diffusers-layout directory.
+#
+# `all` is not a stored fourth-level union: qwen_apu.install.models.resolve_group
+# computes it as the union of every group listed here, so a group added above
+# reaches `all` without a second edit repeating its members.
+#
+# A `vision` or `dense-vision` row (projector = required in remote/models.tsv)
+# pulls its projector automatically from the row's own projector_fetch_script,
+# so no group below names a projector id itself; resolve_group resolves it
+# through PROJECTOR_ARTIFACT_BY_FETCH_SCRIPT in
+# src/qwen_apu/install/models.py for every selected row, not only the ones
+# listed in the `vision` group -- `research`'s own ministral3-3b carries the
+# same projector requirement.
+
+[groups]
+core = ["qwen35-08b", "qwen38-2b-distill", "qwen38-4b-distill"]
+
+vision = ["qwen35-4b-base", "qwen35-2b", "lfm25-vl-16b"]
+
+personalities = [
+    "qwen35-08b-f16",
+    "qwen38-2b-uncensored",
+    "qwen35-2b-unredacted",
+    "qwen35-2b-heretic",
+    "qwen35-2b-hauhau",
+    "qwen35-08b-unsloth-unc",
+    "qwenseer-2b",
+]
+
+research = [
+    "qwen38-9b-distill",
+    "qwen38-27b-q2kxl",
+    "qwen38-27b-iq3xxs",
+    "qwen38-4b-i1-q2k",
+    "qwen38-4b-i1-q5km",
+    "qwen38-4b-i1-q6k",
+    "nanbeige42-3b",
+    "ministral3-3b",
+]
+
+image = ["sdxs-512-diffusion", "sdxs-512-vae", "sdxs-512-text-encoder"]

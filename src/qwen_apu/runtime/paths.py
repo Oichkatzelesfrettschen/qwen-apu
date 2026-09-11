@@ -95,6 +95,8 @@ _PYTHON_ONLY: tuple[tuple[str, str], ...] = (
     ("qwen_home_runtime_state", "state/runtime.json"),
     ("qwen_home_workload_lock", "state/workload.lock"),
     ("qwen_home_database", "state/qwen-apu.sqlite3"),
+    ("qwen_home_llama_store", "opt/llama"),
+    ("qwen_home_image_store", "opt/stable-diffusion"),
 )
 
 SHELL_NAMES: tuple[str, ...] = ("qwen_tree_root", "qwen_home") + tuple(n for n, _ in _DECLARED)

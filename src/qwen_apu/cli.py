@@ -11,19 +11,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from collections.abc import Sequence
 from dataclasses import asdict
+from pathlib import Path
 
 from qwen_apu import __version__
 from qwen_apu.config import models as registry
-from qwen_apu.install import doctor
+from qwen_apu.config.native import load_native_builds
+from qwen_apu.install import build, doctor, native, source
+from qwen_apu.install import models as model_installer
 from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError, render_paths
 
 UNPORTED: dict[str, str] = {
-    "install": "remote/runtime-root.sh init and the Makefile install targets",
-    "build": "remote/build-llama-vulkan.sh",
-    "models install": "remote/download-*.sh",
     "deployment build": "remote/build-deployment-bundle.sh",
     "deployment activate": "remote/activate-deployment-bundle.sh",
     "deployment rollback": "remote/activate-deployment-bundle.sh rollback",
@@ -46,18 +47,41 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("bootstrap", help="lay out the runtime root and write its marker")
-    sub.add_parser("install", help="install native binaries and models")
-    sub.add_parser("build", help="build native engines from the pinned recipe")
+    install = sub.add_parser("install", help="install a verified native bundle")
+    install.add_argument("--bundle", type=Path, required=True, help="native bundle tar")
+    install.add_argument("--sha256", default=None, help="expected bundle digest")
+    build = sub.add_parser("build", help="build native engines from the pinned recipe")
+    build.add_argument("--recipe", default="llama")
+    build.add_argument(
+        "--source-archive",
+        default=None,
+        help="pinned llama.cpp archive path or URL; a git clone at the "
+        "upstream path is accepted at the pinned commit",
+    )
+    build.add_argument("--jobs", type=int, default=2)
+    native_parser = sub.add_parser("native", help="native bundle store")
+    native_sub = native_parser.add_subparsers(dest="native_command", required=True)
+    native_sub.add_parser("list", help="installed bundles by digest")
+    stage = native_sub.add_parser("stage", help="write a bundle from finished binaries")
+    stage.add_argument("--recipe", default="llama")
+    stage.add_argument("--binary", action="append", default=[], metavar="NAME=PATH")
+    stage.add_argument("--output", type=Path, required=True)
+    stage.add_argument("--source-commit", required=True)
+    stage.add_argument("--compiler-identity", required=True)
+    stage.add_argument("--patch", action="append", default=[], metavar="NAME=SHA256")
     models = sub.add_parser("models", help="model registry operations")
     models_sub = models.add_subparsers(dest="models_command", required=True)
     models_list = models_sub.add_parser("list", help="every registry row, validated whole")
     models_list.add_argument("--json", action="store_true")
     models_list.add_argument("--tier", default=None)
-    models_sub.add_parser("install", help="fetch model groups").add_argument("groups", nargs="*")
+    models_install = models_sub.add_parser("install", help="fetch model groups")
+    models_install.add_argument("groups", nargs="+")
+    models_install.add_argument("--dry-run", action="store_true")
     models_verify = models_sub.add_parser("verify", help="verify registry ledgers cross-consistent")
     models_verify.add_argument(
-        "--artifacts", action="store_true", help="also digest installed model files"
+        "--artifacts", action="store_true", help="also digest installed files of the named groups"
     )
+    models_verify.add_argument("groups", nargs="*")
     deployment = sub.add_parser("deployment", help="deployment lifecycle")
     deployment_sub = deployment.add_subparsers(dest="deployment_command", required=True)
     for name in ("build", "activate", "rollback"):
@@ -122,7 +146,65 @@ def cmd_models_list(as_json: bool, tier: str | None) -> int:
     return 0
 
 
-def cmd_models_verify(paths: RuntimePaths, artifacts: bool) -> int:
+def cmd_models_install(paths: RuntimePaths, groups: list[str], dry_run: bool) -> int:
+    for outcome in model_installer.install(paths, groups, dry_run=dry_run):
+        print(f"{outcome.artifact_id}\t{outcome.status}\t{outcome.destination}")
+    return 0
+
+
+def cmd_install(paths: RuntimePaths, bundle: Path, sha256: str | None) -> int:
+    installed = native.install_bundle(paths, bundle, expected_sha256=sha256)
+    print(f"bundle={installed.digest} root={installed.root}")
+    for record in installed.manifest.executables:
+        print(f"{record.name}\t{record.sha256}\t{installed.executable_path(record.name)}")
+    return 0
+
+
+def cmd_native_list(paths: RuntimePaths) -> int:
+    for bundle in native.installed_bundles(paths):
+        print(f"{bundle.digest}\t{bundle.manifest.recipe}\t{bundle.root}")
+    return 0
+
+
+def cmd_native_stage(args: argparse.Namespace) -> int:
+    recipe = load_native_builds().recipes[args.recipe]
+    binaries = {name: Path(path) for name, path in (item.split("=", 1) for item in args.binary)}
+    patches = dict(item.split("=", 1) for item in args.patch)
+    manifest = native.stage_bundle(
+        binaries,
+        args.output,
+        recipe=recipe,
+        source_commit=args.source_commit,
+        patch_series_digest=patches,
+        compiler_identity=args.compiler_identity,
+        build_defines=recipe.cmake_defines,
+    )
+    print(
+        f"bundle={manifest.bundle_sha256} manifest={manifest.manifest_sha256} output={args.output}"
+    )
+    return 0
+
+
+def cmd_build(paths: RuntimePaths, recipe_name: str, source_archive: str | None, jobs: int) -> int:
+    recipe = load_native_builds().recipes[recipe_name]
+    build.require_toolchain(tuple(recipe.required_commands))
+    upstream = source.acquire_upstream(paths, recipe.upstream_commit, archive_url=source_archive)
+    target = paths["qwen_home_llama_source"]
+    # The replay digests pin the production series; a candidate member is a
+    # measurement arm and joins a build through its own preset, never here.
+    production = [m for m in registry.load_patch_series() if m.stage == "production"]
+    application = source.apply_series(upstream, target, production, paths.tree / "patches")
+    for relocation in application.relocations:
+        print(f"relocated\t{relocation}")
+    build_dir = target / recipe.build_directory_name
+    build.configure_and_build(
+        target, build_dir, dict(recipe.cmake_defines), tuple(recipe.targets), jobs=jobs
+    )
+    print(f"build={build_dir}")
+    return 0
+
+
+def cmd_models_verify(paths: RuntimePaths, artifacts: bool, groups: list[str]) -> int:
     registry.load_models()
     registry.load_draft_pairs()
     registry.load_ctx_checkpoints()
@@ -131,8 +213,11 @@ def cmd_models_verify(paths: RuntimePaths, artifacts: bool) -> int:
     registry.load_model_artifacts()
     print("registry=consistent")
     if artifacts:
-        print("artifact digests: still owned by remote/verify-models.sh", file=sys.stderr)
-        return 2
+        failures = 0
+        for outcome in model_installer.verify(paths, groups or ["all"]):
+            print(f"{outcome.artifact_id}\t{outcome.status}\t{outcome.destination}")
+            failures += outcome.status != "verified"
+        return 1 if failures else 0
     return 0
 
 
@@ -162,16 +247,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.models_command == "list":
                 return cmd_models_list(args.json, args.tier)
             if args.models_command == "verify":
-                return cmd_models_verify(paths, args.artifacts)
-            return unported("models install")
+                return cmd_models_verify(paths, args.artifacts, args.groups)
+            return cmd_models_install(paths, args.groups, args.dry_run)
+        if args.command == "install":
+            return cmd_install(paths, args.bundle, args.sha256)
+        if args.command == "build":
+            return cmd_build(paths, args.recipe, args.source_archive, args.jobs)
+        if args.command == "native":
+            if args.native_command == "list":
+                return cmd_native_list(paths)
+            return cmd_native_stage(args)
         if args.command == "deployment":
             return unported(f"deployment {args.deployment_command}")
         return unported(args.command)
     except RuntimeRootError as error:
         print(f"qwen-apu: {error}", file=sys.stderr)
         return 2
-    except ValueError as error:
+    except (ValueError, RuntimeError) as error:
         print(f"qwen-apu: {error}", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as error:
+        print(f"qwen-apu: {error.cmd[0]} exited {error.returncode}", file=sys.stderr)
         return 1
 
 

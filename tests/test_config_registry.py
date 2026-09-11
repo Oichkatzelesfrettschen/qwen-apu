@@ -252,7 +252,15 @@ def test_model_artifacts_web_profiles_feature_claims_load(
     artifacts = m.load_model_artifacts()
     artifact_table = read_ledger(REMOTE / "model-artifacts.tsv", key_index=0)
     assert len(artifacts) == len(artifact_table.rows)
-    assert {row.model_id for row in artifacts} <= {row.id for row in model_rows}
+    # remote/model-artifacts.tsv carries one row per remote/download-*.sh
+    # artifact, which is wider than remote/models.tsv: a projector, an
+    # unregistered bf16 or i1 rung, and a pre-admission candidate each fetch
+    # under their own model_id without a models.tsv row of their own. The
+    # direction that must hold is the other one -- every models.tsv row whose
+    # fetch_script names a download script (excluding a derive-*.sh row,
+    # which is produced on the appliance rather than fetched) has its pin.
+    servable_ids = {row.id for row in model_rows if row.fetch_script.startswith("download-")}
+    assert servable_ids <= {row.model_id for row in artifacts}
 
     web_profiles = m.load_web_profiles(models=model_rows)
     web_profile_table = read_ledger(REMOTE / "web-profiles.tsv", key_index=0)

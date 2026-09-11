@@ -1,7 +1,48 @@
 # One publisher-pinned identity owns each fetched artifact used by a measured
 # campaign. Downloaders and measurement runners read this ledger rather than
 # duplicating byte counts and digests in separate programs.
+#
+# Every remote/download-*.sh language-model or projector artifact has a row
+# here, keyed by the model ID its own script or remote/models.tsv names.
+# remote/image-artifacts.tsv carries the SD 1.5, SD-Turbo, SDXS-512, and
+# LCM-LoRA image-lane files instead: that ledger's component_type, license,
+# and fetch_script columns describe what remote/image-models.tsv bundles
+# resolve each file into, a claim this six-column schema has no room for, and
+# splitting the two ledgers keeps a bundle's component resolution independent
+# of a language model's directory-derived install path.
+# remote/download-quality-photo.sh pins a Wikimedia fixture through a bare
+# URL rather than a HuggingFace repository and revision pair, so it carries no
+# row: the source_repository column's owner/name shape has nothing to hold.
 # model_id	model_file	expected_bytes	expected_sha256	source_repository	source_revision
 qwen35-08b	Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf	833592096	37ae482d336108d23516fa35e8e0c4126688d81018b87178a18d752a1357814f	ggml-org/Qwen3.5-0.8B-GGUF	8fea620810c4afa23dd6443f999a48574c1611a3
 qwen38-2b-distill	Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf	1312164224	4aa0fb13c431514262f259d420ecc95a8714df58ac2a2384514e20b93983f0ff	empero-ai/Qwen3.8-2B-Distill-GGUF	f4f73582d0b149595450c719b9a7521a03894f9c
 qwen38-4b-distill	Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf	2783446304	dec96e8cf2e11b613bb46513dec485377f9ca5a351e71712ee0e244f287c6790	empero-ai/Qwen3.8-4B-Distill-GGUF	391fc7d103e3942a408def3e4f51c2f85d464417
+lfm25-vl-16b-mmproj	LFM2.5-VL-1.6B-GGUF/mmproj-LFM2.5-VL-1.6b-Q8_0.gguf	583109888	2ce89e610c56f3198ece2b86cf61743a08b9307279c89125eb2412ebb908689d	LiquidAI/LFM2.5-VL-1.6B-GGUF	36fc16bc95133424921bcc3da009e83b2f23ffb5
+lfm25-vl-16b	LFM2.5-VL-1.6B-GGUF/LFM2.5-VL-1.6B-Q4_K_M.gguf	730896256	aefc3c97c9eb30d9c0dd6af4c38250f5f5106b57c8cf92de7914c7d0a9c94da2	LiquidAI/LFM2.5-VL-1.6B-GGUF	36fc16bc95133424921bcc3da009e83b2f23ffb5
+minicpm5-1b	candidate-staging/minicpm5-1b-stock/MiniCPM5-1B-Q8_0.gguf	1153529216	0dc7638539067268774c275a14a6ec9c7e01f7eeb2cff606c8590361fa527e4c	openbmb/MiniCPM5-1B-GGUF	3d55fac80935ae6456986ad2384b5cbcc4d6c948
+minicpm5-1b-fable5-v2	candidate-staging/minicpm5-1b-fable5-v2/MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking-Q8_0.gguf	1153529184	fc3ee1eddd305c155f63b6bd7bb189daa4d5f226ca325ab219bd7acd3b00ec77	GnLOLot/MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking-GGUF	1c5821260e77c42e0b350f0248fabcf3c90ecade
+ministral3-3b-mmproj	Ministral-3-3B-Instruct-GGUF/mmproj-Ministral-3-3B-Instruct-f16.gguf	840297088	3a9ac557c043fb501029638546724c2d338893b4a113854ab17188254052c000	bartowski/mistralai_Ministral-3-3B-Instruct-2512-GGUF	0a9035302dea19872c96076896304552890a73c2
+ministral3-3b	Ministral-3-3B-Instruct-GGUF/Ministral-3-3B-Instruct-Q4_K_M.gguf	2146498528	fec9d28c7f8dab7c6857d54b56c8264cce57d6f6d9003bd4110f6457f071c65a	bartowski/mistralai_Ministral-3-3B-Instruct-2512-GGUF	0a9035302dea19872c96076896304552890a73c2
+nanbeige42-3b	Nanbeige4.2-3B-GGUF/Nanbeige4.2-3B-Q4_K_M.gguf	2574807986	18a659d0c1744e5bd2f4b8da55e0dcabf42ec7f005b74ec8eb66593b3380f958	Abiray/Nanbeige4.2-3B-GGUF	774a61f8217ad18e7e102107fb7abcfecfae6a99
+qwen35-08b-bf16	Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-bf16.gguf	1557662528	ad1549eedc613064971dcbbbfab6c9b7990984d1c9ab38f792c6f2ec1207bbc2	bartowski/Qwen_Qwen3.5-0.8B-GGUF	f36b1ea49a332ede8fe5f389bbf5b3575ef71f48
+qwen35-08b-unsloth-unc	Qwen3.5-0.8B-Uncensored-GGUF/Qwen3.5-0.8B.Q4_K_M.gguf	529297024	190e491ddb9fa66485d0ef46000677413bf47217896b01ca647717a990aca744	tsilva/unsloth_Qwen3.5-0.8B_uncensored	2333f32297e44073d7f7e5259034b4a24c166c67
+qwen35-2b-hauhau	Qwen3.5-2B-Uncensored-HauhauCS-Aggressive-GGUF/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf	1270808032	be3ccca13a9d1bc8b67165ea80bd103cd6151a37ad131183cc7ca388f78d9517	HauhauCS/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive	2bcf35c1ebf62c837c12c1aa90b578ff4717e831
+qwen35-2b-heretic	Qwen3.5-2B-Opus-Distilled-Heretic-GGUF/Qwen3.5-2B-Opus-Distilled-Heretic-Thinking-Multistage-SFT-v1.0.Q4_K_M.gguf	1274396512	a4abaa15144864347f391712d8f59ba379305ba8cae1bd3237450dd86a917893	prithivMLmods/Qwen3.5-2B-Opus-Distilled-Heretic-Thinking-Multistage-SFT-v1.0-GGUF	48027b695bf608bbfd60c7d708e664e8999afe79
+qwen35-2b-mmproj	Qwen3.5-2B-GGUF/mmproj-Qwen3.5-2B-f16.gguf	668227136	044a0ea136cca70711ae16e23b24d754b44eab6f2462d187aee4d7c7a9503d36	bartowski/Qwen_Qwen3.5-2B-GGUF	7d26695454df6de5fbcce2e58681e62dae06ce43
+qwen35-2b	Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf	1396198496	57a1085840f497d764a7fc5d346922dbde961efb54cc792ea81d694fd846a1d8	bartowski/Qwen_Qwen3.5-2B-GGUF	7d26695454df6de5fbcce2e58681e62dae06ce43
+qwen35-2b-unredacted	Qwen3.5-2B-Unredacted-MAX-GGUF/Qwen3.5-2B-Unredacted-MAX.Q4_K_M.gguf	1270809056	b0d7d09194dbaa1ec01edd3424494e820038da27f518288da44594bdce5b937c	mradermacher/Qwen3.5-2B-Unredacted-MAX-GGUF	69d5860d3e02d2214ce0a7c5ff89cd8f769391ae
+qwen35-4b-base-mmproj	Qwen3.5-4B-GGUF/mmproj-F16.gguf	672423616	cd88edcf8d031894960bb0c9c5b9b7e1fea6ebee02b9f7ce925a00d12891f864	unsloth/Qwen3.5-4B-GGUF	e87f176479d0855a907a41277aca2f8ee7a09523
+qwen35-4b-base	Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf	2740937888	00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4	unsloth/Qwen3.5-4B-GGUF	e87f176479d0855a907a41277aca2f8ee7a09523
+qwen35-9b-defiant-fable	Qwen3.5-9B-Defiant-Fable-GGUF/Qwen3.5-9B-The-Defiant-Fable-Uncnr-Heretic-NEO-MAX-IQ2_M.gguf	4942441760	ae9679dee69a4cb3a9375efa3644adc0164a362c61df2b283696d05e57df2fca	DavidAU/Qwen3.5-9B-The-Defiant-Fable-Uncensored-Heretic-NEO-IMATRIX-MAX-MTP-GGUF	239d236baf9172e5a4663add74bd34fd297b1c08
+qwen38-27b-q2kxl	Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q2_K_XL.gguf	9828981664	fd4730dd8aad070517978752b63d530aeb1740d2283cab9fa24f1e404032ddb0	unsloth/Qwen3.8-27B-GGUF	4ca720788d1e01f1bff70c033e0d0028fd02e502
+qwen38-27b-iq3xxs	Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-IQ3_XXS.gguf	10934860704	c0b7c3038681ed2e3040456c1dd45f9858b6c2290bed172c70388a94874f3eee	unsloth/Qwen3.8-27B-GGUF	4ca720788d1e01f1bff70c033e0d0028fd02e502
+qwen38-27b-iq3s	Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-IQ3_S.gguf	12040883104	d847e2c1e4aa276e4b7b8e9ad7628050e61e165d49ab995407bc36677a6f3864	unsloth/Qwen3.8-27B-GGUF	4ca720788d1e01f1bff70c033e0d0028fd02e502
+qwen38-27b-iq4xs	Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-IQ4_XS.gguf	14252845984	40fac4050e940397dbf13087afd50f4734a11805bf9d65ef8ddd7483470e6199	unsloth/Qwen3.8-27B-GGUF	4ca720788d1e01f1bff70c033e0d0028fd02e502
+qwen38-2b-distill-bf16	Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-BF16.gguf	3897387392	44763f3d83f0a1a3ee63334b60916705dc565d796cb0f2b8c320414c57f4ac48	empero-ai/Qwen3.8-2B-Distill-GGUF	f4f73582d0b149595450c719b9a7521a03894f9c
+qwen38-2b-uncensored	Qwen3.8-2B-Uncensored-GGUF/Qwen3.8-2B-Uncensored-Q4_K_M.gguf	1274396640	61713f6d29b507f0ddd2ed989683e3a5e997b920b0c4901ee8f332321d4b0cc9	atakhadivi/Qwen3.8-2B-Uncensored-GGUF	649ee94d3f0e61c8e66ba77ec4d62fa0d4669f72
+qwen38-4b-i1-iq3s	Qwen3.8-4B-Distill-IQ3_S-GGUF/Qwen3.8-4B-i1-IQ3_S.gguf	2191729152	9ae7a1dd4fc1a582e34208962cad03f6eea8f47e0e8cb31829df0c126e690eba	mradermacher/Qwen3.8-4B-Distill-i1-GGUF	928c6e4495232aee6780d27b79056b4ce63855dc
+qwen38-4b-i1-q2k	Qwen3.8-4B-Distill-Q2_K-GGUF/Qwen3.8-4B-i1-Q2_K.gguf	1959168512	434c68a076c5e62da6f0ae01d5eff5211a04f3ff76092756d5d8ccfaf6534736	mradermacher/Qwen3.8-4B-Distill-i1-GGUF	928c6e4495232aee6780d27b79056b4ce63855dc
+qwen38-4b-i1-q5km	Qwen3.8-4B-Distill-Q5_K_M-GGUF/Qwen3.8-4B-i1-Q5_K_M.gguf	3161426432	e050bca9c74d996992d65b3421b3add4cbd387ccf49cc68455336d0ffde2cfdd	mradermacher/Qwen3.8-4B-Distill-i1-GGUF	928c6e4495232aee6780d27b79056b4ce63855dc
+qwen38-4b-i1-q6k	Qwen3.8-4B-Distill-Q6_K-GGUF/Qwen3.8-4B-i1-Q6_K.gguf	3563028992	e39712a3f9eb7d46274ff7503f0297d6a38d3bc2a6f4081d6e8a2a00d907e417	mradermacher/Qwen3.8-4B-Distill-i1-GGUF	928c6e4495232aee6780d27b79056b4ce63855dc
+qwen38-9b-distill	Qwen3.8-9B-Distill-GGUF/Qwen3.8-9B-Q4_K_M.gguf	5780090176	df13d66021cef676f82be74053220fd75af6bf2a6a7fb77f5222ab9e50744a7a	empero-ai/Qwen3.8-9B-Distill-GGUF	760121cd70bb4c36b2b5ec58eb765e0df5987efe
+qwenseer-2b	Qwenseer-2B-GGUF/Qwenseer-2B.Q4_K_M.gguf	1312164640	52826f504f68991c0f60e34ee203df383a405ea770635f3c37fa2823736b09a5	skyyuno/Qwenseer-2B-GGUF	81416455dfc8ab9df46e0e161a19364b32cd3aab

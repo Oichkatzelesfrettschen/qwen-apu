@@ -46,10 +46,69 @@ refuses growth, `shell=True`, string subprocess commands, `sudo` under
 `src/qwen_apu/`, and owned paths outside the root. `python -m qwen_apu.ci`
 runs the ratchet, ruff, mypy, and pytest as one hosted job.
 
+## Phase 2: downloads, native bundles, the source path
+
+| Component | Python authority | Shell authority it matches | Parity test |
+| --- | --- | --- | --- |
+| Model fetch | `qwen_apu.install.downloads` | `remote/download-*.sh` | `tests/test_install_models.py` |
+| Artifact pins | `remote/model-artifacts.tsv` (32 rows) | the inline pins of every download script | same |
+| Groups | `config/model-groups.toml` | -- | same |
+| Native recipe | `config/native-builds.toml`, `qwen_apu.config.native` | `build-llama-vulkan.sh`, `build-stable-diffusion-vulkan.sh` | `tests/test_install_native.py` |
+| Native bundle | `qwen_apu.install.native`, `artifacts` | `promote-llama-build.sh` (manifest, digests, closure) | same |
+| Source path | `qwen_apu.install.source`, `build` | `prepare-llama-vulkan-source.sh`, `verify-llama-patch-series.sh` | `tests/test_install_source.py` |
+
+A native bundle is a tar carrying executables and `native-manifest.json`; the
+manifest digests every member, records each executable's `PT_INTERP`,
+`DT_NEEDED`, and highest `GLIBC_` version from the ELF alone, and seals the
+provenance claims (upstream commit, patch series digests, cmake defines,
+compiler identity) under `manifest_sha256`. A bundle installs under
+`opt/llama/<bundle-digest>/` through a staging directory and `os.replace`,
+and `bin/<target>` links point into it. The source path downloads the pinned
+archive without git, applies the production series with git's `find_pos`
+search, and reports the four hunks that land at a nonzero offset
+(`llama-vulkan-duty-cycle.patch` at +4 three times,
+`llama-vulkan-runtime-submit-limit.patch` at -1), which `git apply` relocates
+silently; the ten replay digests and the series digest match the shell.
+
+`build-llama-vulkan.sh` and `build-llama-preset.sh` build disjoint tool sets
+(`llama-quantize` against `llama-bench`) under different defines, so the
+recipe encodes the first and names its profile `raven2-vulkan`; a bundle
+carries whichever targets the staging call names. The four native probes stay
+as C sources under `remote/` until the scripts that compile them are ported.
+
+### Phase 2 acceptance on the appliance
+
+A fresh root on the laptop, bootstrapped from the branch, staged a llama
+bundle from the deployed `llama-server` and the production tool builds,
+installed it under `strace -f` with zero writes outside the root, ran the
+installed server (`--version` reports commit f280b26, GNU 13.3.0), fetched
+the `core` group from Hugging Face, verified all three by byte count and
+SHA-256, and reported doctor green: python 3.12.3, root bound, render node
+amdgpu raven2, RADV ICD present. The Python path invoked git, cmake, and a
+compiler at no point; the bundle's executables came from the earlier shell
+builds. `sd-cli` and `llama-bench` await their own staging call and the
+stable-diffusion recipe's bundle.
+
+| Step | Result |
+| --- | ---: |
+| bundle digest | 3b8bffbf057a |
+| bundle install writes outside root | 0 |
+| core group download | 3 min 49 s |
+| core group verify | 3 of 3 verified |
+
+### The source path and the host compiler
+
+`qwen-apu build` on the workstation acquires the pinned archive, applies the
+production series, and configures with the recipe's defines, then GCC 16
+refuses `tools/mtmd/clip-graph.h` under `-Werror` with
+`-Wdeprecated-enum-enum-conversion`; the laptop's GCC 13.3 compiles the same
+commit. The pinned commit therefore binds the source path to a toolchain
+generation, which is what `opt/toolchains` will pin; until then the source
+path is proven through the digest gate and the prebuilt bundle is the
+installation path.
+
 ## Order of the remaining phases
 
-2. Downloads and native artifacts: model digests, source acquisition, patch
-   application, the prebuilt Raven2 bundle, `config/native-builds.toml`.
 3. Deployment manager: build, activate, rollback under `fcntl` locks with
    `os.replace`.
 4. Supervisor: foreground by default, `--daemon` through `start_new_session`,

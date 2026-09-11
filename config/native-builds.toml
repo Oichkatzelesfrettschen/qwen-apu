@@ -1,0 +1,157 @@
+# The declarative native build recipes: one section per engine this appliance
+# compiles, stating the pinned upstream commit, the generator, the targets, and
+# every cmake -D flag the corresponding shell script passes.
+#
+# remote/build-llama-vulkan.sh and remote/build-stable-diffusion-vulkan.sh are
+# the executing authorities; this file restates what they pass so a prebuilt
+# native bundle carries a machine-readable identity of the build that produced
+# it, and tests/test_install_native.py parses each script's own -D lines and
+# refuses a divergence in either direction.
+#
+# `profile` is this file's label for the arm, distinct from the preset
+# vocabulary remote/build-llama-preset.sh owns. That script builds
+# `raven2-vulkan-production` with llama-bench and without llama-quantize, under
+# znver1 tuning and ccache; the `[llama]` recipe below encodes
+# remote/build-llama-vulkan.sh, which builds llama-quantize, names no
+# microarchitecture, and turns ccache off.
+#
+# `[*.backends]` and `[*.build]` are views over `cmake_defines`:
+# src/qwen_apu/config/native.py maps each key to its define, requires the
+# declared value to equal it, and requires every define to be named by exactly
+# one such key, so a flag changed in one place refuses the whole file.
+
+schema = 1
+
+[llama]
+profile = "raven2-vulkan"
+build_script = "remote/build-llama-vulkan.sh"
+build_directory_name = "build-qwen-vulkan"
+install_prefix = "opt/llama"
+generator = "Ninja"
+upstream_repository = "ggml-org/llama.cpp"
+upstream_commit = "f280b26983ad0fdb705a0d9ebf0503e76f2899b0"
+patch_series = "remote/llama-patch-series.tsv"
+patched_sources = "remote/llama-patched-sources.tsv"
+targets = ["llama-server", "llama-cli", "llama-mtmd-cli", "llama-quantize"]
+required_commands = ["cmake", "ninja", "glslc", "cc", "c++"]
+
+[llama.backends]
+vulkan = true
+cpu = true
+blas = false
+cuda = false
+hip = false
+opencl = false
+rpc = false
+sycl = false
+
+[llama.build]
+build_type = "Release"
+shared_libs = false
+ccache = false
+native = false
+openmp = false
+llamafile = false
+llama_fatal_warnings = true
+ggml_fatal_warnings = true
+build_app = false
+build_examples = false
+build_server = true
+build_tests = true
+build_tools = true
+build_ui = false
+prebuilt_ui = false
+openssl = false
+
+# Every -D flag remote/build-llama-vulkan.sh passes, in the order it passes it.
+[llama.cmake_defines]
+CMAKE_BUILD_TYPE = "Release"
+BUILD_SHARED_LIBS = "OFF"
+LLAMA_FATAL_WARNINGS = "ON"
+LLAMA_BUILD_APP = "OFF"
+LLAMA_BUILD_EXAMPLES = "OFF"
+LLAMA_BUILD_SERVER = "ON"
+LLAMA_BUILD_TESTS = "ON"
+LLAMA_BUILD_TOOLS = "ON"
+LLAMA_BUILD_UI = "OFF"
+LLAMA_USE_PREBUILT_UI = "OFF"
+LLAMA_OPENSSL = "OFF"
+GGML_BLAS = "OFF"
+GGML_CCACHE = "OFF"
+GGML_CPU = "ON"
+GGML_CUDA = "OFF"
+GGML_FATAL_WARNINGS = "ON"
+GGML_HIP = "OFF"
+GGML_LLAMAFILE = "OFF"
+GGML_NATIVE = "OFF"
+GGML_OPENCL = "OFF"
+GGML_OPENMP = "OFF"
+GGML_RPC = "OFF"
+GGML_SYCL = "OFF"
+GGML_VULKAN = "ON"
+
+[stable_diffusion]
+profile = "raven2"
+build_script = "remote/build-stable-diffusion-vulkan.sh"
+build_directory_name = "build-raven2"
+install_prefix = "opt/stable-diffusion"
+generator = "Ninja"
+upstream_repository = "leejet/stable-diffusion.cpp"
+upstream_commit = "de298c225bed97c3f9026b73cd7b71e7879bd41b"
+submodule_commit = "8e800cef2948046cc47f9db6090491c6128ca42c"
+targets = ["sd-cli"]
+required_commands = ["cmake", "ninja", "glslc", "cc", "c++", "sha256sum", "vulkaninfo"]
+# The configure step reads vulkaninfo twice and requires the restricted pass to
+# enumerate exactly this one device through the RADV ICD, so a build configured
+# against another stack refuses before cmake runs.
+device = "RADV RAVEN2"
+
+[stable_diffusion.backends]
+vulkan = true
+blas = false
+cuda = false
+hipblas = false
+metal = false
+musa = false
+opencl = false
+sycl = false
+
+[stable_diffusion.build]
+build_type = "Release"
+shared_libs = false
+ccache = false
+native = false
+openmp = false
+build_examples = true
+export_compile_commands = true
+
+# Every -D flag remote/build-stable-diffusion-vulkan.sh passes, in the order it
+# passes it. Its own `cmake_flags` string restates the same set for the build
+# manifest, and the parity test compares all three.
+[stable_diffusion.cmake_defines]
+CMAKE_BUILD_TYPE = "Release"
+CMAKE_EXPORT_COMPILE_COMMANDS = "ON"
+SD_VULKAN = "ON"
+SD_BUILD_EXAMPLES = "ON"
+SD_CUDA = "OFF"
+SD_HIPBLAS = "OFF"
+SD_METAL = "OFF"
+SD_OPENCL = "OFF"
+SD_SYCL = "OFF"
+SD_MUSA = "OFF"
+SD_BUILD_SHARED_LIBS = "OFF"
+GGML_NATIVE = "OFF"
+GGML_CCACHE = "OFF"
+GGML_OPENMP = "OFF"
+GGML_BLAS = "OFF"
+
+# The SPIR-V producer the shader pack is compiled by, stated at
+# remote/shaderc-toolchain.tsv and restated here so a recipe reader sees the
+# whole native toolchain in one file.
+[shaderc]
+project = "google/shaderc"
+revision = "v2026.3"
+archive_url = "https://github.com/google/shaderc/archive/refs/tags/v2026.3.tar.gz"
+archive_sha256 = "ee493ccf1b3038b4ef2fe024664c5eb2dc4bcc1f6b05b33e3909de0e19c81024"
+prefix = "qwen-shaderc-v2026.3"
+minimum_glslc_version = "2023.2"
