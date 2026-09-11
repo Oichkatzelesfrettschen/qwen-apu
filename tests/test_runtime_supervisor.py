@@ -389,7 +389,7 @@ def test_supervisor_serves_then_stops_on_sigterm_with_no_residue(
         hazard_source,
     )
     try:
-        running = await_state(runtime_root, "running", "guard_ready", FIXTURE_DEADLINE_SECONDS)
+        running = await_state(runtime_root, "ready", "guard_ready", FIXTURE_DEADLINE_SECONDS)
         assert running.port == leased_port
         assert running.model_id == "qwen38-2b-distill"
         assert running.deployment == "bundle-fixture"
@@ -433,7 +433,7 @@ def test_supervisor_stops_over_the_control_socket(
         hazard_source,
     )
     try:
-        await_state(runtime_root, "running", "guard_ready", FIXTURE_DEADLINE_SECONDS)
+        await_state(runtime_root, "ready", "guard_ready", FIXTURE_DEADLINE_SECONDS)
 
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(5.0)
@@ -441,7 +441,7 @@ def test_supervisor_stops_over_the_control_socket(
         client.sendall(b"status\n")
         answer = json.loads(client.recv(65536).decode("utf-8"))
         client.close()
-        assert answer["state"] == "running"
+        assert answer["state"] == "ready"
         assert answer["port"] == leased_port
 
         outcome = stop(runtime_root, timeout_s=OBSERVATION_DEADLINE_SECONDS)
@@ -470,7 +470,7 @@ def test_supervisor_reports_a_child_crash_as_failed_and_keeps_the_primary_failur
         hazard_source,
     )
     try:
-        running = await_state(runtime_root, "running", "guard_ready", FIXTURE_DEADLINE_SECONDS)
+        running = await_state(runtime_root, "ready", "guard_ready", FIXTURE_DEADLINE_SECONDS)
         os.kill(running.server_pid, signal.SIGKILL)
         assert supervisor.wait(timeout=OBSERVATION_DEADLINE_SECONDS) == 1
     finally:
@@ -610,7 +610,7 @@ def test_supervisor_reports_a_held_lease_as_residue_and_exits_non_zero(
     lease = WorkloadLease.in_state_directory(runtime_root["qwen_home_state"])
     descriptor: int | None = None
     try:
-        await_state(runtime_root, "running", "guard_ready", FIXTURE_DEADLINE_SECONDS)
+        await_state(runtime_root, "ready", "guard_ready", FIXTURE_DEADLINE_SECONDS)
         descriptor = os.open(lease.path, os.O_RDWR)
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         supervisor.send_signal(signal.SIGTERM)
@@ -679,7 +679,7 @@ def test_supervisor_daemonizes_into_its_own_session_and_stops_over_the_socket(
     assert launcher.stdout.startswith("supervisor pid=")
     daemon_pid = int(launcher.stdout.split("pid=")[1].split()[0])
     try:
-        running = await_state(runtime_root, "running", "guard_ready", FIXTURE_DEADLINE_SECONDS)
+        running = await_state(runtime_root, "ready", "guard_ready", FIXTURE_DEADLINE_SECONDS)
         assert running.supervisor_pid == daemon_pid
         # A session leader's process group is its own pid, so the terminal that
         # started it reaches nothing.
@@ -861,3 +861,130 @@ def test_control_socket_binds_under_a_long_runtime_root(tmp_path: Path) -> None:
             client.close()
     finally:
         listener.close()
+
+
+# -- readiness: process health beside model readiness ---------------------
+
+
+@shell_required
+def test_the_record_separates_process_ownership_from_model_readiness(
+    tmp_path: Path, runtime_root: RuntimePaths, leased_port: int
+) -> None:
+    """`loading` states an owned child and `ready` states a model that answers.
+
+    `/health` reports `{"status": "ok"}` once a checkpoint finished loading and
+    names none, so `ready` also requires `/v1/models` to answer with the name
+    the launch declared. The record then carries that name, which is what the
+    gateway's roster joins the registry against.
+    """
+    hazard_source = tmp_path / "kernel.log"
+    hazard_source.write_text("", encoding="utf-8")
+    environment = fake_server_environment(leased_port, tmp_path / "argv.txt")
+    environment["QWEN_FAKE_SERVER_MODELS"] = "qwen-apu"
+    supervisor = launch_supervisor(
+        runtime_root,
+        tmp_path,
+        plan_payload(
+            runtime_root,
+            leased_port,
+            tmp_path / "argv.txt",
+            env=environment,
+            mode="standalone",
+            expected_models=["qwen-apu"],
+        ),
+        hazard_source,
+    )
+    try:
+        loading = await_state(runtime_root, "loading", "guard_ready", FIXTURE_DEADLINE_SECONDS)
+        assert loading.server_pid > 0
+        assert loading.served_models == ()
+        ready = await_state(runtime_root, "ready", "guard_ready", FIXTURE_DEADLINE_SECONDS)
+        assert ready.served_models == ("qwen-apu",)
+        assert ready.mode == "standalone"
+        assert ready.is_serving
+        assert not ready.is_terminal
+        supervisor.send_signal(signal.SIGTERM)
+        assert supervisor.wait(timeout=OBSERVATION_DEADLINE_SECONDS) == 0
+    finally:
+        supervisor.kill()
+    await_state(runtime_root, "stopped", "guard_observation", OBSERVATION_DEADLINE_SECONDS)
+    require_clean_departure(runtime_root, leased_port)
+
+
+@shell_required
+def test_a_server_naming_another_model_is_refused_rather_than_served(
+    tmp_path: Path, runtime_root: RuntimePaths, leased_port: int
+) -> None:
+    """A healthy process holding the wrong checkpoint fails the launch by name.
+
+    This is the case `/health` alone cannot see: the server loaded, answers
+    `ok`, and serves a checkpoint the argv never named. The launch ends on
+    `failed` with the reason rather than admitting an attribution nothing
+    checked.
+    """
+    hazard_source = tmp_path / "kernel.log"
+    hazard_source.write_text("", encoding="utf-8")
+    environment = fake_server_environment(leased_port, tmp_path / "argv.txt")
+    environment["QWEN_FAKE_SERVER_MODELS"] = "a-checkpoint-the-argv-never-named"
+    supervisor = launch_supervisor(
+        runtime_root,
+        tmp_path,
+        plan_payload(
+            runtime_root,
+            leased_port,
+            tmp_path / "argv.txt",
+            env=environment,
+            mode="standalone",
+            expected_models=["qwen-apu"],
+        ),
+        hazard_source,
+    )
+    try:
+        failed = await_state(runtime_root, "failed", "guard_observation", FIXTURE_DEADLINE_SECONDS)
+        assert failed.primary_failure is not None
+        assert failed.primary_failure.startswith("model_refused")
+        assert "qwen-apu" in failed.primary_failure
+        assert supervisor.wait(timeout=OBSERVATION_DEADLINE_SECONDS) == 1
+    finally:
+        supervisor.kill()
+    require_clean_departure(runtime_root, leased_port)
+
+
+@shell_required
+def test_router_readiness_requires_no_name_because_one_section_loads_at_a_time(
+    tmp_path: Path, runtime_root: RuntimePaths, leased_port: int
+) -> None:
+    """`--models-max 1` keeps one section resident, so a name requirement would refuse.
+
+    The router's preset admits several checkpoints and loads one; requiring
+    every section name at readiness would refuse a router for serving exactly
+    what it was configured to serve. The record still carries whichever name the
+    server answered with.
+    """
+    hazard_source = tmp_path / "kernel.log"
+    hazard_source.write_text("", encoding="utf-8")
+    environment = fake_server_environment(leased_port, tmp_path / "argv.txt")
+    environment["QWEN_FAKE_SERVER_MODELS"] = "qwen38-2b-distill"
+    supervisor = launch_supervisor(
+        runtime_root,
+        tmp_path,
+        plan_payload(
+            runtime_root,
+            leased_port,
+            tmp_path / "argv.txt",
+            env=environment,
+            mode="router",
+            model_id="router",
+            expected_models=["qwen38-2b-distill", "qwen38-4b-distill"],
+        ),
+        hazard_source,
+    )
+    try:
+        ready = await_state(runtime_root, "ready", "guard_ready", FIXTURE_DEADLINE_SECONDS)
+        assert ready.mode == "router"
+        assert ready.served_models == ("qwen38-2b-distill",)
+        supervisor.send_signal(signal.SIGTERM)
+        assert supervisor.wait(timeout=OBSERVATION_DEADLINE_SECONDS) == 0
+    finally:
+        supervisor.kill()
+    require_clean_departure(runtime_root, leased_port)
