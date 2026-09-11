@@ -41,7 +41,7 @@ import time
 import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from http.client import HTTPConnection, HTTPResponse
+from http.client import HTTPConnection, HTTPException, HTTPResponse
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -52,6 +52,7 @@ from qwen_apu.runtime.locks import WorkloadLease
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import read_start_time
 from qwen_apu.web import browser_import
+from qwen_apu.web.auth import PAIRING_CODE_FILENAME
 from qwen_apu.web.history import DOCUMENT_VERSION, conversation_to_json
 from qwen_apu.web.roster import ROSTER_STATES, quantization
 
@@ -71,6 +72,10 @@ DEFAULT_VISION_MODELS: tuple[str, ...] = ("lfm25-vl-16b",)
 DEFAULT_TIMEOUT_SECONDS = 120.0
 DEFAULT_MAX_TOKENS = 48
 STREAM_READ_BYTES = 256
+# The one request that asks for a long answer. A stream that completes before
+# the driver's first read leaves nothing to abandon, so the cancel item would
+# pass without ever cancelling anything.
+CANCEL_TOKENS = 512
 RESTART_SETTLE_SECONDS = 1.0
 RESTART_DEADLINE_SECONDS = 180.0
 
@@ -79,6 +84,11 @@ RESTART_DEADLINE_SECONDS = 180.0
 # item tests is that the reply names the checkpoint the request selected.
 TEXT_PROMPT = "Reply with the single word: ready."
 VISION_PROMPT = "Name the tallest bar in this chart."
+
+# The substring a document refusal carries when the format's extractor is the
+# thing that is missing. `tools/document_worker.py` imports pypdf at call time,
+# so a venv without it names the distribution in the refusal.
+MISSING_EXTRACTOR_MARKER = "pypdf"
 
 # The identifier the imported page transcript carries. `web/conversations.py`
 # admits 32 hexadecimal characters and nothing else, because an identifier is
@@ -626,7 +636,7 @@ class AcceptanceRun:
         """A stream abandoned mid-body, then a plain request against the same origin."""
         started = time.monotonic()
         model = self.request.text_models[0] if self.request.text_models else ""
-        payload = text_request(model, self.request.max_tokens, stream=True)
+        payload = text_request(model, CANCEL_TOKENS, stream=True)
         connection, response = self.client.open_stream("/api/chat", payload)
         first = b""
         try:
@@ -742,7 +752,16 @@ class AcceptanceRun:
                 started,
             )
             return
-        self.client.pair(self.request.pairing_code)
+        paired = self.client.pair(self._current_pairing_code())
+        if paired.status != 200:
+            self.record(
+                "history_survives_restart",
+                FAIL,
+                f"pairing with the restarted gateway answered {paired.status}",
+                {"status": paired.status},
+                started,
+            )
+            return
         saved = self.client.exchange("GET", f"/api/conversations/{self.saved_conversation}")
         temporary = self.client.exchange("GET", f"/api/conversations/{self.temporary_conversation}")
         evidence = {"saved_status": saved.status, "temporary_status": temporary.status}
@@ -758,14 +777,38 @@ class AcceptanceRun:
             started,
         )
 
+    def _current_pairing_code(self) -> str:
+        """The code the restarted gateway minted, read from the file it wrote.
+
+        `SessionGate.start` mints a fresh code on every launch and a code dies
+        on its first use, so the code this run was given is dead the moment the
+        restart command returns. Re-pairing with it would answer 401 on every
+        later exchange and report a surviving conversation as a lost one, so the
+        driver reads `state/gateway-pairing.secret`, which is where the gate
+        writes the live code at mode 0600 and the only place it publishes it.
+        """
+        secret = self.paths["qwen_home_state"] / PAIRING_CODE_FILENAME
+        try:
+            return secret.read_text(encoding="utf-8").strip()
+        except OSError:
+            return self.request.pairing_code
+
     def _wait_for_origin(self) -> bool:
+        """Poll the origin until it answers 200, over a restart that closes sockets.
+
+        A gateway coming back refuses, resets, and half-answers before it
+        listens, and `http.client` raises `HTTPException` rather than `OSError`
+        for the half-answers, so both are the wait's own condition rather than
+        an exception that ends the run.
+        """
         deadline = time.monotonic() + RESTART_DEADLINE_SECONDS
         while time.monotonic() < deadline:
             try:
-                if self.client.exchange("GET", "/api/health").status:
+                if self.client.exchange("GET", "/api/health").status == 200:
                     return True
-            except OSError:
-                time.sleep(RESTART_SETTLE_SECONDS)
+            except (OSError, HTTPException):
+                pass
+            time.sleep(RESTART_SETTLE_SECONDS)
         return False
 
     def check_browser_history_import(self) -> None:
@@ -858,11 +901,24 @@ class AcceptanceRun:
             self.absent(name, "/api/documents", answer)
             return
         if answer.status != 201:
+            detail = answer.body[:300].decode("utf-8", "replace")
+            # The PDF extractor is `pypdf`, imported at call time, so a venv
+            # without it extracts every other format and names this one. That is
+            # a missing input rather than a broken claim.
+            if MISSING_EXTRACTOR_MARKER in detail.lower():
+                self.record(
+                    name,
+                    SKIPPED,
+                    f"the extractor this format needs is absent: {detail}",
+                    {"status": answer.status},
+                    started,
+                )
+                return
             self.record(
                 name,
                 FAIL,
                 f"the upload answered {answer.status}",
-                {"status": answer.status, "body": answer.body[:300].decode("utf-8", "replace")},
+                {"status": answer.status, "body": detail},
                 started,
             )
             return
@@ -1270,10 +1326,10 @@ def render_markdown(request: AcceptanceRequest, results: Sequence[CheckResult]) 
 def require_inside_root(paths: RuntimePaths, report: Path) -> Path:
     """The report lands under the runtime root, which is the only tree this writes to."""
     resolved = report if report.is_absolute() else (paths["qwen_home_results"] / report)
-    inside = paths.is_inside_root(resolved.parent) or str(resolved.parent).startswith(
-        str(paths.root)
-    )
-    if not inside:
+    # `is_inside_root` resolves both sides and takes `relative_to`, which a
+    # string prefix test does not: `<root>-scratch` prefixes the root's own
+    # spelling while sitting beside it rather than under it.
+    if not paths.is_inside_root(resolved.parent):
         raise AcceptanceRefused(
             f"the acceptance report writes under the runtime root alone; {resolved} is outside "
             f"{paths.root}"

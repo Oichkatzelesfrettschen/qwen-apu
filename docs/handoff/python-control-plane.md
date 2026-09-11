@@ -581,10 +581,13 @@ and `config/`. The wheel is written with `zipfile` alone under PEP 427 --
 `METADATA`, `WHEEL`, `entry_points.txt`, and a `RECORD` whose rows carry
 urlsafe-base64 SHA-256 with the `RECORD` row itself empty -- because a build
 backend would put a third-party dependency between a checkout and its own
-deployable form. Every member is stored sorted at one fixed DOS timestamp and
-one fixed mode, so two builds from one commit produce one digest; `pip install
---no-index --target` reads the result offline, which is the check a missing
-`WHEEL` file fails.
+deployable form. Every member is stored sorted, uncompressed, at one fixed DOS
+timestamp and one fixed mode, so two builds from one commit produce one digest
+on any host; deflate is the thing the store replaces, since zlib 1.3 on the
+appliance re-encodes bytes the workstation wrote to a different stream with
+identical content and a deflated wheel would carry one digest per host. `pip
+install --no-index --target` reads the result offline, which is the check a
+missing `WHEEL` file fails.
 
 Everything else is a reference, and the boundary between the two is what makes
 a verification affordable. A payload member is re-digested from disk. A
@@ -636,7 +639,13 @@ since an owned process, a socket, or a held lease is a claim about absence.
 
 The image lane skips on a refused grant rather than failing, because every
 device-reaching call there passes one human approval and a single-use grant the
-driver holds none of; the web lane skips on its absent routes. The suite runs
+driver holds none of; the web lane skips on its absent routes; and a PDF upload
+that meets an absent `pypdf` skips naming the distribution, since
+`tools/document_worker.py` imports it at call time and a venv without it
+extracts every other format. Both report destinations resolve through
+`RuntimePaths.is_inside_root` rather than a string prefix, so a sibling
+directory that prefixes the root's spelling refuses along with everything else
+outside it. The suite runs
 the driver against a gateway assembled over a temporary runtime root in front of
 a `_FakeUpstream` subclass carrying a configurable roster, a model-naming
 switch, and an image-sensitive answer, and a scripted client reaches the

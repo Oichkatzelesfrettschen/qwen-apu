@@ -61,6 +61,7 @@ def test_wheel_carries_every_file_pep_427_requires(tmp_path: Path) -> None:
         entry_points = archive.read(f"{dist_info}/entry_points.txt").decode("utf-8")
         payloads = {name: archive.read(name) for name in names}
         timestamps = {info.date_time for info in archive.infolist()}
+        compressions = {info.compress_type for info in archive.infolist()}
 
     assert f"{dist_info}/METADATA" in names
     assert f"{dist_info}/WHEEL" in names
@@ -74,6 +75,10 @@ def test_wheel_carries_every_file_pep_427_requires(tmp_path: Path) -> None:
     # One fixed timestamp across every member is what makes the digest name the
     # source rather than the clock the build ran on.
     assert timestamps == {application.WHEEL_TIMESTAMP}
+    # Every member is stored rather than deflated: a deflate stream is an
+    # encoder's choice and two zlib builds disagree on the bytes, so a deflated
+    # wheel would carry one digest per host.
+    assert compressions == {zipfile.ZIP_STORED}
 
     rows = {
         line.split(",")[0]: line.split(",")[1]

@@ -386,11 +386,17 @@ def test_a_differing_argv_refuses_by_name(paths: RuntimePaths) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_a_report_outside_the_runtime_root_refuses(paths: RuntimePaths, tmp_path: Path) -> None:
-    outside = tmp_path / "elsewhere" / "canary.json"
+@pytest.mark.parametrize("suffix", ("elsewhere", ""))
+def test_a_report_outside_the_runtime_root_refuses(
+    paths: RuntimePaths, tmp_path: Path, suffix: str
+) -> None:
+    """A sibling that prefixes the root's spelling is outside it all the same."""
+    parent = tmp_path / suffix if suffix else Path(str(paths.root) + "-scratch")
+    outside = parent / "canary.json"
     with pytest.raises(canary.CanaryRefused, match="runtime root alone"):
         canary.run(paths, CanaryRequest(report=outside))
     assert not outside.exists()
+    assert not parent.exists()
 
 
 def test_zero_alternations_refuse_before_a_launch(paths: RuntimePaths) -> None:
