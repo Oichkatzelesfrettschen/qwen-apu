@@ -355,9 +355,17 @@ def read_index(settings: ArtifactSettings, request: Request) -> Response:
     refusal = guard(settings, request)
     if refusal is not None:
         return refusal
+    reader = settings.artifacts()
     entries = []
-    for publication in reversed(list(settings.artifacts().publications())):
-        if settings.artifacts().committed(publication.png_sha256, "png") is None:
+    # The pair check is the two `is_file` calls `committed` makes after it finds
+    # a marker, and the marker is already in hand. Calling `committed` per entry
+    # would re-list the directory and re-parse every marker for each one, which
+    # at the worker's own 200-publication retention bound is 40,000 parses on a
+    # route metered at 30 reads a minute.
+    for publication in reversed(list(reader.publications())):
+        png_path = reader.directory / f"{publication.png_sha256}.png"
+        provenance_path = reader.directory / f"{publication.provenance_sha256}.json"
+        if not (png_path.is_file() and provenance_path.is_file()):
             continue
         entries.append(
             {

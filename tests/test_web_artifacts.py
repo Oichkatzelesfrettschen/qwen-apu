@@ -223,6 +223,17 @@ def test_the_admitted_host_set_reads_a_port_and_an_ipv6_literal(
     assert read_artifact(settings, get(f"{published}.png", host="[::1]:8080")).status == 200
 
 
+def test_an_exposure_literal_joins_the_admitted_set_and_no_other(
+    artifacts: Path, published: str
+) -> None:
+    """`--lan-exposure` adds exactly one literal; the set stays closed around it."""
+    exposed = settings_for(artifacts, admitted_hosts=("127.0.0.1", "::1", "192.0.2.10"))
+    assert read_artifact(exposed, get(f"{published}.png", host="192.0.2.10:8080")).status == 200
+    assert read_artifact(exposed, get(f"{published}.png", host="192.0.2.11")).status == 403
+    default = settings_for(artifacts)
+    assert read_artifact(default, get(f"{published}.png", host="192.0.2.10")).status == 403
+
+
 def test_a_query_parameter_carries_no_authority(artifacts: Path, published: str) -> None:
     settings = settings_for(artifacts)
     response = read_artifact(settings, get(f"{published}.png", bearer=None, query={"key": API_KEY}))
@@ -305,7 +316,9 @@ def test_a_marker_whose_partner_left_commits_nothing(artifacts: Path, published:
     """Retention removes a digest's bytes; the marker alone reaches no artifact."""
     marker = json.loads((artifacts / ".publication-aabbccdd.json").read_text())
     (artifacts / f"{marker['provenance_sha256']}.json").unlink()
-    assert read_artifact(settings_for(artifacts), get(f"{published}.png")).status == 404
+    settings = settings_for(artifacts)
+    assert read_artifact(settings, get(f"{published}.png")).status == 404
+    assert json.loads(read_index(settings, index_request()).body)["artifacts"] == []
 
 
 def test_the_index_lists_the_committed_pair_alone(
@@ -357,6 +370,10 @@ def test_the_two_routes_are_disjoint_and_the_bare_slash_reaches_the_pattern(
         assert found is not None, path
         assert found[1] == {"name": name}
     assert routes() != ()
+    # The mount serves reads and nothing that changes state.
+    for method in ("POST", "PUT", "DELETE"):
+        assert match(mounted, method, f"/api/artifacts/{published}.png") is None, method
+        assert match(mounted, method, "/api/artifacts") is None, method
 
 
 def test_routes_resolve_without_settings() -> None:
