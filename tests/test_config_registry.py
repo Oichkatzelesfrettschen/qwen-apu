@@ -615,3 +615,124 @@ def test_model_row_with_extra_fields_accepted_by_shell_id_selector(tmp_path: Pat
     assert shell_result.returncode == 0
     with pytest.raises(RegistryError):
         m.load_models(ledger)
+
+
+# ---------------------------------------------------------------------------
+# remote/image-profiles.tsv
+# ---------------------------------------------------------------------------
+
+IMAGE_PROFILE_HEADER = (
+    "# profile_id\tmodel_id\tplacement\twidth\theight\tsteps\tsampler\tcfg\t"
+    "max_steps\tmax_dimension\ttimeout_s\texecution_policy\tvalidated_evidence\t"
+    "review_model\n"
+)
+
+
+def _image_profile_row(**overrides: str) -> str:
+    fields = {
+        "profile_id": "image-fixture-a",
+        "model_id": "sdxs-512",
+        "placement": "A",
+        "width": "512",
+        "height": "512",
+        "steps": "1",
+        "sampler": "euler",
+        "cfg": "1.0",
+        "max_steps": "4",
+        "max_dimension": "512",
+        "timeout_s": "300",
+        "execution_policy": "refused",
+        "validated_evidence": "-",
+        "review_model": "-",
+    }
+    fields.update(overrides)
+    return "\t".join(fields.values()) + "\n"
+
+
+def _image_ledger(path: Path, **overrides: str) -> Path:
+    _write(path, IMAGE_PROFILE_HEADER + _image_profile_row(**overrides))
+    return path
+
+
+def test_image_profiles_read_the_tracked_ledger() -> None:
+    """The tracked ledger validates whole and carries the one reviewer pairing."""
+    rows = m.load_image_profiles()
+    assert {row.profile_id for row in rows} == {
+        "image-sdxs-512-a",
+        "image-sdxs-512-b",
+        "image-sd15-lcm-a",
+        "image-sd15-base-a",
+        "image-sd-turbo-a",
+    }
+    served = m.image_profile("image-sdxs-512-a")
+    assert served.execution_policy == "validator-gated"
+    assert served.review_model == "lfm25-vl-16b"
+    assert served.validated_evidence is not None
+    assert all(row.review_model is None for row in rows if row.profile_id != "image-sdxs-512-a")
+
+
+def test_image_profile_absent_id_refused() -> None:
+    with pytest.raises(RegistryError):
+        m.image_profile("image-absent")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "fragment"),
+    [
+        ({"placement": "D"}, "placement D is not A, B, or C"),
+        ({"sampler": "karras"}, "sampler karras is outside the runtime vocabulary"),
+        ({"cfg": "one"}, "cfg one is not a decimal number"),
+        ({"execution_policy": "unguarded"}, "is not refused or validator-gated"),
+        ({"execution_policy": "validator-gated"}, "validator-gated carries no validated_evidence"),
+        ({"width": "500"}, "width 500 is outside the protocol geometry"),
+        ({"width": "4096", "max_dimension": "4096"}, "is outside the protocol geometry"),
+        ({"steps": "8"}, "steps 8 exceeds max_steps 4"),
+        ({"max_steps": "200"}, "max_steps 200 exceed the protocol maximum 100"),
+        ({"max_dimension": "4096"}, "max_dimension 4096 exceeds the protocol maximum 2048"),
+        ({"review_model": "not a model id"}, "is not a model id"),
+        ({"profile_id": "-bad"}, "malformed profile_id"),
+        (
+            {"execution_policy": "validator-gated", "validated_evidence": "/etc/passwd"},
+            "is not a repository-relative path",
+        ),
+    ],
+)
+def test_image_profile_row_refusals(
+    tmp_path: Path, overrides: dict[str, str], fragment: str
+) -> None:
+    ledger = _image_ledger(tmp_path / "image-profiles.tsv", **overrides)
+    with pytest.raises(RegistryError, match=re.escape(fragment)):
+        m.load_image_profiles(ledger)
+
+
+def test_image_profile_duplicate_id_refused(tmp_path: Path) -> None:
+    ledger = tmp_path / "image-profiles.tsv"
+    _write(ledger, IMAGE_PROFILE_HEADER + _image_profile_row() + _image_profile_row())
+    with pytest.raises(RegistryError):
+        m.load_image_profiles(ledger)
+
+
+@requires_sh
+def test_image_profile_rows_match_the_shell_reader() -> None:
+    """`image-registry.sh profiles` prints the validated rows verbatim.
+
+    The shell reader validates the three image ledgers together and prints
+    each admitted profile row, so the two readers agree field for field on the
+    tracked ledger where they agree at all.
+    """
+    result = subprocess.run(
+        [SH or "sh", str(REMOTE / "image-registry.sh"), "profiles"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=TREE,
+    )
+    assert result.returncode == 0, result.stderr
+    shell_rows = [line.split("\t") for line in result.stdout.splitlines() if line]
+    python_rows = m.load_image_profiles()
+    assert len(shell_rows) == len(python_rows)
+    for shell_row, row in zip(shell_rows, python_rows, strict=True):
+        assert shell_row[0] == row.profile_id
+        assert shell_row[1] == row.model_id
+        assert shell_row[11] == row.execution_policy
+        assert shell_row[13] == (row.review_model or "-")

@@ -454,6 +454,79 @@ WEB_PROFILE_FIELDS: tuple[str, ...] = (
 
 
 @dataclass(frozen=True, slots=True)
+class ImageProfile:
+    """One row of remote/image-profiles.tsv: one served image shape.
+
+    `validated_evidence` and `review_model` read `-` where no run is retained
+    and where the profile offers no review, so both type as `str | None` and
+    the loader maps `-` to `None`. `cfg` is a decimal number the ledger writes
+    as text, and it types as `float` after that check.
+    """
+
+    profile_id: str
+    model_id: str
+    placement: str
+    width: int
+    height: int
+    steps: int
+    sampler: str
+    cfg: float
+    max_steps: int
+    max_dimension: int
+    timeout_s: int
+    execution_policy: str
+    validated_evidence: str | None
+    review_model: str | None
+
+
+IMAGE_PROFILE_FIELDS: tuple[str, ...] = (
+    "profile_id",
+    "model_id",
+    "placement",
+    "width",
+    "height",
+    "steps",
+    "sampler",
+    "cfg",
+    "max_steps",
+    "max_dimension",
+    "timeout_s",
+    "execution_policy",
+    "validated_evidence",
+    "review_model",
+)
+
+# remote/image-registry.sh's own `placement`, `sampler`, and execution_policy
+# vocabularies. Placement A puts the text encoder, the diffusion trunk, and the
+# VAE on Vulkan; B moves the text encoder to the CPU; C moves the VAE with it.
+IMAGE_PLACEMENT_VALUES: frozenset[str] = frozenset({"A", "B", "C"})
+IMAGE_SAMPLER_VALUES: frozenset[str] = frozenset(
+    {
+        "euler",
+        "euler_a",
+        "heun",
+        "dpm2",
+        "dpm++2s_a",
+        "dpm++2m",
+        "dpm++2mv2",
+        "ipndm",
+        "ipndm_v",
+        "lcm",
+        "ddim_trailing",
+        "tcd",
+    }
+)
+IMAGE_EXECUTION_POLICY_VALUES: frozenset[str] = frozenset({"refused", "validator-gated"})
+
+# The protocol geometry remote/image_protocol.py freezes, which the profile
+# ledger checks its requested and admitted shapes against.
+IMAGE_DIMENSION_MINIMUM = 64
+IMAGE_DIMENSION_MAXIMUM = 2048
+IMAGE_DIMENSION_MULTIPLE = 64
+IMAGE_STEPS_MAXIMUM = 100
+
+
+@dataclass(frozen=True, slots=True)
 class FeatureClaim:
     """One row of remote/feature-claims.tsv: one (subject, feature) claim."""
 
