@@ -23,11 +23,10 @@ from qwen_apu.config.native import load_native_builds
 from qwen_apu.install import build, doctor, native, source
 from qwen_apu.install import models as model_installer
 from qwen_apu.runtime import deployment, deployment_write
+from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError, render_paths
 
 UNPORTED: dict[str, str] = {
-    "serve": "remote/qwen-launch.sh",
-    "stop": "remote/qwen-teardown.sh",
     "verify": "remote/runtime-root.sh verify-layout, verify-components, verify-live",
     "export": "no shell predecessor; arrives with conversation persistence",
     "import": "no shell predecessor; arrives with conversation persistence",
@@ -101,8 +100,23 @@ def build_parser() -> argparse.ArgumentParser:
     deployment_sub.add_parser("show", help="resolve the active bundle").add_argument(
         "--root", type=Path, default=None
     )
-    sub.add_parser("serve", help="run the supervisor")
-    sub.add_parser("stop", help="stop the supervisor")
+    serve = sub.add_parser("serve", help="run one llama-server under the supervisor")
+    serve.add_argument("--model", default=serving.DEFAULT_MODEL)
+    serve.add_argument("--profile", default=serving.DEFAULT_PROFILE)
+    serve.add_argument("--port", type=int, default=serving.DEFAULT_PORT)
+    serve.add_argument("--context", type=int, default=None)
+    serve.add_argument("--llama-server", type=Path, default=None)
+    serve.add_argument("--model-root", type=Path, default=None)
+    serve.add_argument("--daemon", action="store_true")
+    serve.add_argument(
+        "--no-affinity", action="store_true", help="leave the server unpinned and at nice 0"
+    )
+    serve.add_argument(
+        "--skip-radv-icd-check",
+        action="store_true",
+        help="research arm on a host without RADV; the appliance keeps the check",
+    )
+    sub.add_parser("stop", help="stop the supervised server and prove absence")
     status = sub.add_parser("status", help="runtime root binding and declared paths")
     status.add_argument("--json", action="store_true")
     sub.add_parser("doctor", help="prerequisites a user-space installer can only detect")
@@ -280,7 +294,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "bootstrap":
             return cmd_bootstrap(paths)
         if args.command == "status":
-            return cmd_status(paths, args.json)
+            code = cmd_status(paths, args.json)
+            return code or serving.status(paths)
+        if args.command == "serve":
+            request = serving.ServeRequest(
+                model_id=args.model,
+                profile=args.profile,
+                port=args.port,
+                context=args.context,
+                llama_server=args.llama_server,
+                model_root=args.model_root,
+                daemon=args.daemon,
+                cpu_affinity=None if args.no_affinity else serving.INFERENCE_CPUS,
+                niceness=None if args.no_affinity else serving.INFERENCE_NICENESS,
+                require_radv_icd=not args.skip_radv_icd_check,
+            )
+            return serving.serve(paths, request)
+        if args.command == "stop":
+            return serving.stop(paths)
         if args.command == "doctor":
             return cmd_doctor(paths)
         if args.command == "paths":

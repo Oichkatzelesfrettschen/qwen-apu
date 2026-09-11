@@ -107,12 +107,56 @@ generation, which is what `opt/toolchains` will pin; until then the source
 path is proven through the digest gate and the prebuilt bundle is the
 installation path.
 
+## Phase 3: deployment build, activate, rollback
+
+`qwen_apu.runtime.deployment_write` ports the bundle builder, the activation
+with its `deployment-state.N` generations and role links, rollback, the
+receipt writer, `check-runtime-tree.sh`, and the image MCP reader. On one
+fixture the members, `bundle-manifest.tsv`, the generation layout, the stdout
+lines, and all 28 receipt rows are byte-identical to the shell's, and two
+threads activating different bundles serialize under the verified lock. On
+the laptop, two bundles built from the deployed server's members were
+activated in turn and rolled back, and the shell resolver read the
+Python-written state as the same bundle. `qwen-apu deployment
+build|activate|rollback|show` own the commands.
+
+## Phase 4: launch policy and supervisor
+
+| Component | Python authority | Shell authority it matches | Parity |
+| --- | --- | --- | --- |
+| Server argv | `qwen_apu.runtime.policy` | `qwen-capacity-policy.sh` | 14 argv cases byte-identical, about 64 refusal texts |
+| Profile environment | `runtime.environment` | `radv-low-priority-env.sh` | 13 profiles diffed whole |
+| Memory headroom | `runtime.preflight` | `model-memory-preflight.sh` | fixture meminfo and sysfs |
+| Process ownership | `runtime.process`, `locks`, `health`, `state`, `supervisor` | `qwen-webui-control.sh`, `qwen-webui-session.sh`, `qwen-teardown.sh`, `monitor-qwen-runtime.sh`, `watch-qwen-kernel-hazards.sh` | 32 fixture-server tests |
+| Serve and stop | `runtime.serve`, `qwen-apu serve|stop|status` | `qwen-launch.sh` | -- |
+
+The supervisor holds the deployment lock shared and its own single-instance
+lock at `state/workload.lock` exclusive, arms the child's Vulkan workload
+lease at `state/vulkan-workload.lock` and proves it free at teardown, spawns
+with `shell=False` in a new session, binds readiness to the server's pid and
+listener inode, writes `state/runtime.json` whole through `os.replace`,
+stops only the owned process group after a start-time identity check, and
+retains the primary failure beside restoration failures. `--daemon`
+relaunches the same argv detached with a control socket at
+`state/control.sock`; the socket binds through `/proc/self/fd/<dirfd>`
+because `sun_path` holds 108 bytes and the root is movable.
+
+Recorded weaknesses against the shell: `/dev/kmsg` needs CAP_SYSLOG under
+`kernel.dmesg_restrict=1`, so the hazard watcher records a skip where the
+shell watcher read `dmesg`; readiness reads `/health` and the listener
+rather than affinity, niceness, and the `model loaded` marker; the monitor's
+memory, swap, and GPU-busy thresholds are unsampled; `/proc/net/tcp` is IPv4.
+
+On the workstation the full CLI chain ran through deployment build and
+activate, `serve --daemon`, and `stop`: the supervisor published a `failed`
+record naming `pid left before readiness`, because the Raven2-built server
+refused `--device Vulkan0` on a host without RADV. The policy pins that
+device on purpose. The end-to-end run with a live model belongs on the
+appliance inside a device window, since the laptop serves production on its
+one Vega device and two cores; it is the first item of Phase 9.
+
 ## Order of the remaining phases
 
-3. Deployment manager: build, activate, rollback under `fcntl` locks with
-   `os.replace`.
-4. Supervisor: foreground by default, `--daemon` through `start_new_session`,
-   `state/control.sock`, pidfd ownership, tmux removed.
 5. Gateway: one origin over the broker, web MCP, artifact, and image services.
 6. Conversations in SQLite with a Temporary mode.
 7. Documents, calculator, file search, artifact export.
