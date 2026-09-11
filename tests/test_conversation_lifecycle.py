@@ -97,6 +97,7 @@ def _start_gateway(paths: RuntimePaths, static_root: Path) -> Fixture:
         static_root=static_root,
         web_profile="web-open",
         provider="searxng",
+        require_deployment=False,
     )
     gateway, session = gateway_assembly.assemble(paths, request)
     return Fixture(gateway, session)
