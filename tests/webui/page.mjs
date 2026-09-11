@@ -282,21 +282,29 @@ export function takeRequest(harness, predicate, description) {
   return harness.pending.splice(index, 1)[0];
 }
 
-export async function awaitRequest(harness, predicate, description, turns = 400) {
+export async function awaitRequest(harness, predicate, description, deadlineMs = 5000) {
   /* Take the request this arm is waiting for, once the page has issued it.
 
-     A fixed number of microtask turns is what a fixed `flushPromises()` count
-     amounts to, and the page's own awaits vary: a digest over an artifact, an
-     `arrayBuffer()`, and a `JSON.parse` each settle on their own tick. Polling
-     until the request appears makes the assertion "the page issues this" rather
-     than "the page issues this within N turns", and the turn cap is what turns
-     a request the page never issues into a named failure instead of a hang. */
-  for (let turn = 0; turn < turns; turn += 1) {
+     The page's own awaits vary: a digest over an artifact settles on the
+     libuv threadpool, an `arrayBuffer()` and a `JSON.parse` each settle on
+     their own tick, and a count of event-loop turns races the threadpool on a
+     loaded runner. Polling against a wall-clock deadline makes the assertion
+     "the page issues this" rather than "the page issues this within N turns",
+     and the deadline is what turns a request the page never issues into a
+     named failure instead of a hang. Every fiftieth turn yields to the timer
+     queue so threadpool completions reach the loop between checks. */
+  const deadline = Date.now() + deadlineMs;
+  let turn = 0;
+  while (Date.now() < deadline) {
     const index = harness.pending.findIndex(predicate);
     if (index !== -1) return harness.pending.splice(index, 1)[0];
-    await new Promise(resolve => setImmediate(resolve));
+    turn += 1;
+    await (turn % 50 === 0
+      ? new Promise(resolve => setTimeout(resolve, 1))
+      : new Promise(resolve => setImmediate(resolve)));
   }
-  assert.fail(`missing request: ${description}`);
+  const issued = harness.pending.map(request => `${request.options?.method || 'GET'} ${request.url}`);
+  assert.fail(`missing request: ${description}; pending: [${issued.join(', ')}]`);
 }
 
 export function jsonResponse(payload, status = 200) {

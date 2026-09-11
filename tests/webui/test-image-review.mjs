@@ -395,16 +395,19 @@ test('two approved corrections are the whole allowance, counted on one lineage',
       'reasoning text reached the page from a gateway that reports its presence alone');
 
     page.element('#image-approve-once').onclick();
-    await flushPromises();
-    const sessionIndex = page.pending.findIndex(
-      request => request.url === '/api/tools/session');
-    if (sessionIndex !== -1) {
-      page.pending.splice(sessionIndex, 1)[0].resolve(
-        jsonResponse({ session_secret: 'secret' }));
-      await flushPromises();
+    // The approval reads the session secret ahead of the grant when the page
+    // holds none, and that read settles on its own tick, so the arm answers
+    // whichever of the two requests the page issues next rather than reading
+    // the pending set once and assuming the order.
+    let grant = await page.take(
+      request => request.url === '/api/tools/session' ||
+        request.url === '/api/tools/grant-image',
+      'the correction session read or image grant');
+    if (grant.url === '/api/tools/session') {
+      grant.resolve(jsonResponse({ session_secret: 'secret' }));
+      grant = await page.take(request => request.url === '/api/tools/grant-image',
+        'the correction image grant');
     }
-    const grant = (await page.take(request => request.url === '/api/tools/grant-image',
-      'the correction image grant'));
     assert.equal(JSON.parse(grant.options.body).seed, reviewFields.seed,
       'the correction grant carries a seed other than the first approval one');
     grant.resolve(jsonResponse({ authorization: 'grant-token' }));
