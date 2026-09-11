@@ -35,6 +35,7 @@ from qwen_apu.runtime.process import read_start_time
 from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
 from qwen_apu.web import auth as auth_module
 from qwen_apu.web.app import (
+    REQUEST_BODY_BYTE_CAP,
     Gateway,
     GatewayConfig,
     content_security_policy,
@@ -49,7 +50,7 @@ from qwen_apu.web.auth import (
     SessionGate,
 )
 from qwen_apu.web.chat import PICKER_TIERS, ChatService, quantization, roster
-from qwen_apu.web.http import Route, StreamingResponse
+from qwen_apu.web.http import Request, Response, Route, StreamingResponse
 from qwen_apu.web.status import StatusService
 
 EXCHANGE_DEADLINE_SECONDS = 20.0
@@ -697,3 +698,96 @@ def test_shutdown_leaves_no_listener(gateway: Fixture) -> None:
     # nothing; a refused connection is the falsifier.
     with pytest.raises(ConnectionRefusedError):
         socket.create_connection(("127.0.0.1", port), timeout=EXCHANGE_DEADLINE_SECONDS).close()
+
+
+# ---------------------------------------------------------------------------
+# The body cap and the route that reads its own body
+# ---------------------------------------------------------------------------
+
+
+def _mount(fixture: Fixture, route: Route) -> None:
+    fixture.gateway.routes = (*fixture.gateway.routes, route)
+
+
+def test_the_body_cap_refuses_a_body_read_whole_before_the_session_gate(
+    gateway: Fixture,
+) -> None:
+    """One mebibyte bounds every route that takes its body as bytes.
+
+    The declared length is what the cap reads, so the request states it and
+    sends a few bytes: the refusal precedes the read, and a client that
+    actually wrote the megabyte would meet the close mid-write instead.
+    """
+    _mount(gateway, Route.make("POST", "/api/fixture-whole", lambda request: Response(204)))
+    head = (
+        f"POST /api/fixture-whole HTTP/1.1\r\nHost: 127.0.0.1:{gateway.port}\r\n"
+        f"Content-Type: application/octet-stream\r\n"
+        f"Content-Length: {REQUEST_BODY_BYTE_CAP + 1}\r\n\r\n"
+    ).encode("ascii")
+    address = ("127.0.0.1", gateway.port)
+    with socket.create_connection(address, timeout=EXCHANGE_DEADLINE_SECONDS) as client:
+        client.sendall(head + b"z" * 16)
+        answer = b""
+        while True:
+            block = client.recv(4096)
+            if not block:
+                break
+            answer += block
+    assert answer.startswith(b"HTTP/1.1 413 ")
+    assert str(REQUEST_BODY_BYTE_CAP).encode("ascii") in answer
+
+
+def test_a_streaming_route_reads_a_body_the_cap_refuses(gateway: Fixture) -> None:
+    """The route's own read is what bounds it, so the gateway cap decides nothing here."""
+
+    def count(request: Request) -> Response:
+        assert request.body == b""
+        stream = request.stream
+        assert stream is not None
+        read = sum(len(block) for block in stream.blocks())
+        return Response.json({"read": read, "declared": stream.length})
+
+    _mount(gateway, Route.make("POST", "/api/fixture-upload", count, streams=True))
+    paired, _ = _pair(gateway, gateway.code)
+    payload = b"q" * (2 * REQUEST_BODY_BYTE_CAP)
+    response, body = _exchange(
+        gateway,
+        "POST",
+        "/api/fixture-upload",
+        body=payload,
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Cookie": _session_cookie(paired),
+        },
+    )
+    assert response.status == 200
+    assert json.loads(body) == {"read": len(payload), "declared": len(payload)}
+    assert (response.getheader("Connection") or "").lower() != "close"
+
+
+def test_a_streaming_route_that_stops_reading_closes_the_connection(gateway: Fixture) -> None:
+    """Bytes left in the socket would read as the next request line, so the socket ends."""
+
+    def refuse_after_one_block(request: Request) -> Response:
+        stream = request.stream
+        assert stream is not None
+        stream.read(4096)
+        return Response.json({"error": "the upload passes its own bound"}, status=413)
+
+    _mount(
+        gateway,
+        Route.make("POST", "/api/fixture-partial", refuse_after_one_block, streams=True),
+    )
+    paired, _ = _pair(gateway, gateway.code)
+    response, _ = _exchange(
+        gateway,
+        "POST",
+        "/api/fixture-partial",
+        body=b"p" * (128 * 1024),
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Cookie": _session_cookie(paired),
+        },
+    )
+    assert response.status == 413
+    assert (response.getheader("Connection") or "").lower() == "close"
