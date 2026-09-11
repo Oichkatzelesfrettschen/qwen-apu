@@ -23,7 +23,7 @@ DEFAULT_MODEL = "qwen38-2b-distill"
 DEFAULT_PROFILE = "low-async"
 DEFAULT_PORT = 8080
 READINESS_DEADLINE_SECONDS = 180.0
-INFERENCE_CPUS = frozenset({1})
+INFERENCE_CPUS = frozenset({0})
 INFERENCE_NICENESS = 19
 
 
@@ -122,9 +122,14 @@ def serve(paths: RuntimePaths, request: ServeRequest) -> int:
 
 
 def stop(paths: RuntimePaths) -> int:
+    """Exit 0 when the record ends terminal and stopped, whatever route took it there."""
     outcome = supervisor.stop(paths)
     print(f"stop={outcome}")
-    return 0 if outcome in ("stopped", "absent") else 1
+    record = supervisor.status(paths)
+    if record is None:
+        return 0
+    print(f"state={record.state}")
+    return 0 if record.state == "stopped" else 1
 
 
 def status(paths: RuntimePaths) -> int:
