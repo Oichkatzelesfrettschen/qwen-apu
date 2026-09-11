@@ -1029,6 +1029,55 @@ def test_a_bucket_refusal_names_the_bucket_and_the_window(workspace: Path) -> No
         ledger.close()
 
 
+# The encoder, pinned against itself before the shell tree reads it.
+
+
+def test_a_signed_claim_verifies_under_its_own_context() -> None:
+    """`sign_claim` and `verify_claim` agree on one byte string.
+
+    The round trip pins the encoder independently of the shell tree: a claim
+    carrying a non-ASCII value, a null, and a nested list survives whole, and
+    the same token refuses under a second context because the HMAC covers the
+    context string beside the payload.
+    """
+    claim: dict[str, object] = {
+        "query": "raven2 Vulkan decode uberandert",
+        "include_domains": ["b.example", "example.org"],
+        "max_age_hours": None,
+        "expiry": int(time.time()) + 60,
+    }
+    token = approvals.sign_claim(TOKEN_SECRET, "search-authorization", claim)
+    assert (
+        approvals.verify_claim(TOKEN_SECRET, "search-authorization", token, time.time(), "grant")
+        == claim
+    )
+    with pytest.raises(approvals.AuthorizationDenied, match="signature fails verification"):
+        approvals.verify_claim(TOKEN_SECRET, "qwen-image-generate-v1", token, time.time(), "grant")
+
+
+def test_a_tampered_payload_fails_the_signature(workspace: Path) -> None:
+    del workspace
+    token = approvals.sign_claim(
+        TOKEN_SECRET, "search-authorization", {"expiry": int(time.time()) + 60}
+    )
+    payload, signature = token.split(".")
+    flipped = ("A" if payload[0] != "A" else "B") + payload[1:]
+    with pytest.raises(approvals.AuthorizationDenied, match="signature fails verification"):
+        approvals.verify_claim(
+            TOKEN_SECRET, "search-authorization", f"{flipped}.{signature}", time.time(), "grant"
+        )
+    with pytest.raises(approvals.AuthorizationDenied, match="malformed"):
+        approvals.verify_claim(TOKEN_SECRET, "search-authorization", payload, time.time(), "grant")
+
+
+def test_a_claim_past_its_term_reads_as_expired() -> None:
+    token = approvals.sign_claim(
+        TOKEN_SECRET, "search-authorization", {"expiry": int(time.time()) - 1}
+    )
+    with pytest.raises(approvals.ExpiredResult, match="has expired"):
+        approvals.verify_claim(TOKEN_SECRET, "search-authorization", token, time.time(), "grant")
+
+
 # The cross-checks against the shell tree's own modules.
 
 

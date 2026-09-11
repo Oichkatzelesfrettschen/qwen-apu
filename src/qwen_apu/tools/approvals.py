@@ -133,7 +133,6 @@ TOKEN_LIFETIME_DEFAULT_SECONDS = 900
 TOKEN_LIFETIME_MINIMUM_SECONDS = 60
 TOKEN_LIFETIME_MAXIMUM_SECONDS = 3600
 
-PROMPT_CHARACTER_CAP = 2000
 SEED_MAXIMUM = 2**32 - 1
 DIMENSION_MINIMUM = 64
 DIMENSION_MAXIMUM = 2048
@@ -147,7 +146,6 @@ HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
     r"(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
 )
-GRANT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 ASPECT_PATTERN = re.compile(r"^([1-9][0-9]{0,3}):([1-9][0-9]{0,3})$")
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
