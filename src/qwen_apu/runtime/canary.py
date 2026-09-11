@@ -48,6 +48,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import statistics
 import subprocess
 import time
@@ -133,6 +134,7 @@ class Configuration:
     pid: int = 0
     reason: str = ""
     preset_sha256: str = ""
+    executable_sha256: str = ""
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -143,6 +145,7 @@ class Configuration:
             "pid": self.pid,
             "reason": self.reason,
             "preset_sha256": self.preset_sha256,
+            "executable_sha256": self.executable_sha256,
             "transport": self.transport(),
         }
 
@@ -162,6 +165,11 @@ class Configuration:
         for index, word in enumerate(self.argv):
             if skip:
                 skip = False
+                continue
+            if index == 0 and self.executable_sha256:
+                words.append(f"sha256:{self.executable_sha256}")
+                continue
+            if word in PRESENTATION_FLAGS:
                 continue
             if word in TRANSPORT_FLAGS and index + 1 < len(self.argv):
                 skip = True
@@ -194,7 +202,10 @@ class Configuration:
             "argv": self.comparable_argv(),
             "cpu_affinity": list(self.cpu_affinity),
             "niceness": self.niceness,
-            **{f"sysfs.{name}": value for name, value in sorted(self.sysfs.items())},
+            **{
+                f"sysfs.{name}": comparable_sysfs_value(value)
+                for name, value in sorted(self.sysfs.items())
+            },
         }
 
 
@@ -309,20 +320,56 @@ def listener_pid(port: int) -> int:
 PRESET_FLAG = "--models-preset"
 LAUNCH_EXIT_GRACE_SECONDS = 60.0
 LAUNCH_SETTLE_SECONDS = 1.0
-TRANSPORT_FLAGS = frozenset({"--host", "--port", "--api-key-file", "--cors-origins"})
+TRANSPORT_FLAGS = frozenset({"--host", "--port", "--api-key-file", "--cors-origins", "--path"})
+# Flag words with no value that name how the server presents rather than decodes.
+PRESENTATION_FLAGS = frozenset({"--ui", "--no-ui"})
+_ABSOLUTE_PATH_TOKEN = re.compile(r"/[^\s\"']+")
+_DPM_MARKED_LINE = re.compile(r"^(\d+):\s.*\*\s*$")
 
 
 def preset_digest(argv: Sequence[str]) -> str:
-    """The SHA-256 of the file the argv names after `--models-preset`, read
-    while the process is alive because the legacy launch removes its snapshot
-    at teardown; empty when the argv names no preset or the file is unreadable."""
+    """The SHA-256 of the preset the argv names after `--models-preset`, with
+    every absolute path in it reduced to its basename first, read while the
+    process is alive because the legacy launch removes its snapshot at
+    teardown; empty when the argv names no preset or the file is unreadable.
+
+    The two arms name the same checkpoints and configurations under different
+    roots (the legacy launch's runtime root and per-launch snapshot directory
+    against the Python arm's), so the bytes differ by prefix alone while the
+    policy they carry is one; the basename keeps which file, the prefix goes.
+    """
     for index, word in enumerate(argv[:-1]):
         if word == PRESET_FLAG:
             try:
-                return hashlib.sha256(Path(argv[index + 1]).read_bytes()).hexdigest()
+                text = Path(argv[index + 1]).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 return ""
+            normalized = _ABSOLUTE_PATH_TOKEN.sub(
+                lambda match: "path:" + match.group(0).rsplit("/", 1)[-1], text
+            )
+            return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     return ""
+
+
+def executable_digest(argv: Sequence[str]) -> str:
+    """The SHA-256 of the executable the argv runs; empty when unreadable."""
+    if not argv:
+        return ""
+    try:
+        return hashlib.sha256(Path(argv[0]).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def comparable_sysfs_value(value: str) -> str:
+    """A `pp_dpm_*` marked line reduced to its level index; other values whole.
+
+    The marked line carries the level's live frequency beside its index, and
+    that frequency moves between reads of one arm; the index is the delivered
+    DPM state the arms must share.
+    """
+    match = _DPM_MARKED_LINE.match(value.strip())
+    return f"level {match.group(1)}" if match else value
 
 
 def read_argv(pid: int) -> tuple[str, ...]:
@@ -375,6 +422,7 @@ def snapshot(port: int, named_sysfs: Mapping[str, Path]) -> Configuration:
         sysfs=sysfs,
         pid=pid,
         preset_sha256=preset_digest(argv),
+        executable_sha256=executable_digest(argv),
     )
 
 

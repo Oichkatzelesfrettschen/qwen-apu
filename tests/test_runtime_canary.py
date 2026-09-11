@@ -350,7 +350,7 @@ def test_one_differing_configuration_field_refuses_the_verdict(paths: RuntimePat
     )
     assert overall == canary.VERDICT_REFUSED
     assert "sysfs.sclk" in reason
-    assert "400Mhz" in reason and "1100Mhz" in reason
+    assert "level 1" in reason and "level 2" in reason
     assert rows == []
 
 
@@ -557,3 +557,54 @@ def test_listener_pid_finds_a_listener_on_any_local_address() -> None:
         listener.bind(("0.0.0.0", 0))  # noqa: S104 -- the read under test admits any local address
         listener.listen(1)
         assert canary.listener_pid(listener.getsockname()[1]) == os.getpid()
+
+
+def test_the_comparison_reduces_presentation_paths_and_dpm_readings(tmp_path: Path) -> None:
+    server = tmp_path / "a" / "llama-server"
+    server.parent.mkdir()
+    server.write_bytes(b"ELF-bytes")
+    twin = tmp_path / "b" / "llama-server"
+    twin.parent.mkdir()
+    twin.write_bytes(b"ELF-bytes")
+    first = tmp_path / "snap.ini"
+    second = tmp_path / "bundle.ini"
+    first.write_text("[a]\nmodel = /root/one/models/x.gguf\ncfg = /tmp/cfg-1/web.json\n")
+    second.write_text("[a]\nmodel = /root/two/models/x.gguf\ncfg = /other/web.json\n")
+    legacy_argv = (
+        str(server),
+        "--models-preset",
+        str(first),
+        "--path",
+        "/ui",
+        "--ui",
+        "--fit",
+        "off",
+    )
+    python_argv = (str(twin), "--models-preset", str(second), "--no-ui", "--fit", "off")
+    legacy = canary.Configuration(
+        argv=legacy_argv,
+        preset_sha256=canary.preset_digest(legacy_argv),
+        executable_sha256=canary.executable_digest(legacy_argv),
+        sysfs={"sclk": "1: 630Mhz *", "dpm_level": "auto"},
+    )
+    python = canary.Configuration(
+        argv=python_argv,
+        preset_sha256=canary.preset_digest(python_argv),
+        executable_sha256=canary.executable_digest(python_argv),
+        sysfs={"sclk": "1: 400Mhz *", "dpm_level": "auto"},
+    )
+    assert legacy.comparable() == python.comparable()
+    assert legacy.comparable()["argv"][0].startswith("sha256:")
+    assert legacy.comparable()["sysfs.sclk"] == "level 1"
+    other = canary.Configuration(
+        argv=python_argv, sysfs={"sclk": "2: 1100Mhz *", "dpm_level": "auto"}
+    )
+    assert other.comparable()["sysfs.sclk"] == "level 2"
+    twin.write_bytes(b"other-bytes")
+    changed = canary.Configuration(
+        argv=python_argv,
+        preset_sha256=canary.preset_digest(python_argv),
+        executable_sha256=canary.executable_digest(python_argv),
+        sysfs=python.sysfs,
+    )
+    assert legacy.comparable() != changed.comparable()
