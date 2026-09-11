@@ -197,8 +197,14 @@ stop of the gateway ends it and nothing of it reaches the database.
 temporary runtime root through `http.client` rather than through
 `web.http.match`, which is what `tests/test_web_history.py`'s own route
 helper calls directly, and the HTTP-verb gap only the former reaches. The
-suite fixed four defects that gap had hidden and records the lifecycle
-guarantees the fixes now hold:
+suite fixed four defects that gap had hidden, closed one gap in what a
+conversation read reports, and records the lifecycle guarantees the fixes
+now hold. It also carries an autouse fixture restoring the process umask
+`qwen_apu.tools.ledger.Ledger.__init__` leaves at `0o077`: `assemble()`
+builds one `Ledger`, `os.umask` is process-wide, and this file is the first
+in the suite to call `assemble()` at all, so without the fixture the leak
+narrowed file and directory modes two unrelated test files assert on
+whenever this module ran ahead of them in the same pytest process.
 
 - A gateway restart ends every live temporary conversation: `Gateway.shutdown`
   takes `on_shutdown`, a sequence of hooks it runs after the listening socket
@@ -241,13 +247,22 @@ guarantees the fixes now hold:
   recreating one; this holds without any fix, and the suite pins it as a
   regression test.
 
-Recorded gap: attachment and artifact reads answer a clean 404 for a digest
-with no backing bytes, at every route this phase wires up, but no route
-computes and returns a per-attachment availability field on a conversation
-read itself -- a message's `attachments` array carries the metadata a client
-would need to probe `GET /api/documents/<sha256>` or
-`GET /api/artifacts/<sha256>.<ext>` per entry, not an `available` flag baked
-into the conversation record.
+`GET /api/conversations/<id>` decorates every attachment with `available`,
+computed at read time from `<artifacts>/documents/<sha256>/<sha256>.json`
+rather than from a flag frozen at `POST .../messages`, so a client reads one
+field per attachment rather than probing `GET /api/documents/<sha256>`
+itself; the digest answers `true` right after upload, `true` again after a
+gateway restart, and `false` the moment its bytes leave the store by any
+means, retention sweep included. `ConversationSettings.document_store` and
+`conversations.build()`'s matching parameter carry the root in;
+`assemble()` names `paths["qwen_home_artifacts"] / "documents"`, and a
+caller that names none reports every attachment unavailable rather than
+raising. `artifacts` (a message's plain digest tuple naming a generated
+image rather than an upload) carries no matching flag: `GET
+/api/artifacts/<sha256>.<ext>` already answers a clean 404 for a digest no
+publication marker names, and widening that field to carry availability
+would change the tuple shape `browser_import.py` and the export document
+both already commit to.
 
 ## Phase 7: documents and deterministic tools
 
