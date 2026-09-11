@@ -76,6 +76,26 @@ recipe encodes the first and names its profile `raven2-vulkan`; a bundle
 carries whichever targets the staging call names. The four native probes stay
 as C sources under `remote/` until the scripts that compile them are ported.
 
+### Phase 2 acceptance on the appliance
+
+A fresh root on the laptop, bootstrapped from the branch, staged a llama
+bundle from the deployed `llama-server` and the production tool builds,
+installed it under `strace -f` with zero writes outside the root, ran the
+installed server (`--version` reports commit f280b26, GNU 13.3.0), fetched
+the `core` group from Hugging Face, verified all three by byte count and
+SHA-256, and reported doctor green: python 3.12.3, root bound, render node
+amdgpu raven2, RADV ICD present. The Python path invoked git, cmake, and a
+compiler at no point; the bundle's executables came from the earlier shell
+builds. `sd-cli` and `llama-bench` await their own staging call and the
+stable-diffusion recipe's bundle.
+
+| Step | Result |
+| --- | ---: |
+| bundle digest | 3b8bffbf057a |
+| bundle install writes outside root | 0 |
+| core group download | 3 min 49 s |
+| core group verify | 3 of 3 verified |
+
 ## Order of the remaining phases
 
 3. Deployment manager: build, activate, rollback under `fcntl` locks with
