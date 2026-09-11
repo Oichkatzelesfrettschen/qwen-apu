@@ -19,8 +19,11 @@ generation's own `request_id`, which `status` reports as `job_request_id`, and
 any other identifier meets `not_running` rather than stopping a job the caller
 does not own. Remove takes no control action at all: version 1's `ACTIONS`
 admits three names and the worker implements no artifact deletion, so removal
-retracts the publication marker through `ArtifactDirectory.retract` and leaves
-every payload byte to the worker's retention sweep.
+retracts the publication marker through `ArtifactDirectory.retract`. That
+unpublishes the pair and reclaims nothing: `enforce_artifact_retention`
+enumerates markers, so the bytes behind a retracted one are no longer reachable
+by the sweep and stay on disk until an operator removes them through
+`remote/check-deletion-plan.sh`.
 
 The Vulkan workload lease belongs to the worker, which acquires it around one
 job. The gateway holds none, so a generation that ends in a refusal, a
@@ -684,8 +687,13 @@ def remove(settings: ImageToolSettings, request: Request) -> Response:
     `status` alone, and `remote/image-service.py` implements no artifact
     deletion, so this route reaches the worker at no point. It unlinks the
     marker that commits the pair, which is the exact inverse of the worker's
-    own atomic publish: every later read of either digest answers 404 while
-    the payload bytes stay for the worker's retention sweep to reclaim.
+    own atomic publish: every later read of either digest answers 404.
+
+    The answer states `payload_removed: false` and names the disposal path
+    because the bytes outlive the retraction. The worker's own
+    `enforce_artifact_retention` walks markers, so a pair whose marker is gone
+    is one the sweep no longer enumerates, and an operator removing those bytes
+    goes through `remote/check-deletion-plan.sh`.
     """
     try:
         _session(settings, request)
@@ -704,7 +712,8 @@ def remove(settings: ImageToolSettings, request: Request) -> Response:
             "png_sha256": retracted.png_sha256,
             "provenance_sha256": retracted.provenance_sha256,
             "job_id": retracted.job_id,
-            "payload_retained": True,
+            "payload_removed": False,
+            "payload_disposal": "remote/check-deletion-plan.sh",
         },
     )
 

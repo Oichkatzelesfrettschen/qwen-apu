@@ -178,10 +178,11 @@ test('the remove control retracts the publication and keeps the payload claim', 
   assert.equal(JSON.parse(request.options.body).sha256, FIXTURE_PNG_SHA256);
   request.resolve(jsonResponse({
     removed: true, png_sha256: FIXTURE_PNG_SHA256, provenance_sha256: 'b'.repeat(64),
-    job_id: 'aabbccdd', payload_retained: true }));
+    job_id: 'aabbccdd', payload_removed: false,
+    payload_disposal: 'remote/check-deletion-plan.sh' }));
   const answer = await removing;
   assert.equal(answer.removed, true);
-  assert.equal(answer.payload_retained, true,
+  assert.equal(answer.payload_removed, false,
     'the gateway claimed a payload removal it does not make');
 });
 
@@ -199,7 +200,8 @@ test('the remove button takes the card and retracts the publication', async () =
     request => request.url === '/api/tools/image/remove', 'the retraction');
   request.resolve(jsonResponse({
     removed: true, png_sha256: FIXTURE_PNG_SHA256, provenance_sha256: 'b'.repeat(64),
-    job_id: 'aabbccdd', payload_retained: true }));
+    job_id: 'aabbccdd', payload_removed: false,
+    payload_disposal: 'remote/check-deletion-plan.sh' }));
   await flushPromises();
   assert.equal(page.pending.length, 0, 'the retraction left a request outstanding');
 });

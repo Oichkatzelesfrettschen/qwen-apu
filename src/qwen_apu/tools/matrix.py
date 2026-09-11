@@ -486,14 +486,15 @@ def _file_search(settings: MatrixSettings, selection: Selection, entry: ToolEntr
             "this launch declared no --file-root, so the scoped search reaches nothing",
         )
     if selection.model.guarded_tool_execution != "unguarded":
-        named = ", ".join(str(root) for root in settings.file_roots)
+        count = len(settings.file_roots)
         return _offer(
             entry,
             ToolState.AVAILABLE,
-            f"the search runs over {named} with symlink escapes refused; remote/models.tsv reads "
-            f"guarded_tool_execution {selection.model.guarded_tool_execution} for "
-            f"{selection.model.id}, so a person names the pattern and a model-emitted call runs "
-            "nothing",
+            f"the search runs over {count} declared root{'' if count == 1 else 's'} with symlink "
+            "escapes refused; remote/models.tsv reads guarded_tool_execution "
+            f"{selection.model.guarded_tool_execution} for {selection.model.id}, so a person "
+            "names the pattern and a model-emitted call runs nothing. The roots themselves stay "
+            "off this answer, since a path is the launch's own configuration",
         )
     return _offer(
         entry,

@@ -1242,12 +1242,15 @@ def test_remove_retracts_the_marker_and_retains_the_payload(
     payload = json.loads(response.body.decode("utf-8"))
     assert payload["removed"] is True
     assert payload["png_sha256"] == published
-    assert payload["payload_retained"] is True
+    assert payload["payload_removed"] is False
+    assert payload["payload_disposal"] == "remote/check-deletion-plan.sh"
 
     # Both files of the pair read 404 from the next read onward.
     assert directory.read(published, "png") is None
     assert directory.read(provenance.provenance_sha256, "json") is None
-    # The worker owns the payload, so the bytes stay for its retention sweep.
+    # The bytes stay and nothing reclaims them. `enforce_artifact_retention`
+    # enumerates markers, so a pair whose marker is gone is one the worker's
+    # own sweep no longer sees; an operator disposes of it.
     assert (artifacts / f"{published}.png").is_file()
     assert (artifacts / f"{provenance.provenance_sha256}.json").is_file()
     # The route reaches the worker at no point: version 1 admits three actions
@@ -1307,12 +1310,19 @@ def refusing_reply(request: Mapping[str, object]) -> bytes:
     ).encode("utf-8")
 
 
-def test_a_failed_generation_sends_one_cancel_for_its_own_job(
+def test_a_failed_generation_sends_one_cancel_and_leaves_the_grant_spent(
     artifacts: Path, tmp_path: Path
 ) -> None:
+    """The lease is released by a cancel; the grant is gone whatever follows.
+
+    `_spend` runs between admission and dispatch the way
+    remote/image-mcp/server.py spends it, so a job that reaches no artifact has
+    burned its single use and the next generation takes a fresh approval.
+    """
+    recorder = SpendRecorder()
     fixture = ControlFixture(tmp_path, refusing_reply)
     try:
-        settings = admitting(artifacts, fixture.path)
+        settings = admitting(artifacts, fixture.path, spend_grant=recorder)
         response = image_tools.generate(
             settings, tool_request("/api/tools/image/generate", GENERATE_BODY)
         )
@@ -1321,6 +1331,12 @@ def test_a_failed_generation_sends_one_cancel_for_its_own_job(
         assert actions == ["image_generate", "cancel"]
         # The cancel names the job this gateway opened and no other.
         assert fixture.received[1]["request_id"] == fixture.received[0]["request_id"]
+        assert len(recorder.spent) == 1, "a failed generation returned its grant"
+        replay = image_tools.generate(
+            settings, tool_request("/api/tools/image/generate", GENERATE_BODY)
+        )
+        assert replay.status == 403
+        assert b"already spent" in replay.body
     finally:
         fixture.close()
 

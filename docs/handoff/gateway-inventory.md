@@ -100,8 +100,18 @@ Remove reaches the worker at no point. Version 1's `ACTIONS` admits
 `image_generate`, `cancel`, and `status`, and the service implements no
 artifact deletion, so removal unlinks `.publication-<job_id>.json` -- the
 inverse of the worker's atomic publish -- and every later read of either
-digest answers 404 while the payload bytes stay for the worker's retention
-sweep, which owns every write under that directory.
+digest answers 404.
+
+The payload outlives the retraction, and the route says so.
+`enforce_artifact_retention` builds its expiry set from
+`publication_markers`, which lists `.publication-*.json`, and unlinks a
+digest's bytes only while expiring the marker that names it. A pair whose
+marker the gateway removed is one that sweep no longer enumerates, whatever
+`QWEN_IMAGE_ARTIFACT_MAX_COUNT` and `QWEN_IMAGE_ARTIFACT_MAX_AGE_S` are set
+to, so the bytes stay until an operator removes them through
+`remote/check-deletion-plan.sh`. The answer carries `payload_removed: false`
+and `payload_disposal` naming that script rather than a field implying an
+eventual reclamation that never arrives.
 
 The lease and the grant behave differently under failure, and the routes say
 so rather than claiming a symmetry they lack. The worker holds the Vulkan

@@ -211,13 +211,18 @@ class ArtifactDirectory:
         Publication is one atomic write of `.publication-<job_id>.json`, and
         `committed` requires that marker before either file of the pair reads,
         so unlinking it is the exact inverse: the PNG and the provenance record
-        answer 404 through every route here from the next read onward. The
-        bytes stay, because the worker owns every payload write under this
-        directory -- the staging file, the two hard links, and the retention
-        sweep bounded by QWEN_IMAGE_ARTIFACT_MAX_COUNT and
-        QWEN_IMAGE_ARTIFACT_MAX_AGE_S -- and AGENTS.md routes a payload
-        removal through remote/check-deletion-plan.sh rather than through a
-        request. The sweep reclaims an unmarked pair on its own schedule.
+        answer 404 through every route here from the next read onward.
+
+        The payload bytes stay on disk and nothing here reclaims them. The
+        worker owns every payload write under this directory, and its
+        `enforce_artifact_retention` enumerates markers rather than files:
+        `publication_markers` lists `.publication-*.json` and unlinks a
+        digest's bytes only while expiring the marker that names it, so a pair
+        whose marker this method removed is one the sweep never sees again
+        whatever QWEN_IMAGE_ARTIFACT_MAX_COUNT and QWEN_IMAGE_ARTIFACT_MAX_AGE_S
+        are set to. The bytes therefore remain until an operator removes them,
+        which AGENTS.md routes through remote/check-deletion-plan.sh rather
+        than through a request.
 
         Returns the retracted marker, or None where no marker commits the
         digest and where the unlink fails, so a caller reports "no such

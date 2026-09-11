@@ -1022,9 +1022,11 @@ export async function cancelRunningImageJob(signal) {
 export function removePublishedArtifact(sha256, signal) {
   /* Retract one artifact's publication, which unpublishes the pair.
 
-     The gateway unlinks the marker the worker wrote and leaves the payload
-     bytes to the worker's own retention sweep, so this call unpublishes and
-     deletes nothing; the answer states `payload_retained` for that reason. */
+     The gateway unlinks the marker the worker wrote, which unpublishes the
+     pair and deletes nothing: the worker's own retention sweep enumerates
+     markers, so the bytes behind a retracted one stay until an operator
+     disposes of them. The answer states `payload_removed: false` and names
+     that disposal path rather than implying a sweep will reach them. */
   return postImageControl(IMAGE_REMOVE_ROUTE, { sha256 }, signal);
 }
 

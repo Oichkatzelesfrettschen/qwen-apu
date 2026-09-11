@@ -549,7 +549,8 @@ turn carries no web tool; a review of an artifact restored from saved history
 has no grant, so that card's review button stays hidden; the withheld and
 swapped review controls still have no route; and `remove` retracts the
 publication marker alone, since protocol version 1 admits three actions and
-`remote/image-service.py` implements no artifact deletion.
+`remote/image-service.py` implements no artifact deletion, which leaves the
+retracted pair's bytes for an operator rather than for the worker's sweep.
 
 ## Order of the remaining phases
 
