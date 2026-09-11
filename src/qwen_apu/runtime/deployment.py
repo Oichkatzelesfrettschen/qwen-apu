@@ -625,18 +625,21 @@ def _preset_mcp_rows(lines: Iterable[str]) -> list[str]:
     return rows
 
 
-def verify_bundle(root: Path, name: str) -> BundleIdentity:
+def verify_bundle(root: Path, name: str, registry_path: Path | None = None) -> BundleIdentity:
     """Recompute every claim one bundle states and answer with its identity.
 
     The bundle is held inside the deployment root lexically and canonically:
     its name is one path component, the directory and each member are plain
     files rather than symlinks, and the canonical directory sits immediately
     below the canonical root, so a link planted at the root carries neither an
-    activation nor a launch outside it. The registry the ledger and the presets
-    resolve against comes from QWEN_MODEL_REGISTRY, then `remote/models.tsv`
-    beside this checkout.
+    activation nor a launch outside it. `registry_path` names the registry the
+    ledger and the presets resolve against; an omitted one comes from
+    QWEN_MODEL_REGISTRY, then `remote/models.tsv` beside this checkout, so an
+    assembly that already resolved the registry passes it rather than routing
+    the value back through the environment two threads share.
     """
-    registry_path = _default_registry()
+    if registry_path is None:
+        registry_path = _default_registry()
     if not bundle_name_is_valid(name):
         raise DeploymentError(
             "bundle name must match [A-Za-z0-9][A-Za-z0-9._-]* and avoid the root names: " + name
@@ -1126,7 +1129,9 @@ def open_verified_lock(path: Path, normalize_legacy_mode: bool = True) -> int:
     return descriptor
 
 
-def resolve_active(root: Path, explicit_directory: Path | None = None) -> ActiveDeployment:
+def resolve_active(
+    root: Path, explicit_directory: Path | None = None, registry_path: Path | None = None
+) -> ActiveDeployment:
     """Resolve the active deployment once for a whole launch.
 
     The activation lock is taken shared, `deployment-current` is followed to
@@ -1138,6 +1143,9 @@ def resolve_active(root: Path, explicit_directory: Path | None = None) -> Active
     it must be a bundle below the root and passes the same verification.
     Absence is decided under the lock, so an activation publishing its links
     between the read and the lock leaves no launch reporting an empty root.
+    `registry_path` reaches the verification the way it reaches `verify_bundle`,
+    so a caller that already resolved the registry states it here rather than
+    routing the value back through the environment.
     """
     if not root.is_dir():
         raise NoActiveDeployment(f"no deployment root: {root}")
@@ -1178,7 +1186,7 @@ def resolve_active(root: Path, explicit_directory: Path | None = None) -> Active
                 "active deployment name must match [A-Za-z0-9][A-Za-z0-9._-]* and avoid "
                 f"the root names: {bundle_name}"
             )
-        verify_bundle(root, bundle_name)
+        verify_bundle(root, bundle_name, registry_path)
     finally:
         os.close(descriptor)
 

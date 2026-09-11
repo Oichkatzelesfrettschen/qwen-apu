@@ -22,12 +22,10 @@ from qwen_apu.config import models as registry
 from qwen_apu.config.native import load_native_builds
 from qwen_apu.install import build, doctor, native, source
 from qwen_apu.install import models as model_installer
+from qwen_apu.runtime import deployment, deployment_write
 from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError, render_paths
 
 UNPORTED: dict[str, str] = {
-    "deployment build": "remote/build-deployment-bundle.sh",
-    "deployment activate": "remote/activate-deployment-bundle.sh",
-    "deployment rollback": "remote/activate-deployment-bundle.sh rollback",
     "serve": "remote/qwen-launch.sh",
     "stop": "remote/qwen-teardown.sh",
     "verify": "remote/runtime-root.sh verify-layout, verify-components, verify-live",
@@ -84,8 +82,25 @@ def build_parser() -> argparse.ArgumentParser:
     models_verify.add_argument("groups", nargs="*")
     deployment = sub.add_parser("deployment", help="deployment lifecycle")
     deployment_sub = deployment.add_subparsers(dest="deployment_command", required=True)
-    for name in ("build", "activate", "rollback"):
-        deployment_sub.add_parser(name)
+    deployment_build = deployment_sub.add_parser(
+        "build", help="bind release artifacts into a bundle"
+    )
+    deployment_build.add_argument("name")
+    deployment_build.add_argument("server", type=Path)
+    deployment_build.add_argument("artifact_manifest", type=Path)
+    deployment_build.add_argument("ctx_ledger", type=Path)
+    deployment_build.add_argument("--router-presets", type=Path, default=None)
+    deployment_build.add_argument("--web-presets", type=Path, default=None)
+    deployment_build.add_argument("--q4k-policy", default=None)
+    deployment_build.add_argument("--root", type=Path, default=None)
+    deployment_activate = deployment_sub.add_parser("activate", help="swap deployment-current")
+    deployment_activate.add_argument("name")
+    deployment_activate.add_argument("--root", type=Path, default=None)
+    deployment_rollback = deployment_sub.add_parser("rollback", help="promote previous")
+    deployment_rollback.add_argument("--root", type=Path, default=None)
+    deployment_sub.add_parser("show", help="resolve the active bundle").add_argument(
+        "--root", type=Path, default=None
+    )
     sub.add_parser("serve", help="run the supervisor")
     sub.add_parser("stop", help="stop the supervisor")
     status = sub.add_parser("status", help="runtime root binding and declared paths")
@@ -221,6 +236,36 @@ def cmd_models_verify(paths: RuntimePaths, artifacts: bool, groups: list[str]) -
     return 0
 
 
+def cmd_deployment(paths: RuntimePaths, args: argparse.Namespace) -> int:
+    root = args.root or paths["qwen_home_deployments"]
+    if args.deployment_command == "build":
+        identity = deployment_write.build_bundle(
+            root,
+            args.name,
+            args.server,
+            args.artifact_manifest,
+            args.ctx_ledger,
+            router_presets=args.router_presets,
+            web_presets=args.web_presets,
+            q4k_policy=args.q4k_policy,
+        )
+        print(f"bundle={identity.name} server_sha256={identity.server_sha256}")
+        return 0
+    if args.deployment_command == "show":
+        sys.stdout.write(deployment.render(deployment.resolve_active(root)))
+        return 0
+    record = (
+        deployment_write.activate(root, args.name)
+        if args.deployment_command == "activate"
+        else deployment_write.rollback(root)
+    )
+    print(
+        f"transition={record.transition} current={record.current} "
+        f"previous={record.previous} generation={record.generation}"
+    )
+    return 0
+
+
 def cmd_patches(stage: str | None) -> int:
     for member in registry.load_patch_series():
         if stage is None or member.stage == stage:
@@ -258,7 +303,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return cmd_native_list(paths)
             return cmd_native_stage(args)
         if args.command == "deployment":
-            return unported(f"deployment {args.deployment_command}")
+            return cmd_deployment(paths, args)
         return unported(args.command)
     except RuntimeRootError as error:
         print(f"qwen-apu: {error}", file=sys.stderr)
