@@ -52,7 +52,7 @@ from qwen_apu.web.auth import (
     FixedWindowBucket,
     SessionGate,
 )
-from qwen_apu.web.chat import PICKER_TIERS, ChatService, quantization, roster
+from qwen_apu.web.chat import PICKER_TIERS, ChatService, quantization
 from qwen_apu.web.http import Request, Response, Route, StreamingResponse
 from qwen_apu.web.roster import LOADING, READY, REFUSED, UNAVAILABLE
 from qwen_apu.web.status import StatusService
