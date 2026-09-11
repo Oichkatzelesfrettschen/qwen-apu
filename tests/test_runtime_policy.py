@@ -165,6 +165,20 @@ def base_environment(appliance: Mapping[str, Path], output: Path) -> dict[str, s
     }
 
 
+_RECEIPT_PREFIXES = (
+    "router_q4k_policy ",
+    "checkpoint_binding ",
+    "q4k_binding ",
+    "vulkan_workload_lease ",
+)
+_NOTICE_PREFIXES = (
+    "depth_validation ",
+    "lan_resource_bounds ",
+    "quarantine override forces the listener to loopback",
+    "web preset unvalidated-depth override forces the listener to loopback",
+)
+
+
 def run_shell_policy(
     arguments: list[str], environment: Mapping[str, str]
 ) -> subprocess.CompletedProcess[str]:
@@ -189,11 +203,21 @@ def recorded_arguments(output: Path) -> list[str]:
 def assert_argv_parity(
     arguments: list[str], environment: Mapping[str, str], output: Path
 ) -> policy_module.LaunchPlan:
-    """Run both authorities and require the recorded argv to equal the plan's."""
+    """Run both authorities and require the recorded argv and the receipt to agree.
+
+    The launch chain writes to the same two streams -- `qwen-build-exec-guard.sh`
+    adds a `build_guard` line downstream of the policy -- so the comparison
+    selects the four receipt names the policy itself prints and the notice
+    prefixes it writes to stderr, which is exactly what `LaunchPlan` claims.
+    """
     completed = run_shell_policy(arguments, environment)
     assert completed.returncode == 0, completed.stderr
     plan = plan_from_environment(arguments, environment, script_directory=REMOTE)
     assert list(plan.argv[1:]) == recorded_arguments(output)
+    receipt = [line for line in completed.stdout.splitlines() if line.startswith(_RECEIPT_PREFIXES)]
+    assert receipt == list(plan.stdout_lines)
+    notices = [line for line in completed.stderr.splitlines() if line.startswith(_NOTICE_PREFIXES)]
+    assert notices == list(plan.stderr_lines)
     return plan
 
 
@@ -764,13 +788,6 @@ def test_exec_chain_carries_the_guards(appliance: dict[str, Path]) -> None:
 # remote/qwen-capacity-policy.sh: refusal parity
 # ---------------------------------------------------------------------------
 
-_NOTICE_PREFIXES = (
-    "depth_validation ",
-    "lan_resource_bounds ",
-    "quarantine override forces the listener to loopback",
-    "web preset unvalidated-depth override forces the listener to loopback",
-)
-
 
 def shell_refusal_lines(completed: subprocess.CompletedProcess[str]) -> list[str]:
     """The shell's stderr with the receipt notices removed.
@@ -1184,4 +1201,212 @@ def test_unexecutable_server_and_absent_model(appliance: dict[str, Path]) -> Non
     assert_refusal_parity(
         [str(appliance["server"]), str(appliance["root"] / "absent.gguf"), "4096", "18080"],
         environment,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Draft-pair sections, the provenance markers, and the loopback forcing
+# ---------------------------------------------------------------------------
+
+DRAFT_ROW = "\t".join(
+    [
+        "fabricated-draft",
+        "research",
+        "fabricated-draft.gguf",
+        "download-qwen35-08b-q4km.sh",
+        "4096",
+        "8192",
+        "8192",
+        "q8_0",
+        "q4_0",
+        "on",
+        "none",
+        "-",
+        "-",
+        "-",
+        "untested",
+        "candidate",
+        "128",
+        "32",
+        "4096",
+        "-",
+        "unmeasured",
+        "refused",
+        "-",
+    ]
+)
+
+DRAFT_PAIR_ROW = "\t".join(
+    [
+        "fabricated-pair",
+        "fabricated",
+        "fabricated-draft",
+        "candidate",
+        "2",
+        "0.4",
+        "0.5",
+        "4096",
+        "q8_0",
+        "q4_0",
+        "-",
+        "Fabricated pair",
+    ]
+)
+
+DRAFT_PAIR_SECTION = "\n".join(
+    [
+        "[fabricated-pair]",
+        "LLAMA_ARG_MODEL = {root}/fabricated.gguf",
+        "LLAMA_ARG_CTX_SIZE = 4096",
+        "LLAMA_ARG_CACHE_TYPE_K = q5_1",
+        "LLAMA_ARG_CACHE_TYPE_V = iq4_nl",
+        "LLAMA_ARG_FLASH_ATTN = auto",
+        "LLAMA_ARG_BATCH = 256",
+        "LLAMA_ARG_UBATCH = 64",
+        "LLAMA_ARG_CTX_CHECKPOINTS = 0",
+        "LLAMA_ARG_SPEC_TYPE = draft-simple",
+        "LLAMA_ARG_SPEC_DRAFT_MODEL = {root}/fabricated-draft.gguf",
+        "LLAMA_ARG_SPEC_DRAFT_N_MAX = 2",
+        "LLAMA_ARG_SPEC_DRAFT_P_MIN = 0.4",
+        "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K = q8_0",
+        "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V = q4_0",
+        "LLAMA_ARG_N_GPU_LAYERS_DRAFT = all",
+        "spec-draft-device = Vulkan0",
+        "spec-draft-override-tensor = .*=Vulkan0",
+        "",
+    ]
+)
+
+
+def draft_pair_appliance(appliance: dict[str, Path]) -> dict[str, str]:
+    """The registry and ledger a draft-pair section resolves through."""
+    appliance["registry"].write_text(FABRICATED_ROW + "\n" + DRAFT_ROW + "\n", encoding="utf-8")
+    appliance["draft_pairs"].write_text(DRAFT_PAIR_ROW + "\n", encoding="utf-8")
+    (appliance["root"] / "fabricated-draft.gguf").write_bytes(b"")
+    return {
+        "QWEN_MODEL_REGISTRY": str(appliance["registry"]),
+        "QWEN_ROUTER": "1",
+        "QWEN_ROUTER_PRESETS": str(appliance["root"] / "router-presets.ini"),
+    }
+
+
+def test_draft_pair_section_argv(appliance: dict[str, Path]) -> None:
+    """A pair section resolves through the ledger to the target row and serves."""
+    output = appliance["root"] / "pair.out"
+    overrides = draft_pair_appliance(appliance)
+    presets = appliance["root"] / "router-presets.ini"
+    presets.write_text(DRAFT_PAIR_SECTION.format(root=appliance["root"]), encoding="utf-8")
+    environment = base_environment(appliance, output) | overrides
+    arguments = [str(appliance["server"]), str(appliance["model"]), "4096", "18080"]
+    plan = assert_argv_parity(arguments, environment, output)
+    assert plan.preset_section_names == ("fabricated-pair",)
+    # The nine draft keys live in the section, so the router argv stays free of
+    # them the way it stays free of the six tuple keys.
+    assert "--spec-type" not in plan.argv
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        ("LLAMA_ARG_SPEC_DRAFT_N_MAX = 2", "LLAMA_ARG_SPEC_DRAFT_N_MAX = 5"),
+        ("LLAMA_ARG_SPEC_DRAFT_P_MIN = 0.4", "LLAMA_ARG_SPEC_DRAFT_P_MIN = 0.9"),
+        ("spec-draft-device = Vulkan0", "spec-draft-device = Vulkan1"),
+        ("LLAMA_ARG_N_GPU_LAYERS_DRAFT = all", "LLAMA_ARG_N_GPU_LAYERS_DRAFT = 0"),
+        ("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K = q8_0", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K = f16"),
+        ("[fabricated-pair]", "[fabricated]"),
+    ],
+)
+def test_draft_pair_section_refusals(appliance: dict[str, Path], mutation: tuple[str, str]) -> None:
+    """A draft key the ledger no longer admits, and a draft key outside the ledger."""
+    output = appliance["root"] / "refuse.out"
+    overrides = draft_pair_appliance(appliance)
+    presets = appliance["root"] / "router-presets.ini"
+    complete = DRAFT_PAIR_SECTION.format(root=appliance["root"])
+    presets.write_text(complete.replace(*mutation), encoding="utf-8")
+    environment = base_environment(appliance, output) | overrides
+    arguments = [str(appliance["server"]), str(appliance["model"]), "4096", "18080"]
+    assert_refusal_parity(arguments, environment)
+
+
+def test_draft_pair_ledger_defect_refuses(appliance: dict[str, Path]) -> None:
+    """The ledger is read whole at every router launch, so one bad row stops it."""
+    output = appliance["root"] / "refuse.out"
+    overrides = draft_pair_appliance(appliance)
+    presets = appliance["root"] / "router-presets.ini"
+    presets.write_text(DRAFT_PAIR_SECTION.format(root=appliance["root"]), encoding="utf-8")
+    appliance["draft_pairs"].write_text(
+        DRAFT_PAIR_ROW.replace("\t2\t0.4\t", "\t17\t0.4\t") + "\n", encoding="utf-8"
+    )
+    environment = base_environment(appliance, output) | overrides
+    assert_refusal_parity(
+        [str(appliance["server"]), str(appliance["model"]), "4096", "18080"], environment
+    )
+
+
+def test_quarantine_override_forces_loopback(appliance: dict[str, Path]) -> None:
+    """The durable marker isolates the listener rather than refusing the launch."""
+    output = appliance["root"] / "override.out"
+    presets = appliance["root"] / "router-presets.ini"
+    presets.write_text(
+        "# qwen_router_include_quarantine=1\n"
+        + ROUTER_SECTION.format(model=appliance["registry_model"]),
+        encoding="utf-8",
+    )
+    environment = base_environment(appliance, output) | {
+        "QWEN_MODEL_REGISTRY": str(appliance["registry"]),
+        "QWEN_ROUTER": "1",
+        "QWEN_ROUTER_PRESETS": str(presets),
+        "QWEN_BIND_HOST": "0.0.0.0",  # noqa: S104
+    }
+    arguments = [str(appliance["server"]), str(appliance["model"]), "4096", "18080"]
+    plan = assert_argv_parity(arguments, environment, output)
+    assert plan.bind_host == "127.0.0.1"
+    assert "--host 127.0.0.1" in " ".join(plan.argv)
+    assert plan.stderr_lines == (
+        "quarantine override forces the listener to loopback: 0.0.0.0 -> 127.0.0.1",
+    )
+    # The override and an announced LAN exposure name different listeners, so
+    # the two refuse together rather than one silently winning.
+    assert_refusal_parity(arguments, environment | {"QWEN_WEB_LAN": "1"})
+
+
+def test_generated_preset_without_quarantine_provenance_refuses(
+    appliance: dict[str, Path],
+) -> None:
+    """A file from before the provenance field existed is regenerated, not assumed clean."""
+    output = appliance["root"] / "refuse.out"
+    presets = appliance["root"] / "router-presets.ini"
+    presets.write_text(
+        "# Generated by remote/build-router-presets.sh from the model registry.\n"
+        + ROUTER_SECTION.format(model=appliance["registry_model"]),
+        encoding="utf-8",
+    )
+    environment = base_environment(appliance, output) | {
+        "QWEN_MODEL_REGISTRY": str(appliance["registry"]),
+        "QWEN_ROUTER": "1",
+        "QWEN_ROUTER_PRESETS": str(presets),
+    }
+    assert_refusal_parity(
+        [str(appliance["server"]), str(appliance["model"]), "4096", "18080"], environment
+    )
+
+
+def test_non_web_preset_carrying_web_ledger_markers_refuses(
+    appliance: dict[str, Path],
+) -> None:
+    """A ledger identity marker under no web provenance claims a grant no section carries."""
+    output = appliance["root"] / "refuse.out"
+    presets = appliance["root"] / "router-presets.ini"
+    presets.write_text(
+        "# qwen_web_profiles_path=/nonexistent/web-profiles.tsv\n"
+        + ROUTER_SECTION.format(model=appliance["registry_model"]),
+        encoding="utf-8",
+    )
+    environment = base_environment(appliance, output) | {
+        "QWEN_MODEL_REGISTRY": str(appliance["registry"]),
+        "QWEN_ROUTER": "1",
+        "QWEN_ROUTER_PRESETS": str(presets),
+    }
+    assert_refusal_parity(
+        [str(appliance["server"]), str(appliance["model"]), "4096", "18080"], environment
     )

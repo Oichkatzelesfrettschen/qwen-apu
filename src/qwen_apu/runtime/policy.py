@@ -100,7 +100,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from qwen_apu.config.models import validate_cache_type, validate_q4k_variant
-from qwen_apu.config.schema import ModelRow
 from qwen_apu.runtime.paths import RuntimePaths
 
 USAGE = (
@@ -252,7 +251,7 @@ class LaunchPlan:
     environment_removals: tuple[str, ...]
     mode: str
     model_id: str | None
-    model_row: ModelRow | None
+    model_row: ResolvedRow | None
     launch_tuple: LaunchTuple | None
     bind_host: str
     port: int
@@ -344,30 +343,26 @@ def read_page_bounds(page: Path | str) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class RegistryView:
-    """What `registry_model_field` answers from, one selector or the other.
+class ResolvedRow:
+    """The ten registry fields a single-model launch resolves its tuple from.
 
-    The descriptor route caches ten fields read once through an open file
-    descriptor, so a registry replaced after that read cannot change the row
-    this launch serves; the path route resolves the row on each lookup and
-    answers nothing for a checkpoint outside the registry.
+    These are exactly the columns the descriptor route caches through one open
+    file descriptor, so a registry replaced after that read cannot change the
+    row the launch serves, and exactly the columns the path route reads one at
+    a time. `validated_filled_depth` and `q4k_variant` carry `-` where the row
+    claims nothing, the spelling both authorities compare against.
     """
 
-    kind: str
-    approved: Mapping[str, str] | None = None
-    row: ModelRow | None = None
-    registry_path: Path | None = None
-
-    def field(self, name: str) -> str | None:
-        if self.kind == "id":
-            assert self.approved is not None
-            return self.approved.get(name)
-        if self.row is None:
-            return None
-        value = getattr(self.row, name, None)
-        if value is None:
-            return None
-        return str(value)
+    id: str
+    model_file: str
+    context_ceiling: str
+    cache_type_k: str
+    cache_type_v: str
+    flash_attention: str
+    batch: str
+    ubatch: str
+    validated_filled_depth: str
+    q4k_variant: str
 
 
 def _require_canonical_positive(value: str, name: str) -> int:
@@ -1220,11 +1215,19 @@ def ctx_checkpoint_rows(ledger_path: Path, registry_path: Path) -> list[list[str
             bad.append(f"{model_id}: evidence is empty; write - for an unmeasured zero")
         elif evidence == "-" and count != "0":
             bad.append(f"{model_id}: a count above 0 requires retained evidence")
-        elif evidence != "-" and not _repository_relative(evidence):
-            bad.append(f"{model_id}: evidence is not a repository-relative path: {evidence}")
         rows.append(fields)
     if bad:
         raise PolicyError(*bad, status=1)
+    # The AWK pass runs to completion before the shell loop tests each retained
+    # evidence path, so a ledger carrying both defect classes reports the
+    # field-shape messages alone.
+    paths = [
+        f"{row[0]}: evidence is not a repository-relative path: {row[2]}"
+        for row in rows
+        if row[2] != "-" and not _repository_relative(row[2])
+    ]
+    if paths:
+        raise PolicyError(*paths, status=1)
     return rows
 
 
@@ -1306,10 +1309,6 @@ def draft_pair_rows(
             bad.append(f"{pair_id}: validated_evidence is empty; write - for an unmeasured pairing")
         elif tier == "production" and evidence == "-":
             bad.append(f"{pair_id}: production pairing requires retained validated_evidence")
-        elif evidence != "-" and not _repository_relative(evidence):
-            bad.append(
-                f"{pair_id}: validated evidence is not a repository-relative path: {evidence}"
-            )
         # The note is the alias display name, and common/arg.cpp splits that
         # value on commas into a set of routing names.
         notes = fields[11]
@@ -1321,6 +1320,15 @@ def draft_pair_rows(
         rows.append(fields)
     if bad:
         raise PolicyError(*bad, status=1)
+    # The AWK pass runs to completion first here too, so the evidence-path test
+    # reports only over a ledger whose row shapes all passed.
+    paths = [
+        f"{row[0]}: validated evidence is not a repository-relative path: {row[10]}"
+        for row in rows
+        if row[10] != "-" and not _repository_relative(row[10])
+    ]
+    if paths:
+        raise PolicyError(*paths, status=1)
     return rows
 
 
@@ -1804,7 +1812,7 @@ def build_launch_plan(  # noqa: C901, PLR0917
         qwen_approved_model_bytes,
     )
     approved_count = sum(1 for value in approved if value)
-    view = RegistryView(kind="path", row=None, registry_path=registry_path)
+    approved_fields: Mapping[str, str] | None = None
     if approved_count != 0:
         if approved_count != 5:
             raise PolicyError("approved model identity requires ID, file, device, inode, and bytes")
@@ -1822,16 +1830,15 @@ def build_launch_plan(  # noqa: C901, PLR0917
         fields = _read_approved_registry_row(
             registry_path, qwen_approved_model_id, qwen_approved_model_file
         )
-        view = RegistryView(kind="id", approved=fields, registry_path=registry_path)
+        approved_fields = fields
         registry_selector = qwen_approved_model_id
     else:
         _verify_ordinary_model_path(model, model_root)
         registry_selector = model
 
     def registry_value(name: str) -> str | None:
-        if view.kind == "id":
-            assert view.approved is not None
-            return view.approved.get(name)
+        if approved_fields is not None:
+            return approved_fields.get(name)
         return registry_field(registry_path, "path", registry_selector, name)
 
     size_text = str(context_size)
@@ -1868,6 +1875,7 @@ def build_launch_plan(  # noqa: C901, PLR0917
     )
 
     launch_tuple: LaunchTuple | None = None
+    resolved_row: ResolvedRow | None = None
     cache_type_k = DEFAULT_CACHE_TYPE_K
     cache_type_v = DEFAULT_CACHE_TYPE_V
     flash_attention = DEFAULT_FLASH_ATTENTION
@@ -2622,6 +2630,21 @@ def build_launch_plan(  # noqa: C901, PLR0917
         ]
         if lan_bounds.output_tokens is not None:
             argv += ["--n-predict", str(lan_bounds.output_tokens)]
+        # A checkpoint outside the registry resolves no row, and the plan
+        # says so rather than naming a row built from the fallbacks.
+        if registry_model_id:
+            resolved_row = ResolvedRow(
+                id=registry_model_id,
+                model_file=registry_value("model_file") or "",
+                context_ceiling=str(registry_ceiling),
+                cache_type_k=registry_cache_k,
+                cache_type_v=registry_cache_v,
+                flash_attention=registry_flash,
+                batch=registry_value("batch") or str(DEFAULT_BATCH),
+                ubatch=registry_value("ubatch") or str(DEFAULT_UBATCH),
+                validated_filled_depth=validated_depth,
+                q4k_variant=registry_q4k_variant,
+            )
         launch_tuple = LaunchTuple(
             context_size=resolved_context_size,
             batch=batch_size,
@@ -2712,7 +2735,7 @@ def build_launch_plan(  # noqa: C901, PLR0917
         environment_removals=tuple(environment_removals),
         mode="router" if router_enabled else "standalone",
         model_id=registry_model_id or None,
-        model_row=view.row,
+        model_row=resolved_row,
         launch_tuple=launch_tuple,
         bind_host=bind_host,
         port=port,
