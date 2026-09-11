@@ -407,3 +407,35 @@ def test_zero_alternations_refuse_before_a_launch(paths: RuntimePaths) -> None:
 def test_a_base_that_names_no_http_origin_refuses() -> None:
     with pytest.raises(canary.CanaryRefused, match="http origin"):
         Endpoint.parse("unix:///var/run/llama.sock")
+
+
+def test_two_preset_paths_with_equal_bytes_compare_equal(tmp_path: Path) -> None:
+    """The legacy snapshot path and the bundle path name the same bytes."""
+    first = tmp_path / "snapshot.ini"
+    second = tmp_path / "bundle" / "router-presets.ini"
+    second.parent.mkdir()
+    first.write_text("[a]\nmodel = x\n", encoding="utf-8")
+    second.write_bytes(first.read_bytes())
+    common = ("llama-server", "--port", "8080")
+    legacy = canary.Configuration(
+        argv=(*common, "--models-preset", str(first)),
+        preset_sha256=canary.preset_digest((*common, "--models-preset", str(first))),
+    )
+    python = canary.Configuration(
+        argv=(*common, "--models-preset", str(second)),
+        preset_sha256=canary.preset_digest((*common, "--models-preset", str(second))),
+    )
+    assert legacy.comparable() == python.comparable()
+    assert legacy.comparable()["argv"][-1].startswith("sha256:")
+
+    second.write_text("[a]\nmodel = y\n", encoding="utf-8")
+    changed = canary.Configuration(
+        argv=python.argv, preset_sha256=canary.preset_digest(python.argv)
+    )
+    assert legacy.comparable() != changed.comparable()
+
+
+def test_an_unreadable_preset_leaves_the_path_word_in_place(tmp_path: Path) -> None:
+    argv = ("llama-server", "--models-preset", str(tmp_path / "absent.ini"))
+    assert canary.preset_digest(argv) == ""
+    assert canary.Configuration(argv=argv).comparable()["argv"] == list(argv)

@@ -45,6 +45,7 @@ taking it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import statistics
@@ -124,6 +125,7 @@ class Configuration:
     sysfs: Mapping[str, str] = field(default_factory=dict)
     pid: int = 0
     reason: str = ""
+    preset_sha256: str = ""
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -133,7 +135,22 @@ class Configuration:
             "sysfs": dict(self.sysfs),
             "pid": self.pid,
             "reason": self.reason,
+            "preset_sha256": self.preset_sha256,
         }
+
+    def comparable_argv(self) -> list[str]:
+        """The argv with the preset word replaced by the preset's content digest.
+
+        The legacy launch snapshots the merged router preset to a per-launch
+        path and the Python launch names the bundle's own file, so the two
+        argvs differ by that one word while the bytes the server reads are
+        equal; the digest is what the arms must agree on.
+        """
+        words = list(self.argv)
+        for index, word in enumerate(words[:-1]):
+            if word == PRESET_FLAG and self.preset_sha256:
+                words[index + 1] = f"sha256:{self.preset_sha256}"
+        return words
 
     def comparable(self) -> dict[str, object]:
         """The fields two arms must agree on, with the pid left out.
@@ -144,7 +161,7 @@ class Configuration:
         state the named sysfs files report.
         """
         return {
-            "argv": list(self.argv),
+            "argv": self.comparable_argv(),
             "cpu_affinity": list(self.cpu_affinity),
             "niceness": self.niceness,
             **{f"sysfs.{name}": value for name, value in sorted(self.sysfs.items())},
@@ -259,6 +276,22 @@ def listener_pid(port: int) -> int:
     return 0
 
 
+PRESET_FLAG = "--models-preset"
+
+
+def preset_digest(argv: Sequence[str]) -> str:
+    """The SHA-256 of the file the argv names after `--models-preset`, read
+    while the process is alive because the legacy launch removes its snapshot
+    at teardown; empty when the argv names no preset or the file is unreadable."""
+    for index, word in enumerate(argv[:-1]):
+        if word == PRESET_FLAG:
+            try:
+                return hashlib.sha256(Path(argv[index + 1]).read_bytes()).hexdigest()
+            except OSError:
+                return ""
+    return ""
+
+
 def read_argv(pid: int) -> tuple[str, ...]:
     try:
         raw = Path(f"/proc/{pid}/cmdline").read_bytes()  # appliance-path: named
@@ -301,12 +334,14 @@ def snapshot(port: int, named_sysfs: Mapping[str, Path]) -> Configuration:
         return Configuration(
             sysfs=sysfs, reason=f"no process holds the listening socket on port {port}"
         )
+    argv = read_argv(pid)
     return Configuration(
-        argv=read_argv(pid),
+        argv=argv,
         cpu_affinity=read_affinity(pid),
         niceness=read_niceness(pid),
         sysfs=sysfs,
         pid=pid,
+        preset_sha256=preset_digest(argv),
     )
 
 
