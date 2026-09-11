@@ -1065,18 +1065,20 @@ export async function exportBrowserHistory() {
     if (record) records.push(record);
     else unreadable += 1;
   }
-  return {
-    schema: HISTORY_EXPORT_SCHEMA,
-    version: HISTORY_EXPORT_VERSION,
-    store: store.name,
-    exported: new Date().toISOString(),
-    unreadable,
-    records
+  // The document's top level is the shape `web/browser_import.py` reads:
+  // the schema key carrying the version, the export instant, and the
+  // conversations verbatim. The store name and the unreadable count describe
+  // this export rather than the history, so they travel beside the document.
+  const document_ = {
+    [HISTORY_EXPORT_SCHEMA]: HISTORY_EXPORT_VERSION,
+    exported_utc: new Date().toISOString(),
+    conversations: records
   };
+  return { document: document_, store: store.name, unreadable };
 }
 
 export function historyExportFilename(document_) {
-  const stamp = String(document_.exported || '').replace(/[:.]/g, '-') || 'export';
+  const stamp = String(document_.exported_utc || '').replace(/[:.]/g, '-') || 'export';
   return `qwen-apu-browser-history-${stamp}.json`;
 }
 

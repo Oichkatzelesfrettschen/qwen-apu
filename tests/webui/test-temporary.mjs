@@ -126,13 +126,16 @@ test('the export carries the version key and the records verbatim', async () => 
   await conversations.saveConversation();
   await flushPromises();
 
-  const document_ = await conversations.exportBrowserHistory();
-  assert.equal(document_.schema, 'qwen_apu_browser_history_export');
-  assert.equal(document_.version, 1);
-  assert.equal(document_.unreadable, 0);
-  assert.equal(document_.records.length, 1,
+  const { document: document_, unreadable } = await conversations.exportBrowserHistory();
+  assert.equal(document_.qwen_apu_browser_history_export, 1);
+  assert.match(document_.exported_utc, /^\d{4}-\d{2}-\d{2}T/);
+  assert.deepEqual(Object.keys(document_).sort(),
+    ['conversations', 'exported_utc', 'qwen_apu_browser_history_export'],
+    'the export carries a top-level field the importer treats as unrecognized');
+  assert.equal(unreadable, 0);
+  assert.equal(document_.conversations.length, 1,
     'the export carries a number of records other than the durable one');
-  const exported = document_.records[0];
+  const exported = document_.conversations[0];
   assert.equal(exported.id, durableId);
   assert.deepEqual(exported, stored,
     'the export projected the record rather than carrying it verbatim');
@@ -143,7 +146,7 @@ test('the export carries the version key and the records verbatim', async () => 
 test('the export filename names the document it carries', async () => {
   const page = await storePage();
   const { conversations } = page.modules;
-  const name = conversations.historyExportFilename({ exported: '2026-09-11T10:20:30.500Z' });
+  const name = conversations.historyExportFilename({ exported_utc: '2026-09-11T10:20:30.500Z' });
   assert.equal(name, 'qwen-apu-browser-history-2026-09-11T10-20-30-500Z.json');
   assert.ok(name.endsWith('.json'));
 });

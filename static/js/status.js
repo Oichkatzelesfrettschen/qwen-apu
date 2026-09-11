@@ -130,7 +130,8 @@ async function downloadHistoryExport() {
   const button = $('#conversation-export');
   button.disabled = true;
   try {
-    const document_ = await exportBrowserHistory();
+    const { document: document_, store, unreadable } = await exportBrowserHistory();
+    const count = document_.conversations.length;
     const blob = new Blob([JSON.stringify(document_, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -141,12 +142,11 @@ async function downloadHistoryExport() {
     // it returns, so the URL is released on the next task rather than held for
     // the life of the page.
     setTimeout(() => { URL.revokeObjectURL(url); }, 0);
-    const missing = document_.unreadable
-      ? `; ${document_.unreadable} record${document_.unreadable === 1 ? '' : 's'} unreadable`
+    const missing = unreadable
+      ? `; ${unreadable} record${unreadable === 1 ? '' : 's'} unreadable`
       : '';
     note.textContent =
-      `exported ${document_.records.length} conversation${document_.records.length === 1 ? '' : 's'}` +
-      ` from ${document_.store}${missing}`;
+      `exported ${count} conversation${count === 1 ? '' : 's'} from ${store}${missing}`;
   } catch (error) {
     note.className = 'meta bad';
     note.textContent = `the export did not run: ${error.message || error}`;
