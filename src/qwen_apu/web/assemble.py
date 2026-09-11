@@ -374,7 +374,9 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
                     open_lan=approval_settings.open_lan,
                     image_socket=image_socket,
                     file_roots=file_roots,
-                    tool_execution_route=web_settings.mounted,
+                    web_definitions=(
+                        web_tools.tool_definitions(web_settings) if web_settings.mounted else None
+                    ),
                 )
             )
         ),

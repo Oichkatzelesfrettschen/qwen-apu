@@ -23,11 +23,12 @@ executes. `web_search` and `read_url` run in `qwen_apu.tools.web` against the
 SearXNG instance the resolved web profile names, so a gateway assembled without
 that profile mounts no executor and both rows read as planned and carry no
 schema; the same gateway with the profile mounted reads them as served and
-carries the two definitions built from that profile's own bounds. The page
-composes a turn's tools from this one answer, which is what keeps the row a
-turn routes onto and the row this gateway executes the same row. The remaining
-rows are fixed, since the artifact that executes each one either exists in this
-tree or is a plan.
+carries the two definitions built from that profile's own bounds.
+`qwen_apu.tools.matrix` reads this table through `table` and carries each
+definition onto the offer whose state admits a call, which is what keeps the
+row a turn routes onto and the row this gateway executes the same row. The
+remaining rows are fixed, since the artifact that executes each one either
+exists in this tree or is a plan.
 
 The read-only local set is `read_file`, `file_glob_search`, `grep_search`, and
 AGENTS.md fixes that boundary: `--tools all` grants shell execution and file

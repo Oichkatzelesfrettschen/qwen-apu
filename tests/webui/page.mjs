@@ -390,14 +390,15 @@ function webToolDefinitionFixture(name) {
     required: ['query', 'authorization'] } } };
 }
 
-// A matrix whose web lane runs. A row in an executing state carries the
-// function object the executor declares, and `web_search` advertises an
-// `authorization` property the gateway alone issues, which the page strips.
+// A matrix whose web lane runs. `src/qwen_apu/tools/web.py` executes both rows
+// inside the gateway, so each reads `available` and carries the function object
+// that executor declares; `web_search` advertises an `authorization` property
+// the gateway alone issues, which the page strips.
 export const WEB_TOOL_MATRIX = toolMatrix([
-  toolRow('web_search', 'available_through_helper',
-    { helper: 'searxng', definition: webToolDefinitionFixture('web_search') }),
-  toolRow('read_url', 'available_through_helper',
-    { helper: 'searxng', definition: webToolDefinitionFixture('read_url') }),
+  toolRow('web_search', 'available',
+    { definition: webToolDefinitionFixture('web_search') }),
+  toolRow('read_url', 'available',
+    { definition: webToolDefinitionFixture('read_url') }),
   toolRow('image_generation', 'not_installed'),
   toolRow('image_review', 'not_installed'),
   toolRow('calculator', 'available')

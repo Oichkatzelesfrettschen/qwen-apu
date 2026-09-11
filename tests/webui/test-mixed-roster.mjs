@@ -40,16 +40,14 @@ function definitionFor(name) {
 }
 
 const WEB_MATRIX = toolMatrix([
-  toolRow('web_search', 'available_through_helper',
-    { helper: 'searxng', definition: definitionFor('web_search') }),
-  toolRow('read_url', 'available_through_helper',
-    { helper: 'searxng', definition: definitionFor('read_url') }),
+  toolRow('web_search', 'available', { definition: definitionFor('web_search') }),
+  toolRow('read_url', 'available', { definition: definitionFor('read_url') }),
   toolRow('calculator', 'available')
 ]);
 
-// The state this gateway reports today: the approval and grant routes are
-// mounted and no tool executor is, so the web rows name the missing executor
-// rather than offering a schema the page cannot run.
+// The state a gateway that resolved no SearXNG instance reports: the approval
+// and grant routes are mounted and no tool executor is, so the web rows name
+// the missing executor rather than offering a schema the page cannot run.
 const NO_EXECUTOR_MATRIX = toolMatrix([
   toolRow('web_search', 'temporarily_unavailable',
     { helper: 'searxng', reason: 'this origin mounts no tool executor' }),
@@ -130,6 +128,27 @@ test('a row that executes and carries no schema composes nothing', async () => {
   const composed = await arm.resolve(WEB_PROFILE, 1);
   assert.equal(composed.length, 0,
     'a row carrying no function schema reached the turn as a tool');
+});
+
+test('a row carrying a schema in a state that admits no call composes nothing', async () => {
+  /* The state rather than the schema decides what a turn offers.
+
+     A gateway that mounted no executor states both web rows
+     `temporarily_unavailable` and carries no definition, so a filter reading
+     the definition alone would pass this arm for the wrong reason. Here the
+     rows carry the schema and state a refusal, which is the arm that fails
+     unless `resolveWebTools` reads `toolStateExecutes` as well: composing one
+     would put the refusal after the proposal. */
+  const arm = await listingHarness();
+  arm.answerWith(() => jsonResponse(toolMatrix([
+    toolRow('web_search', 'temporarily_unavailable', { definition: definitionFor('web_search') }),
+    toolRow('read_url', 'policy_refused', { definition: definitionFor('read_url') })
+  ])));
+  arm.select(WEB_PROFILE, 8);
+  const composed = await arm.resolve(WEB_PROFILE, 8);
+  assert.equal(composed.length, 0,
+    'a row whose state admits no call reached the turn as a tool');
+  assert.equal(arm.alerts.length, 0, 'a refused row raised an alert rather than staying inert');
 });
 
 test('the unmounted executor leaves the turn with no web tool and a reason', async () => {
