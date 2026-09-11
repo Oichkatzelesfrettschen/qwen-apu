@@ -1449,6 +1449,111 @@ def execute(settings: WebToolSettings, request: Request) -> Response:
         return _json(HTTP_STATUS_FOR_TERM.get(error.status, 400), document)
 
 
+def tool_definitions(settings: WebToolSettings) -> dict[str, dict[str, object]]:
+    """Return the two schemas a model proposes inside, keyed by tool identifier.
+
+    The numeric maxima are the ones this executor enforces rather than the
+    compiled ceiling, so `max_results` states the profile's own count and
+    `max_chars` its own window; a model reading the listing proposes inside
+    what the call would admit. Each schema is the OpenAI function object the
+    request body carries, so the page forwards it rather than converting one.
+
+    The schema states what this executor serves rather than what the tool lane
+    admits, so the publication window and the cached-age bound are absent:
+    `SearxngProvider.refuse_unhonored_arguments` refuses both, since the JSON
+    API carries no publication interval and a mixed category answers from
+    engines whose recency support differs. `authorization` is advertised and
+    unrequired, because the approval route rather than the model issues it and
+    the page strips the property before the definition reaches a request.
+    """
+    return {
+        SEARCH_TOOL: {
+            "type": "function",
+            "function": {
+                "name": SEARCH_TOOL,
+                "description": (
+                    "Search the web and return ranked results with titles, URLs, and "
+                    "highlights. Each result carries a Result ID that read_url redeems "
+                    "for the page text."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": (
+                                f"Search query, at most {QUERY_CHARACTER_CAP} characters."
+                            ),
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "maximum": settings.max_results,
+                            "description": (
+                                f"Result count, 1 to {settings.max_results}. Default "
+                                f"{settings.max_results}."
+                            ),
+                        },
+                        "include_domains": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Admit these domains alone, at most 10.",
+                        },
+                        "exclude_domains": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Drop these domains, at most 10.",
+                        },
+                        "authorization": {
+                            "type": "string",
+                            "description": (
+                                "Grant covering these exact search arguments, issued by "
+                                "the approval route the human answers."
+                            ),
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        READ_URL_TOOL: {
+            "type": "function",
+            "function": {
+                "name": READ_URL_TOOL,
+                "description": (
+                    "Read the text of a page named by a Result ID from a prior "
+                    "web_search call. The Result ID is the only accepted reference; a "
+                    "URL is refused."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "result_id": {
+                            "type": "string",
+                            "description": "Result ID printed by web_search.",
+                        },
+                        "start_index": {
+                            "type": "integer",
+                            "description": "Character offset into the page text.",
+                        },
+                        "max_chars": {
+                            "type": "integer",
+                            "maximum": settings.max_chars_per_fetch,
+                            "description": (
+                                f"Characters to return, at most "
+                                f"{settings.max_chars_per_fetch}. The reply names the "
+                                "next start index when more text remains."
+                            ),
+                        },
+                    },
+                    "required": ["result_id"],
+                },
+            },
+        },
+    }
+
+
 def routes(settings: WebToolSettings) -> tuple[Route, ...]:
     """The one execution route, mounted where the page already posts."""
     return (Route.make("POST", TOOLS_PATH, lambda request: execute(settings, request)),)

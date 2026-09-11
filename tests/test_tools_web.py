@@ -101,6 +101,21 @@ def _searxng_body(urls: list[str]) -> str:
     )
 
 
+@pytest.fixture(autouse=True)
+def process_umask() -> Iterator[None]:
+    """Restore the umask every `Ledger` open sets process-wide.
+
+    `Ledger.__init__` calls `os.umask(0o077)` so SQLite creates the database
+    and its rollback journal private, and that setting outlives the call. A
+    file that left it in place would make a later cell's `mkdir(mode=0o755)`
+    produce 0700 and its refusal never arrive, so this file returns the
+    process to the mask it found.
+    """
+    previous = os.umask(0o077)
+    yield
+    os.umask(previous)
+
+
 @pytest.fixture
 def source() -> Iterator[ThreadingHTTPServer]:
     server = _serve({"body": PAGE_HTML, "requests": []})
@@ -412,6 +427,28 @@ def test_a_window_reads_the_bytes_max_chars_names(harness: Harness) -> None:
     assert int(dict(fetched["provenance"])["returned_characters"]) == 20  # type: ignore[arg-type]
 
 
+def test_a_document_cut_at_the_cap_reports_the_window_as_truncated(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Completion is the retrieval's own claim, separate from the window's fit.
+
+    A window covering every character the retrieval kept is still truncated
+    where the retrieval itself stopped at the document cap, so the frame says
+    `yes` and the model reads that text remains past what it holds.
+    """
+    _, search = harness.call(
+        web_tools.SEARCH_TOOL,
+        {"query": "raven2 decode", "authorization": harness.grant("raven2 decode")},
+    )
+    result_id = _result_id(str(search["text"]))
+    monkeypatch.setattr(web_tools, "DOCUMENT_CHARACTER_CAP", 40)
+    _, fetched = harness.call(web_tools.READ_URL_TOOL, {"result_id": result_id, "max_chars": 40})
+    window = str(fetched["text"])
+    assert "Returned Characters: 40" in window
+    assert "Possibly Truncated: yes" in window
+    assert "Next Start Index: 40" in window
+
+
 def test_max_chars_above_the_profiles_bound_is_refused(harness: Harness) -> None:
     """The profile's own per-fetch bound is what an argument is measured against."""
     status, answer = harness.call(web_tools.READ_URL_TOOL, {"result_id": "a.b", "max_chars": 99999})
@@ -648,18 +685,72 @@ def test_an_instance_returning_nothing_reports_an_incomplete_search(
 # ---------------------------------------------------------------------------
 
 
-def test_the_matrix_names_the_two_rows_planned_until_the_executor_is_mounted() -> None:
+def test_the_matrix_names_the_two_rows_planned_until_the_executor_is_mounted(
+    harness: Harness,
+) -> None:
+    definitions = web_tools.tool_definitions(harness.settings)
     for tool_id in registry.WEB_EXECUTOR_ROWS:
         assert registry.entry(tool_id).availability is registry.Availability.PLANNED
         assert (
-            registry.entry(tool_id, web_executor_mounted=True).availability
+            registry.entry(tool_id, web_definitions=definitions).availability
             is registry.Availability.SERVED
         )
         assert registry.entry(tool_id).execution_path == "src/qwen_apu/tools/web.py"
-    payload = registry.as_payload(web_executor_mounted=True)
+    assert {row.tool_id for row in registry.served(web_definitions=definitions)} >= set(
+        registry.WEB_EXECUTOR_ROWS
+    )
+
+
+def test_the_served_matrix_carries_the_schemas_the_page_composes(harness: Harness) -> None:
+    """The one answer the page reads: availability, identifier, and schema.
+
+    `static/js/tools.js` filters on `tool_id` and `availability`, reads
+    `definition.function.parameters`, and strips `authorization` before the
+    definition reaches a request body, so those field names are the contract
+    between this payload and the turn the browser composes. The maxima are the
+    profile's own, since a model reading the listing proposes inside what the
+    call would admit.
+    """
+    definitions = web_tools.tool_definitions(harness.settings)
+    payload = registry.as_payload(web_definitions=definitions)
+    assert payload["schema"] == "qwen.tool-registry"
     rows = {row["tool_id"]: row for row in payload["tools"]}  # type: ignore[union-attr,index]
-    assert rows["web_search"]["availability"] == "served"
-    assert rows["read_url"]["availability"] == "served"
+    for tool_id in registry.WEB_EXECUTOR_ROWS:
+        row = rows[tool_id]
+        assert row["availability"] == "served"
+        function = dict(dict(row["definition"])["function"])  # type: ignore[arg-type]
+        assert function["name"] == tool_id
+        parameters = dict(function["parameters"])  # type: ignore[arg-type]
+        properties = dict(parameters["properties"])  # type: ignore[arg-type]
+        assert "authorization" not in list(parameters["required"])  # type: ignore[call-overload]
+        for absent in ("published_after", "published_before", "max_age_hours"):
+            assert absent not in properties, f"{tool_id} advertises {absent}, which it refuses"
+    search = dict(dict(rows["web_search"]["definition"])["function"])  # type: ignore[arg-type]
+    search_properties = dict(dict(search["parameters"])["properties"])  # type: ignore[arg-type]
+    assert "authorization" in search_properties
+    assert dict(search_properties["max_results"])["maximum"] == harness.settings.max_results
+    read = dict(dict(rows["read_url"]["definition"])["function"])  # type: ignore[arg-type]
+    read_properties = dict(dict(read["parameters"])["properties"])  # type: ignore[arg-type]
+    assert dict(read_properties["max_chars"])["maximum"] == harness.settings.max_chars_per_fetch
+    # Each advertised name is one the executor reads, so a model proposing
+    # inside the schema meets no argument refusal the listing invited.
+    assert set(search_properties) <= {
+        "query",
+        "max_results",
+        "include_domains",
+        "exclude_domains",
+        "authorization",
+    }
+    assert set(read_properties) == {"result_id", "start_index", "max_chars"}
+
+
+def test_an_unmounted_gateway_states_both_rows_planned_and_carries_no_schema() -> None:
+    """A page composes no tool whose first call would answer a refusal."""
+    payload = registry.as_payload()
+    rows = {row["tool_id"]: row for row in payload["tools"]}  # type: ignore[union-attr,index]
+    for tool_id in registry.WEB_EXECUTOR_ROWS:
+        assert rows[tool_id]["availability"] == "planned"
+        assert rows[tool_id]["definition"] is None
 
 
 def test_a_gateway_without_an_instance_serves_no_call_and_mounts_nothing(

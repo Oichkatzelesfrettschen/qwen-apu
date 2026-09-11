@@ -18,12 +18,16 @@ already approved -- reading one URL a granted search returned, reviewing an
 artifact that generation produced -- carries `model-suggested`, since the
 grant that admitted the first call bounds the second.
 
-Availability is computed for the two rows this package executes. `web_search`
-and `read_url` run in `qwen_apu.tools.web` against the SearXNG instance the
-resolved web profile names, so a gateway assembled without that profile mounts
-no executor and both rows read as planned; the same gateway with the profile
-mounted reads them as served. The remaining rows are fixed, since the artifact
-that executes each one either exists in this tree or is a plan.
+Availability and the request schema are computed for the two rows this package
+executes. `web_search` and `read_url` run in `qwen_apu.tools.web` against the
+SearXNG instance the resolved web profile names, so a gateway assembled without
+that profile mounts no executor and both rows read as planned and carry no
+schema; the same gateway with the profile mounted reads them as served and
+carries the two definitions built from that profile's own bounds. The page
+composes a turn's tools from this one answer, which is what keeps the row a
+turn routes onto and the row this gateway executes the same row. The remaining
+rows are fixed, since the artifact that executes each one either exists in this
+tree or is a plan.
 
 The read-only local set is `read_file`, `file_glob_search`, `grep_search`, and
 AGENTS.md fixes that boundary: `--tools all` grants shell execution and file
@@ -36,6 +40,7 @@ no preset in this tree arms it.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 
@@ -56,7 +61,13 @@ class Availability(StrEnum):
 
 @dataclass(frozen=True)
 class ToolEntry:
-    """One tool, its executor, its approval grade, and its availability."""
+    """One tool, its executor, its approval grade, its availability, its schema.
+
+    `definition` is the OpenAI function object a request body carries, present
+    on a row this gateway executes and absent on every other, so the page
+    composes a turn's tools from the same answer that states which rows are
+    served rather than from a second listing.
+    """
 
     tool_id: str
     title: str
@@ -65,6 +76,7 @@ class ToolEntry:
     approval: Approval
     availability: Availability
     summary: str
+    definition: dict[str, object] | None = None
 
 
 TOOL_TABLE: tuple[ToolEntry, ...] = (
@@ -214,58 +226,65 @@ TOOL_TABLE: tuple[ToolEntry, ...] = (
 )
 
 
-# The rows `src/qwen_apu/tools/web.py` executes. Their availability follows
-# whether that executor is mounted on this gateway, so it is computed in
-# `table` rather than frozen above.
+# The rows `src/qwen_apu/tools/web.py` executes. Their availability and their
+# schemas follow whether that executor is mounted on this gateway, so both are
+# computed in `table` rather than frozen above.
 WEB_EXECUTOR_ROWS: tuple[str, ...] = ("web_search", "read_url")
 
+WebDefinitions = Mapping[str, dict[str, object]]
 
-def table(*, web_executor_mounted: bool = False) -> tuple[ToolEntry, ...]:
+
+def table(*, web_definitions: WebDefinitions | None = None) -> tuple[ToolEntry, ...]:
     """Return the table as this gateway serves it.
 
     The two web rows name `src/qwen_apu/tools/web.py`, and that module answers
     `POST /api/tools` only where the assembly resolved a web profile carrying a
     SearXNG instance, so their availability is a property of the running
-    gateway rather than of the tree. A gateway that mounted no executor states
-    them as planned, which is what stops a page from routing a turn onto a row
-    whose first call would answer a refusal.
+    gateway rather than of the tree. `web_definitions` is what the assembly
+    passes when it mounted the executor: each row it names reads served and
+    carries the schema `qwen_apu.tools.web.tool_definitions` built from that
+    profile's own bounds. A gateway that mounted no executor passes None, both
+    rows read planned, and neither carries a schema, so a page composes a turn
+    without a tool whose first call would answer a refusal.
     """
-    if not web_executor_mounted:
+    if web_definitions is None:
         return TOOL_TABLE
     return tuple(
-        replace(row, availability=Availability.SERVED) if row.tool_id in WEB_EXECUTOR_ROWS else row
+        replace(row, availability=Availability.SERVED, definition=web_definitions[row.tool_id])
+        if row.tool_id in web_definitions
+        else row
         for row in TOOL_TABLE
     )
 
 
-def entry(tool_id: str, *, web_executor_mounted: bool = False) -> ToolEntry:
+def entry(tool_id: str, *, web_definitions: WebDefinitions | None = None) -> ToolEntry:
     """Return one row by its identifier."""
-    for candidate in table(web_executor_mounted=web_executor_mounted):
+    for candidate in table(web_definitions=web_definitions):
         if candidate.tool_id == tool_id:
             return candidate
     raise KeyError(tool_id)
 
 
-def served(*, web_executor_mounted: bool = False) -> tuple[ToolEntry, ...]:
+def served(*, web_definitions: WebDefinitions | None = None) -> tuple[ToolEntry, ...]:
     """Return the rows whose execution path this gateway actually reaches."""
     return tuple(
         row
-        for row in table(web_executor_mounted=web_executor_mounted)
+        for row in table(web_definitions=web_definitions)
         if row.availability is Availability.SERVED
     )
 
 
-def as_payload(*, web_executor_mounted: bool = False) -> dict[str, object]:
+def as_payload(*, web_definitions: WebDefinitions | None = None) -> dict[str, object]:
     """Return the tool identity table, which carries no per-model state.
 
     `qwen_apu.tools.matrix` owns `GET /api/tools` and joins this table against
     the ledgers and the launch, so this function answers what a tool is while
-    that module answers what it does for one selection. `web_executor_mounted`
-    is the one launch fact the identity table reads, because the artifact that
+    that module answers what it does for one selection. `web_definitions` is
+    the one launch fact the identity table reads, because the artifact that
     executes the two web rows is mounted rather than fixed by the tree.
     """
     return {
         "schema": "qwen.tool-registry",
         "version": 1,
-        "tools": [asdict(row) for row in table(web_executor_mounted=web_executor_mounted)],
+        "tools": [asdict(row) for row in table(web_definitions=web_definitions)],
     }
