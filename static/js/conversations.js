@@ -680,12 +680,17 @@ function renderRestoredArtifactCard(container, artifact, entry) {
     reviewButton.className = 'act image-review-button';
     reviewButton.textContent = 'review';
     const reviewModel = registeredReviewModel(artifact.profile);
-    reviewButton.hidden = !reviewModel;
+    // A restored card carries no grant. `POST /api/tools/image/review` binds
+    // the claim's `prompt_hash` to the provenance record's own
+    // `prompt_sha256`, and a conversation record keeps the digest and the
+    // provenance route rather than the token a human approved, so a review of
+    // a restored artifact takes a fresh approval this page does not yet offer
+    // and the button stays hidden rather than opening onto that refusal.
+    reviewButton.hidden = true;
     reviewButton.onclick = () => { void runImageReview(card, artifact, {
       sha256: artifact.sha256,
       state: { correctionsUsed: 0 },
       model: entry && entry.model,
-      cancelToolName: null,
       bounds: null,
       reviewModel,
       entry,

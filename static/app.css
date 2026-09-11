@@ -111,6 +111,16 @@
   details.roster td.unstable { color:var(--bad); }
   details.roster .evidence { display:block; color:var(--dim); font-size:11px;
              overflow-wrap:anywhere; }
+  /* One tool per row: title, state, and the authority the state comes from.
+     The state carries the color, since the state is what a reader scans for. */
+  #tool-matrix-body .tool-row { display:grid; grid-template-columns:11rem 12rem 1fr;
+             gap:.45rem; padding:.2rem 0; border-bottom:1px solid var(--line); }
+  #tool-matrix-body .tool-reason { overflow-wrap:anywhere; }
+  #tool-matrix-body .tool-available .tool-state { color:var(--ok); }
+  #tool-matrix-body .tool-available_through_helper .tool-state { color:var(--ok); }
+  #tool-matrix-body .tool-temporarily_unavailable .tool-state { color:var(--warn); }
+  #tool-matrix-body .tool-not_installed .tool-state { color:var(--dim); }
+  #tool-matrix-body .tool-policy_refused .tool-state { color:var(--bad); }
   p.temporary-banner { margin:0; padding:.5rem 1rem; border-bottom:1px solid var(--line);
              background:var(--mine); color:var(--warn); font-size:13px; font-weight:600; }
   #conversation-export-status { margin:0 .3rem; }

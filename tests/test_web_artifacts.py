@@ -35,6 +35,7 @@ from pathlib import Path
 
 import pytest
 
+from qwen_apu.config import models as config_models
 from qwen_apu.engines.image import (
     ImageControlClient,
     ProtocolRefused,
@@ -52,6 +53,7 @@ from qwen_apu.web.artifacts import (
     read_index,
     routes,
 )
+from qwen_apu.web.assemble import GatewayRequest, review_model_for
 from qwen_apu.web.http import Request, Response, match
 
 API_KEY = "test-artifact-key"
@@ -1027,3 +1029,449 @@ def test_the_review_module_states_the_verdict_keys_this_route_reports() -> None:
     )
     assert module.MAX_CONSTRAINTS == 8
     assert module.CONSTRAINT_DESCRIPTION_MAX_CHARS == 200
+
+
+# The image control routes: status, cancel, and remove.
+
+
+def admitting(directory: Path, control_path: Path, **overrides: object) -> ImageToolSettings:
+    """Tool settings whose session gate admits, the way the assembled gateway wires it."""
+    fields: dict[str, object] = {"session_admits": lambda request: True}
+    fields.update(overrides)
+    return tool_settings(directory, control_path, **fields)
+
+
+def observation_reply(**observation: object) -> Callable[[Mapping[str, object]], bytes]:
+    """A control responder answering one observation for every control action."""
+
+    def responder(request: Mapping[str, object]) -> bytes:
+        frame: dict[str, object] = {
+            "protocol_version": 1,
+            "request_id": request["request_id"],
+            "status": "accepted",
+        }
+        frame.update(observation)
+        return (json.dumps(frame) + "\n").encode("utf-8")
+
+    return responder
+
+
+def test_a_control_route_without_a_session_is_refused(
+    artifacts: Path, control: ControlFixture
+) -> None:
+    """The default gate refuses, so an unwired mount exposes no worker state."""
+    settings = tool_settings(artifacts, control.path)
+    for path, body in (
+        (image_tools.STATUS_ROUTE, {"request_id": "req0001"}),
+        (image_tools.CANCEL_ROUTE, {"request_id": "req0001"}),
+        (image_tools.REMOVE_ROUTE, {"sha256": "0" * 64}),
+    ):
+        handler = {
+            image_tools.STATUS_ROUTE: image_tools.status,
+            image_tools.CANCEL_ROUTE: image_tools.cancel,
+            image_tools.REMOVE_ROUTE: image_tools.remove,
+        }[path]
+        response = handler(settings, tool_request(path, body))
+        assert response.status == 401, path
+        assert b"gateway session" in response.body
+    assert control.received == []
+
+
+def test_status_reports_the_workers_observation(artifacts: Path, tmp_path: Path) -> None:
+    fixture = ControlFixture(
+        tmp_path,
+        observation_reply(
+            state="running",
+            job_id="aabbccdd",
+            job_request_id="req0001",
+            lease_held=True,
+            elapsed_seconds=3.5,
+            pid=4242,
+        ),
+    )
+    try:
+        settings = admitting(artifacts, fixture.path)
+        response = image_tools.status(
+            settings, tool_request(image_tools.STATUS_ROUTE, {"request_id": "req0001"})
+        )
+        assert response.status == 200, response.body
+        payload = json.loads(response.body.decode("utf-8"))
+        assert payload["state"] == "running"
+        assert payload["lease_held"] is True
+        assert payload["pid"] == 4242
+        assert [frame["action"] for frame in fixture.received] == ["status"]
+        # The status frame names a job and describes none.
+        assert sorted(fixture.received[0]) == ["action", "protocol_version", "request_id"]
+    finally:
+        fixture.close()
+
+
+def test_status_drops_a_key_outside_the_protocols_observation_set(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    """The answer is built from the closed set, so an unknown key reaches no page."""
+    fixture = ControlFixture(tmp_path, observation_reply(state="idle", lease_held=False))
+    try:
+        settings = admitting(artifacts, fixture.path)
+        response = image_tools.status(
+            settings, tool_request(image_tools.STATUS_ROUTE, {"request_id": "req0001"})
+        )
+        payload = json.loads(response.body.decode("utf-8"))
+        assert set(payload) <= {"status", *image_tools.OBSERVATION_KEYS}
+    finally:
+        fixture.close()
+
+
+@pytest.mark.parametrize("request_id", ["", "req 0001", "x" * 65, "req/0001"])
+def test_a_malformed_request_id_is_refused_before_the_socket(
+    artifacts: Path, control: ControlFixture, request_id: str
+) -> None:
+    settings = admitting(artifacts, control.path)
+    response = image_tools.status(
+        settings, tool_request(image_tools.STATUS_ROUTE, {"request_id": request_id})
+    )
+    assert response.status == 400
+    assert control.received == []
+
+
+def test_cancel_ends_the_job_and_reports_the_lease_the_worker_observes(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    replies: list[bytes] = []
+
+    def responder(request: Mapping[str, object]) -> bytes:
+        if request["action"] == "cancel":
+            frame: dict[str, object] = {
+                "protocol_version": 1,
+                "request_id": request["request_id"],
+                "status": "accepted",
+                "job_id": "aabbccdd",
+                "cancelled": True,
+            }
+        else:
+            frame = {
+                "protocol_version": 1,
+                "request_id": request["request_id"],
+                "status": "accepted",
+                "state": "idle",
+                "lease_held": False,
+            }
+        line = (json.dumps(frame) + "\n").encode("utf-8")
+        replies.append(line)
+        return line
+
+    fixture = ControlFixture(tmp_path, responder)
+    try:
+        settings = admitting(artifacts, fixture.path)
+        response = image_tools.cancel(
+            settings, tool_request(image_tools.CANCEL_ROUTE, {"request_id": "req0001"})
+        )
+        assert response.status == 200, response.body
+        payload = json.loads(response.body.decode("utf-8"))
+        assert payload["cancelled"] is True
+        assert payload["lease_held"] is False
+        assert payload["state"] == "idle"
+        assert [frame["action"] for frame in fixture.received] == ["cancel", "status"]
+    finally:
+        fixture.close()
+
+
+def test_cancelling_a_job_that_is_not_running_answers_its_term(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    """`handle_cancel` refuses a stale identifier as `not_running`, which is an answer."""
+
+    def responder(request: Mapping[str, object]) -> bytes:
+        if request["action"] == "cancel":
+            frame: dict[str, object] = {
+                "protocol_version": 1,
+                "request_id": request["request_id"],
+                "status": "refused",
+                "reason": "not_running",
+                "error": "the cancel names a job that is not running",
+            }
+        else:
+            frame = {
+                "protocol_version": 1,
+                "request_id": request["request_id"],
+                "status": "accepted",
+                "state": "idle",
+                "lease_held": False,
+            }
+        return (json.dumps(frame) + "\n").encode("utf-8")
+
+    fixture = ControlFixture(tmp_path, responder)
+    try:
+        settings = admitting(artifacts, fixture.path)
+        response = image_tools.cancel(
+            settings, tool_request(image_tools.CANCEL_ROUTE, {"request_id": "req0002"})
+        )
+        assert response.status == 200
+        payload = json.loads(response.body.decode("utf-8"))
+        assert payload["reason"] == "not_running"
+        assert payload["cancelled"] is False
+        assert payload["lease_held"] is False
+    finally:
+        fixture.close()
+
+
+def test_a_control_call_against_an_absent_socket_reports_the_service_unreachable(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    settings = admitting(artifacts, tmp_path / "image-service.sock")
+    response = image_tools.status(
+        settings, tool_request(image_tools.STATUS_ROUTE, {"request_id": "req0001"})
+    )
+    assert response.status == 503
+    assert b"unreachable" in response.body
+
+
+def test_remove_retracts_the_marker_and_retains_the_payload(
+    artifacts: Path, control: ControlFixture, published: str
+) -> None:
+    settings = admitting(artifacts, control.path)
+    directory = ArtifactDirectory(artifacts)
+    assert directory.read(published, "png") is not None
+    provenance = directory.committed(published, "png")
+    assert provenance is not None
+
+    response = image_tools.remove(
+        settings, tool_request(image_tools.REMOVE_ROUTE, {"sha256": published})
+    )
+    assert response.status == 200, response.body
+    payload = json.loads(response.body.decode("utf-8"))
+    assert payload["removed"] is True
+    assert payload["png_sha256"] == published
+    assert payload["payload_removed"] is False
+    assert payload["payload_disposal"] == "remote/check-deletion-plan.sh"
+
+    # Both files of the pair read 404 from the next read onward.
+    assert directory.read(published, "png") is None
+    assert directory.read(provenance.provenance_sha256, "json") is None
+    # The bytes stay and nothing reclaims them. `enforce_artifact_retention`
+    # enumerates markers, so a pair whose marker is gone is one the worker's
+    # own sweep no longer sees; an operator disposes of it.
+    assert (artifacts / f"{published}.png").is_file()
+    assert (artifacts / f"{provenance.provenance_sha256}.json").is_file()
+    # The route reaches the worker at no point: version 1 admits three actions
+    # and none of them deletes an artifact.
+    assert control.received == []
+
+
+def test_removing_an_uncommitted_or_absent_artifact_answers_no_such_artifact(
+    artifacts: Path, control: ControlFixture, uncommitted: str
+) -> None:
+    settings = admitting(artifacts, control.path)
+    for digest in (uncommitted, "b" * 64):
+        response = image_tools.remove(
+            settings, tool_request(image_tools.REMOVE_ROUTE, {"sha256": digest})
+        )
+        assert response.status == 404, digest
+        assert b"no such artifact" in response.body
+
+
+def test_removing_twice_answers_the_second_call_as_absent(
+    artifacts: Path, control: ControlFixture, published: str
+) -> None:
+    settings = admitting(artifacts, control.path)
+    body = {"sha256": published}
+    assert image_tools.remove(settings, tool_request(image_tools.REMOVE_ROUTE, body)).status == 200
+    assert image_tools.remove(settings, tool_request(image_tools.REMOVE_ROUTE, body)).status == 404
+
+
+def test_remove_refuses_a_name_that_is_not_a_digest(
+    artifacts: Path, control: ControlFixture
+) -> None:
+    """Traversal, uppercase hex, and a short name each answer 400 before any unlink."""
+    settings = admitting(artifacts, control.path)
+    for name in ("../secret", "AB" * 32, "0" * 63):
+        response = image_tools.remove(
+            settings, tool_request(image_tools.REMOVE_ROUTE, {"sha256": name})
+        )
+        assert response.status == 400, name
+    assert sorted(path.name for path in artifacts.iterdir()) == []
+
+
+# The lease the worker holds, released by a cancel this gateway sends.
+
+
+def refusing_reply(request: Mapping[str, object]) -> bytes:
+    return (
+        json.dumps(
+            {
+                "protocol_version": 1,
+                "request_id": request["request_id"],
+                "status": "failed",
+                "reason": "runtime_failed",
+                "error": "the runtime left before it wrote an artifact",
+            }
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def test_a_failed_generation_sends_one_cancel_and_leaves_the_grant_spent(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    """The lease is released by a cancel; the grant is gone whatever follows.
+
+    `_spend` runs between admission and dispatch the way
+    remote/image-mcp/server.py spends it, so a job that reaches no artifact has
+    burned its single use and the next generation takes a fresh approval.
+    """
+    recorder = SpendRecorder()
+    fixture = ControlFixture(tmp_path, refusing_reply)
+    try:
+        settings = admitting(artifacts, fixture.path, spend_grant=recorder)
+        response = image_tools.generate(
+            settings, tool_request("/api/tools/image/generate", GENERATE_BODY)
+        )
+        assert response.status == 502
+        actions = [frame["action"] for frame in fixture.received]
+        assert actions == ["image_generate", "cancel"]
+        # The cancel names the job this gateway opened and no other.
+        assert fixture.received[1]["request_id"] == fixture.received[0]["request_id"]
+        assert len(recorder.spent) == 1, "a failed generation returned its grant"
+        replay = image_tools.generate(
+            settings, tool_request("/api/tools/image/generate", GENERATE_BODY)
+        )
+        assert replay.status == 403
+        assert b"already spent" in replay.body
+    finally:
+        fixture.close()
+
+
+def test_a_timed_out_generation_sends_one_cancel_for_its_own_job(
+    artifacts: Path, tmp_path: Path
+) -> None:
+    """A worker that answers nothing leaves the lease held until a cancel reaches it."""
+    seen: list[Mapping[str, object]] = []
+    path = tmp_path / "image-service.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    address, descriptor = short_socket_address(path)
+    try:
+        listener.bind(address)
+    finally:
+        os.close(descriptor)
+    listener.listen(4)
+    listener.settimeout(0.5)
+    stop = threading.Event()
+
+    def serve() -> None:
+        cap: int = protocol().MAX_LINE_BYTES
+        while not stop.is_set():
+            try:
+                connection, _ = listener.accept()
+            except (TimeoutError, OSError):
+                continue
+            with connection, connection.makefile("rb") as stream:
+                line = stream.readline(cap + 1)
+                if not line:
+                    continue
+                request = json.loads(line.decode("utf-8"))
+                seen.append(request)
+                if request["action"] == "image_generate":
+                    # The generation answers nothing, which is what a stalled
+                    # runtime looks like from this side of the socket.
+                    continue
+                connection.sendall(
+                    (
+                        json.dumps(
+                            {
+                                "protocol_version": 1,
+                                "request_id": request["request_id"],
+                                "status": "accepted",
+                                "cancelled": True,
+                            }
+                        )
+                        + "\n"
+                    ).encode("utf-8")
+                )
+
+    worker = threading.Thread(target=serve, name="stalled-image-control", daemon=True)
+    worker.start()
+    try:
+        settings = admitting(artifacts, path, client=ImageControlClient(path, timeout=0.5))
+        response = image_tools.generate(
+            settings, tool_request("/api/tools/image/generate", GENERATE_BODY)
+        )
+        assert response.status == 503, response.body
+        assert [frame["action"] for frame in seen] == ["image_generate", "cancel"]
+        assert seen[1]["request_id"] == seen[0]["request_id"]
+    finally:
+        stop.set()
+        listener.close()
+        worker.join(timeout=5)
+
+
+def test_a_reviewer_failure_leaves_the_grant_spent_and_takes_no_lease(
+    artifacts: Path, control: ControlFixture, published: str
+) -> None:
+    """A review holds no lease and spends no grant, so a failure releases nothing.
+
+    The grant the generation spent is gone whatever the reviewer answers, which
+    is the property `_spend` establishes between admission and dispatch; the
+    review route verifies the claim and spends nothing of its own.
+    """
+    recorder = SpendRecorder()
+
+    def failing_router(payload: Mapping[str, object]) -> object:
+        raise RuntimeError("the router refused the reviewer")
+
+    settings = admitting(artifacts, control.path, router=failing_router, spend_grant=recorder)
+    response = image_tools.review(
+        settings, tool_request(image_tools.REVIEW_ROUTE, review_body(published))
+    )
+    assert response.status == 502
+    assert recorder.spent == []
+    assert control.received == []
+
+
+def test_the_five_workflow_routes_mount_under_the_gateway(
+    artifacts: Path, control: ControlFixture
+) -> None:
+    mounted = image_tools.routes(admitting(artifacts, control.path))
+    for path in (
+        image_tools.GENERATE_ROUTE,
+        image_tools.REVIEW_ROUTE,
+        image_tools.STATUS_ROUTE,
+        image_tools.CANCEL_ROUTE,
+        image_tools.REMOVE_ROUTE,
+    ):
+        assert match(mounted, "POST", path) is not None, path
+        assert match(mounted, "GET", path) is None, path
+
+
+# The reviewer the launch runs, resolved from the profile that produced the artifact.
+
+
+def test_the_reviewer_comes_from_the_armed_image_profiles_ledger_row() -> None:
+    served = next(
+        row for row in config_models.load_image_profiles() if row.review_model is not None
+    )
+    resolved = review_model_for(GatewayRequest(port=1, image_profile=served.profile_id))
+    assert resolved == served.review_model
+
+
+def test_a_profile_naming_no_reviewer_leaves_the_review_route_without_one() -> None:
+    """`-` offers no review, so the reviewer stays empty rather than falling back."""
+    silent = next(row for row in config_models.load_image_profiles() if row.review_model is None)
+    assert review_model_for(GatewayRequest(port=1, image_profile=silent.profile_id)) == ""
+
+
+def test_an_unarmed_image_lane_names_no_reviewer() -> None:
+    assert review_model_for(GatewayRequest(port=1)) == ""
+
+
+def test_an_explicit_reviewer_overrides_the_ledger() -> None:
+    served = next(
+        row for row in config_models.load_image_profiles() if row.review_model is not None
+    )
+    named = review_model_for(
+        GatewayRequest(port=1, image_profile=served.profile_id, review_model="qwen35-4b")
+    )
+    assert named == "qwen35-4b"
+
+
+def test_an_unknown_image_profile_names_no_reviewer() -> None:
+    assert review_model_for(GatewayRequest(port=1, image_profile="image-absent")) == ""

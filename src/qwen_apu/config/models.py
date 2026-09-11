@@ -56,6 +56,14 @@ from qwen_apu.config.schema import (
     FEATURE_CLAIM_STATUS_VALUES,
     FEATURE_VALUES,
     FLASH_ATTENTION_VALUES,
+    IMAGE_DIMENSION_MAXIMUM,
+    IMAGE_DIMENSION_MINIMUM,
+    IMAGE_DIMENSION_MULTIPLE,
+    IMAGE_EXECUTION_POLICY_VALUES,
+    IMAGE_PLACEMENT_VALUES,
+    IMAGE_PROFILE_FIELDS,
+    IMAGE_SAMPLER_VALUES,
+    IMAGE_STEPS_MAXIMUM,
     MODEL_ARTIFACT_FIELDS,
     MODEL_ROW_FIELDS,
     MODEL_SCOPED_FEATURES,
@@ -73,6 +81,7 @@ from qwen_apu.config.schema import (
     CtxCheckpointRow,
     DraftPair,
     FeatureClaim,
+    ImageProfile,
     ModelArtifact,
     ModelRow,
     PatchSeriesMember,
@@ -805,6 +814,131 @@ def load_web_profiles(
             )
         )
     return tuple(rows)
+
+
+# ---------------------------------------------------------------------------
+# remote/image-profiles.tsv
+# ---------------------------------------------------------------------------
+
+_IMAGE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_DECIMAL = re.compile(r"^[0-9]+(\.[0-9]+)?$")
+
+
+def load_image_profiles(path: Path | str | None = None) -> tuple[ImageProfile, ...]:
+    """Port of the profile-row rules remote/image-registry.sh applies to every row.
+
+    Every rule here is a property of one profile row read on its own: the
+    field count, the identifier spelling, the duplicate refusal, the placement
+    and sampler vocabularies, the canonical integers, the protocol geometry the
+    requested and admitted shapes meet, the closed `execution_policy`, the
+    evidence a `validator-gated` row carries, and the `review_model` spelling.
+
+    Two rules of `validate_image_registries` stay with the shell, because both
+    read remote/image-models.tsv and that ledger sits outside this package's
+    authority list: the `model_id` existence check, and the arm rule requiring
+    placement B to name a text encoder and placement C a text encoder and a
+    VAE. A caller holding the image model ledger re-applies those two.
+    """
+    resolved = resolve_ledger_path(path, "QWEN_IMAGE_PROFILES", "image-profiles")
+    table = read_ledger(resolved, key_index=0)
+    require_columns(table, IMAGE_PROFILE_FIELDS)
+    rows: list[ImageProfile] = []
+    for line_number, fields in table.rows:
+        profile_id = fields[0]
+        row_key = profile_id
+        if not _IMAGE_IDENTIFIER.match(profile_id):
+            raise RegistryError(
+                f"image profile row {line_number} carries a malformed profile_id: {profile_id}"
+            )
+        model_id = fields[1]
+        if not _IMAGE_IDENTIFIER.match(model_id):
+            raise RegistryError(f"{row_key}: model_id {model_id} is not an identifier")
+        placement = fields[2]
+        if placement not in IMAGE_PLACEMENT_VALUES:
+            raise RegistryError(f"{row_key}: placement {placement} is not A, B, or C")
+        width = require_canonical_int(fields[3], field_name="width", row_key=row_key)
+        height = require_canonical_int(fields[4], field_name="height", row_key=row_key)
+        steps = require_canonical_int(fields[5], field_name="steps", row_key=row_key)
+        sampler = fields[6]
+        if sampler not in IMAGE_SAMPLER_VALUES:
+            raise RegistryError(f"{row_key}: sampler {sampler} is outside the runtime vocabulary")
+        if not _DECIMAL.match(fields[7]):
+            raise RegistryError(f"{row_key}: cfg {fields[7]} is not a decimal number")
+        cfg = float(fields[7])
+        max_steps = require_canonical_int(fields[8], field_name="max_steps", row_key=row_key)
+        max_dimension = require_canonical_int(
+            fields[9], field_name="max_dimension", row_key=row_key
+        )
+        timeout_s = require_canonical_int(fields[10], field_name="timeout_s", row_key=row_key)
+        for name, value in (("width", width), ("height", height)):
+            if not IMAGE_DIMENSION_MINIMUM <= value <= IMAGE_DIMENSION_MAXIMUM:
+                raise RegistryError(f"{row_key}: {name} {value} is outside the protocol geometry")
+            if value % IMAGE_DIMENSION_MULTIPLE:
+                raise RegistryError(f"{row_key}: {name} {value} is outside the protocol geometry")
+        if steps > IMAGE_STEPS_MAXIMUM:
+            raise RegistryError(
+                f"{row_key}: steps {steps} exceed the protocol maximum {IMAGE_STEPS_MAXIMUM}"
+            )
+        if max_steps > IMAGE_STEPS_MAXIMUM:
+            raise RegistryError(
+                f"{row_key}: max_steps {max_steps} exceed the protocol maximum "
+                f"{IMAGE_STEPS_MAXIMUM}"
+            )
+        if max_dimension > IMAGE_DIMENSION_MAXIMUM:
+            raise RegistryError(
+                f"{row_key}: max_dimension {max_dimension} exceeds the protocol maximum "
+                f"{IMAGE_DIMENSION_MAXIMUM}"
+            )
+        # A profile admits what it requests, the rule an authorization grant is
+        # checked against before the runtime argv is built.
+        if width > max_dimension:
+            raise RegistryError(f"{row_key}: width {width} exceeds max_dimension {max_dimension}")
+        if height > max_dimension:
+            raise RegistryError(f"{row_key}: height {height} exceeds max_dimension {max_dimension}")
+        if steps > max_steps:
+            raise RegistryError(f"{row_key}: steps {steps} exceeds max_steps {max_steps}")
+        execution_policy = fields[11]
+        if execution_policy not in IMAGE_EXECUTION_POLICY_VALUES:
+            raise RegistryError(
+                f"{row_key}: execution_policy {execution_policy} is not refused or validator-gated"
+            )
+        evidence_raw = fields[12]
+        if execution_policy == "validator-gated" and evidence_raw == "-":
+            raise RegistryError(f"{row_key}: validator-gated carries no validated_evidence")
+        if evidence_raw != "-":
+            require_repository_relative_evidence_path(
+                evidence_raw, field_name="validated_evidence", row_key=row_key
+            )
+        review_raw = fields[13]
+        if review_raw != "-" and not _IMAGE_IDENTIFIER.match(review_raw):
+            raise RegistryError(f"{row_key}: review_model {review_raw} is not a model id")
+        rows.append(
+            ImageProfile(
+                profile_id=profile_id,
+                model_id=model_id,
+                placement=placement,
+                width=width,
+                height=height,
+                steps=steps,
+                sampler=sampler,
+                cfg=cfg,
+                max_steps=max_steps,
+                max_dimension=max_dimension,
+                timeout_s=timeout_s,
+                execution_policy=execution_policy,
+                validated_evidence=sentinel_to_optional_str(evidence_raw),
+                review_model=sentinel_to_optional_str(review_raw),
+            )
+        )
+    return tuple(rows)
+
+
+def image_profile(profile_id: str, path: Path | str | None = None) -> ImageProfile:
+    """Return one image profile row after the whole ledger validates."""
+    for row in load_image_profiles(path):
+        if row.profile_id == profile_id:
+            return row
+    raise RegistryError(f"no image profile carries profile_id {profile_id}")
 
 
 # ---------------------------------------------------------------------------

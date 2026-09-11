@@ -9,15 +9,20 @@ goes through that same ledger. The runtime root supplies every path.
 
 from __future__ import annotations
 
+import json
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from qwen_apu.engines.image import ImageControlClient
+from qwen_apu.config import models as config_models
+from qwen_apu.config.loader import RegistryError
+from qwen_apu.engines import llama as llama_engine
+from qwen_apu.engines.image import SOCKET_FILE_NAME, ImageControlClient
 from qwen_apu.engines.llama import LlamaClient, binding_from_runtime
 from qwen_apu.runtime import deployment, preflight
 from qwen_apu.runtime.paths import RuntimePaths
-from qwen_apu.tools import approvals, calculator, documents, files, images, registry
+from qwen_apu.tools import approvals, calculator, documents, files, images, matrix
 from qwen_apu.tools.ledger import Ledger
 from qwen_apu.web import artifacts, chat, conversations, status
 from qwen_apu.web.app import Gateway, GatewayConfig, RequestRefused
@@ -27,7 +32,6 @@ from qwen_apu.web.http import Request, Route
 DEFAULT_GATEWAY_PORT = 8090
 DEFAULT_UPSTREAM_PORT = 8080
 DEFAULT_WEB_PROFILE = "web-open"
-DEFAULT_REVIEW_MODEL = "lfm25-vl-16b"
 
 
 @dataclass(frozen=True)
@@ -38,7 +42,11 @@ class GatewayRequest:
     web_profile: str = DEFAULT_WEB_PROFILE
     image_profile: str = ""
     provider: str = "searxng"
-    review_model: str = DEFAULT_REVIEW_MODEL
+    # Empty reads the reviewer from the armed image profile's own ledger row;
+    # an explicit value overrides it. `remote/image-profiles.tsv` reads `-`
+    # where a shape offers no review, which leaves the reviewer empty and the
+    # review route refusing rather than falling back to some other checkpoint.
+    review_model: str = ""
     static_root: Path | None = None
     # Read-only roots the file search may reach; empty admits nothing.
     file_roots: tuple[Path, ...] = ()
@@ -46,6 +54,26 @@ class GatewayRequest:
     # gateway requires one; a research gateway against an unsupervised server
     # clears this and reads the upstream's roster alone.
     require_deployment: bool = True
+
+
+def review_model_for(request: GatewayRequest) -> str:
+    """The reviewer this launch runs, from the armed image profile's ledger row.
+
+    `remote/image-profiles.tsv` pairs one vision checkpoint with one image
+    shape, because the reviewer belongs to the profile that produced the
+    artifact rather than to the conversation that asked for it. An explicit
+    `review_model` on the request wins, an armed profile answers from its own
+    row, and a `-` there leaves the reviewer empty so the review route refuses
+    rather than reaching a checkpoint no ledger paired with the shape.
+    """
+    if request.review_model:
+        return request.review_model
+    if not request.image_profile:
+        return ""
+    try:
+        return config_models.image_profile(request.image_profile).review_model or ""
+    except RegistryError:
+        return ""
 
 
 class _Providers:
@@ -146,11 +174,35 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         )
 
     artifact_directory = state / "artifacts"
+    image_socket = state / SOCKET_FILE_NAME
+
+    def route_review(payload: Mapping[str, object]) -> object:
+        """One `/v1/chat/completions` round trip against the router on loopback.
+
+        The reviewer runs through the same upstream the chat proxy binds to the
+        server's pid, and the reply is parsed here so `tools/images.py` stays
+        free of a transport and reports completion, schema validity, and
+        judgment over a document.
+        """
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        answer = client().chat_completions(body, {"content-type": "application/json"})
+        collected = llama_engine.collect(answer)
+        if answer.status >= 400:
+            raise images.ToolRefused(
+                502, f"the router answered HTTP {answer.status} to the image reviewer"
+            )
+        try:
+            return json.loads(collected.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            raise images.ToolRefused(502, "the router answered the reviewer no JSON") from None
+
     image_settings = images.ImageToolSettings(
-        client=ImageControlClient(state / "image-service.sock", timeout=30.0),
+        client=ImageControlClient(image_socket, timeout=30.0),
         artifacts=artifacts.ArtifactDirectory(artifact_directory),
-        review_model=request.review_model,
+        review_model=review_model_for(request),
+        router=route_review,
         spend_grant=spend_grant,
+        session_admits=session_admits,
     )
     identity = {
         "profile": approval_settings.profile,
@@ -200,7 +252,18 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
             approval_identity=identity,
         ),
         _Providers(approvals.routes(approval_service)),
-        _Providers(registry.routes()),
+        _Providers(
+            matrix.routes(
+                matrix.MatrixSettings(
+                    approval_profile=approval_settings.profile,
+                    image_profile=approval_settings.image_profile,
+                    provider=approval_settings.provider,
+                    open_lan=approval_settings.open_lan,
+                    image_socket=image_socket,
+                    file_roots=file_roots,
+                )
+            )
+        ),
         _Providers(
             artifacts.routes(
                 artifacts.ArtifactSettings(
