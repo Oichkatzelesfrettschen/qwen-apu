@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import fcntl
 import importlib.util
+import io
 import json
 import os
 import signal
@@ -13,6 +14,7 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from typing import Any, NoReturn, cast
 from unittest import mock
@@ -75,6 +77,44 @@ class ReadinessDriverTest(unittest.TestCase):
         path.assert_called_once_with("results")
         self.assertEqual(result_directory.parent, results_root)
         self.assertEqual(result_directory.stat().st_mode & 0o777, 0o700)
+
+    def test_symlinked_results_authority_is_refused_before_output_creation(
+        self,
+    ) -> None:
+        external = self.home / "external"
+        external.mkdir()
+        results_root = self.home / "runtime" / "results"
+        results_root.parent.mkdir()
+        results_root.symlink_to(external, target_is_directory=True)
+        with (
+            mock.patch.object(
+                readiness_driver.qwen_home, "path", return_value=results_root
+            ),
+            self.assertRaisesRegex(
+                readiness_driver.DriverError,
+                "results authority must be a directory",
+            ),
+        ):
+            readiness_driver.create_result_directory(None)
+        self.assertEqual(list(external.iterdir()), [])
+
+    def test_foreign_runtime_binding_refuses_without_output_creation(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(
+                readiness_driver.qwen_home,
+                "require_binding",
+                side_effect=RuntimeError("foreign root"),
+            ),
+            mock.patch.object(
+                readiness_driver, "create_result_directory"
+            ) as create_result_directory,
+            redirect_stderr(stderr),
+        ):
+            status = readiness_driver.main([])
+        self.assertEqual(status, 2)
+        self.assertIn("readiness_driver=failed reason=foreign root", stderr.getvalue())
+        create_result_directory.assert_not_called()
 
     def test_start_failure_is_distinct(self) -> None:
         def missing_popen(*_args: Any, **_kwargs: Any) -> NoReturn:
@@ -165,6 +205,13 @@ class ReadinessDriverTest(unittest.TestCase):
             census = readiness_driver.session_census(41)
         self.assertEqual(census["unreadable_owned"], [42])
 
+    def test_process_identity_is_resolved_by_the_procfs_reader(self) -> None:
+        identity = readiness_driver.read_process_session(os.getpid())
+        self.assertIsNotNone(identity)
+        assert identity is not None
+        self.assertEqual(identity[1], os.getpgrp())
+        self.assertEqual(identity[2], os.getsid(0))
+
     def test_post_spawn_wait_failure_still_cleans_owned_session(self) -> None:
         failed = False
 
@@ -214,6 +261,50 @@ class ReadinessDriverTest(unittest.TestCase):
         self.assertEqual(record["primary"]["cancellation_count"], 2)
         self.assertEqual(record["cleanup"]["signals"].count("SIGTERM"), 1)
 
+    def test_cancellation_during_cleanup_refuses_acceptance(self) -> None:
+        census_calls = 0
+
+        def cancelling_census(session_id: int) -> dict[str, list[int]]:
+            nonlocal census_calls
+            census = cast(
+                dict[str, list[int]],
+                readiness_driver.session_census(session_id),
+            )
+            census_calls += 1
+            if census_calls == 1:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return census
+
+        status, record = self.run_probe(
+            "print('launch_readiness=accepted scope=test')",
+            runtime=readiness_driver.Runtime(census=cancelling_census),
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(record["outcome"], "refused")
+        self.assertEqual(record["primary"]["state"], "completed")
+        self.assertEqual(record["primary"]["cancellation_signal"], signal.SIGTERM)
+
+    def test_cancellation_during_final_publication_republishes_refusal(self) -> None:
+        publish_calls = 0
+
+        def cancelling_publish(target: Path, record: dict[str, Any]) -> None:
+            nonlocal publish_calls
+            publish_calls += 1
+            readiness_driver.atomic_write_json(target, record)
+            if publish_calls == 2:
+                os.kill(os.getpid(), signal.SIGTERM)
+
+        status, record = self.run_probe(
+            "print('launch_readiness=accepted scope=test')",
+            runtime=readiness_driver.Runtime(publish=cancelling_publish),
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(publish_calls, 3)
+        self.assertEqual(record["outcome"], "refused")
+        self.assertEqual(record["primary"]["cancellation_signal"], signal.SIGTERM)
+        retained = json.loads((self.result_directory / "terminal.json").read_text())
+        self.assertEqual(retained, record)
+
     def test_exited_leader_descendant_holding_logs_is_cleaned(self) -> None:
         source = (
             "import os,signal,sys;pid=os.fork();"
@@ -226,6 +317,62 @@ class ReadinessDriverTest(unittest.TestCase):
         self.assertTrue(record["cleanup"]["leader_reserved"])
         self.assertIn("SIGKILL", record["cleanup"]["signals"])
         self.assertEqual(record["cleanup"]["residuals"]["live"], [])
+
+    def test_descendant_process_group_is_killed_with_the_owned_session(self) -> None:
+        source = (
+            "import os,signal,sys;read_fd,write_fd=os.pipe();pid=os.fork();"
+            "\nif pid == 0:"
+            "\n os.close(read_fd);os.setpgid(0,0);"
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN);"
+            "os.write(write_fd,b'1');signal.pause();os._exit(0)"
+            "\nos.close(write_fd);os.read(read_fd,1);"
+            "print('launch_readiness=accepted scope=test');sys.stdout.flush()"
+        )
+        status, record = self.run_probe(source, cleanup_timeout_ms=500)
+        self.assertEqual(status, 0)
+        self.assertIn("SIGKILL", record["cleanup"]["signals"])
+        killed_groups = record["cleanup"]["signal_groups"]["SIGKILL"]
+        self.assertEqual(len(killed_groups), 1)
+        self.assertNotEqual(killed_groups[0], record["primary"]["process_id"])
+        self.assertEqual(record["cleanup"]["residuals"]["live"], [])
+
+    def test_unreaped_live_leader_remains_in_deadline_residuals(self) -> None:
+        process = mock.Mock(spec=subprocess.Popen)
+        process.pid = 4242
+        process.returncode = None
+        clock_value = 0
+
+        def advancing_clock() -> int:
+            nonlocal clock_value
+            clock_value += 1_000_000
+            return clock_value
+
+        census = {
+            "live": [4242],
+            "live_process_groups": [4242],
+            "zombie": [],
+            "unreadable_owned": [],
+            "unreadable_unknown": [],
+        }
+        runtime = readiness_driver.Runtime(
+            clock_ns=advancing_clock,
+            sleep=lambda _duration: None,
+            popen=lambda *_args, **_kwargs: cast(subprocess.Popen[bytes], process),
+            waitid=lambda *_args, **_kwargs: None,
+            killpg=lambda _process_group, _signal_number: None,
+            census=lambda _session_id: census,
+        )
+        status, record = readiness_driver.run_probe(
+            self.result_directory,
+            1,
+            1,
+            runtime=runtime,
+            command=["fixture"],
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(record["cleanup"]["state"], "deadline_exceeded")
+        self.assertFalse(record["cleanup"]["leader_reaped"])
+        self.assertEqual(record["cleanup"]["residuals"]["live"], [4242])
 
     def test_exited_leader_descendant_holding_lock_is_cleaned(self) -> None:
         lock_path = self.home / "held.lock"

@@ -79,22 +79,54 @@ def atomic_write_json(target: Path, record: dict[str, Any]) -> None:
 
 
 def create_result_directory(requested: Path | None) -> Path:
-    results_root = qwen_home.path("results").resolve()
-    results_root.mkdir(parents=True, exist_ok=True)
-    if requested is None:
-        stamp = utc_now().replace(":", "").replace("-", "")
-        result_directory = (
-            results_root / f"launch-readiness-{stamp}-{uuid.uuid4().hex[:12]}"
-        )
-    else:
-        result_directory = requested.resolve()
-        if result_directory.parent != results_root:
+    results_root = qwen_home.path("results")
+    results_root.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.mkdir(results_root, mode=0o700)
+    except FileExistsError:
+        pass
+
+    open_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        results_root_descriptor = os.open(results_root, open_flags)
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR):
             raise DriverError(
-                f"result directory must be a direct child of {results_root}"
+                f"results authority must be a directory: {results_root}"
+            ) from error
+        raise
+    try:
+        canonical_results_root = Path(
+            f"/proc/self/fd/{results_root_descriptor}"
+        ).resolve()
+        if results_root.resolve() != canonical_results_root:
+            raise DriverError(
+                f"results authority changed while opening: {results_root}"
             )
-    result_directory.mkdir(mode=0o700)
-    os.chmod(result_directory, 0o700)
-    return result_directory
+        if requested is None:
+            stamp = utc_now().replace(":", "").replace("-", "")
+            result_name = f"launch-readiness-{stamp}-{uuid.uuid4().hex[:12]}"
+        else:
+            requested_parent = requested.parent.resolve()
+            if requested_parent != canonical_results_root:
+                raise DriverError(
+                    "result directory must be a direct child of "
+                    f"{canonical_results_root}"
+                )
+            result_name = requested.name
+            if result_name in ("", ".", ".."):
+                raise DriverError("result directory must have a child name")
+        os.mkdir(result_name, mode=0o700, dir_fd=results_root_descriptor)
+        result_descriptor = os.open(
+            result_name, open_flags, dir_fd=results_root_descriptor
+        )
+        try:
+            os.fchmod(result_descriptor, 0o700)
+        finally:
+            os.close(result_descriptor)
+        return canonical_results_root / result_name
+    finally:
+        os.close(results_root_descriptor)
 
 
 def open_log(path: Path) -> BinaryIO:
@@ -103,7 +135,7 @@ def open_log(path: Path) -> BinaryIO:
     return os.fdopen(descriptor, "wb", buffering=0)
 
 
-def read_process_session(process_id: int) -> tuple[str, int] | None:
+def read_process_session(process_id: int) -> tuple[str, int, int] | None:
     try:
         contents = Path(f"/proc/{process_id}/stat").read_text(encoding="ascii")
     except (FileNotFoundError, ProcessLookupError):
@@ -112,7 +144,7 @@ def read_process_session(process_id: int) -> tuple[str, int] | None:
     fields = contents[closing_parenthesis + 2 :].split()
     if closing_parenthesis < 0 or len(fields) < 4:
         return None
-    return fields[0], int(fields[3])
+    return fields[0], int(fields[2]), int(fields[3])
 
 
 def process_owner_uid(process_id: int) -> int | None:
@@ -131,6 +163,7 @@ def process_owner_uid(process_id: int) -> int | None:
 def session_census(session_id: int) -> dict[str, list[int]]:
     census: dict[str, list[int]] = {
         "live": [],
+        "live_process_groups": [],
         "zombie": [],
         "unreadable_owned": [],
         "unreadable_unknown": [],
@@ -148,11 +181,15 @@ def session_census(session_id: int) -> dict[str, list[int]]:
             )
             census[category].append(process_id)
             continue
-        if identity is None or identity[1] != session_id:
+        if identity is None or identity[2] != session_id:
             continue
-        census["zombie" if identity[0] == "Z" else "live"].append(process_id)
+        if identity[0] == "Z":
+            census["zombie"].append(process_id)
+        else:
+            census["live"].append(process_id)
+            census["live_process_groups"].append(identity[1])
     for process_ids in census.values():
-        process_ids.sort()
+        process_ids[:] = sorted(set(process_ids))
     return census
 
 
@@ -186,9 +223,9 @@ def reserve_leader(runtime: Runtime, process_id: int) -> os.waitid_result | None
     return runtime.waitid(os.P_PID, process_id, os.WEXITED | os.WNOHANG | os.WNOWAIT)
 
 
-def signal_group(runtime: Runtime, process_id: int, signal_number: int) -> bool:
+def signal_group(runtime: Runtime, process_group: int, signal_number: int) -> bool:
     try:
-        runtime.killpg(process_id, signal_number)
+        runtime.killpg(process_group, signal_number)
         return True
     except ProcessLookupError:
         return False
@@ -206,16 +243,29 @@ def cleanup_session(
     deadline_ns: int,
 ) -> tuple[dict[str, Any], os.waitid_result | None]:
     signals: list[str] = []
+    signal_groups: dict[str, list[int]] = {"SIGTERM": [], "SIGKILL": []}
+    attempted_groups: dict[int, set[int]] = {
+        signal.SIGTERM: set(),
+        signal.SIGKILL: set(),
+    }
+
+    def signal_census_groups(census: dict[str, list[int]], signal_number: int) -> None:
+        process_groups = set(census.get("live_process_groups", []))
+        if census.get("unreadable_owned") or census.get("unreadable_unknown"):
+            process_groups.add(process_id)
+        signal_name = signal.Signals(signal_number).name
+        for process_group in sorted(process_groups - attempted_groups[signal_number]):
+            attempted_groups[signal_number].add(process_group)
+            if signal_group(runtime, process_group, signal_number):
+                signals.append(signal_name)
+                signal_groups[signal_name].append(process_group)
+
     initial = runtime.census(process_id)
     census_incomplete = bool(
         initial.get("unreadable_owned") or initial.get("unreadable_unknown")
     )
-    if (initial["live"] or census_incomplete) and signal_group(
-        runtime, process_id, signal.SIGTERM
-    ):
-        signals.append("SIGTERM")
+    signal_census_groups(initial, signal.SIGTERM)
     kill_at_ns = runtime.clock_ns() + max(0, deadline_ns - runtime.clock_ns()) // 2
-    kill_sent = False
     while runtime.clock_ns() < deadline_ns:
         if reserved_status is None:
             reserved_status = reserve_leader(runtime, process_id)
@@ -223,6 +273,7 @@ def cleanup_session(
         census_incomplete = census_incomplete or bool(
             residuals.get("unreadable_owned") or residuals.get("unreadable_unknown")
         )
+        signal_census_groups(residuals, signal.SIGTERM)
         if not residuals["live"]:
             if reserved_status is None:
                 sleep_with_deadline(runtime, deadline_ns)
@@ -230,21 +281,19 @@ def cleanup_session(
             return {
                 "state": "census_incomplete" if census_incomplete else "completed",
                 "signals": signals,
+                "signal_groups": signal_groups,
                 "leader_reserved": reserved_status is not None,
                 "residuals": residuals,
             }, reserved_status
-        if not kill_sent and runtime.clock_ns() >= kill_at_ns:
-            if signal_group(runtime, process_id, signal.SIGKILL):
-                signals.append("SIGKILL")
-            kill_sent = True
+        if runtime.clock_ns() >= kill_at_ns:
+            signal_census_groups(residuals, signal.SIGKILL)
         sleep_with_deadline(runtime, deadline_ns)
     residuals = runtime.census(process_id)
     census_incomplete = census_incomplete or bool(
         residuals.get("unreadable_owned") or residuals.get("unreadable_unknown")
     )
-    if residuals["live"] and not kill_sent:
-        if signal_group(runtime, process_id, signal.SIGKILL):
-            signals.append("SIGKILL")
+    if residuals["live"]:
+        signal_census_groups(residuals, signal.SIGKILL)
     return {
         "state": (
             "deadline_exceeded"
@@ -252,6 +301,7 @@ def cleanup_session(
             else ("census_incomplete" if census_incomplete else "completed")
         ),
         "signals": signals,
+        "signal_groups": signal_groups,
         "leader_reserved": reserved_status is not None,
         "residuals": residuals,
     }, reserved_status
@@ -312,9 +362,12 @@ def run_probe(
     cleanup: dict[str, Any] = {
         "state": "not_required",
         "signals": [],
+        "signal_groups": {"SIGTERM": [], "SIGKILL": []},
         "leader_reserved": False,
+        "leader_reaped": False,
         "residuals": {
             "live": [],
+            "live_process_groups": [],
             "zombie": [],
             "unreadable_owned": [],
             "unreadable_unknown": [],
@@ -401,9 +454,19 @@ def run_probe(
                         cleanup = {
                             "state": "internal_failure",
                             "signals": emergency_signals,
+                            "signal_groups": {
+                                "SIGTERM": [process.pid]
+                                if "SIGTERM" in emergency_signals
+                                else [],
+                                "SIGKILL": [process.pid]
+                                if "SIGKILL" in emergency_signals
+                                else [],
+                            },
                             "leader_reserved": reserved_status is not None,
+                            "leader_reaped": False,
                             "residuals": {
                                 "live": [],
+                                "live_process_groups": [],
                                 "zombie": [],
                                 "unreadable_owned": [process.pid],
                                 "unreadable_unknown": [],
@@ -411,9 +474,13 @@ def run_probe(
                             "error": str(cleanup_error),
                         }
         returncode = status_returncode(reserved_status) if reserved_status else None
+        leader_reaped = False
         if process is not None and reserved_status is not None:
             try:
-                runtime.waitid(os.P_PID, process.pid, os.WEXITED)
+                reaped_status = runtime.waitid(os.P_PID, process.pid, os.WEXITED)
+                if reaped_status is None:
+                    raise RuntimeError("leader reap returned no status")
+                leader_reaped = True
                 process.returncode = returncode
             except (OSError, RuntimeError, ValueError) as error:
                 primary_state = "internal_failure"
@@ -422,15 +489,20 @@ def run_probe(
                     "message": str(error),
                 }
         census_before_leader_reap = cleanup["residuals"]
-        if process is not None:
-            cleanup["residuals"] = {
-                process_state: [
+        cleanup["leader_reaped"] = leader_reaped
+        if process is not None and leader_reaped:
+            cleanup["residuals"] = dict(census_before_leader_reap)
+            for process_state in (
+                "live",
+                "zombie",
+                "unreadable_owned",
+                "unreadable_unknown",
+            ):
+                cleanup["residuals"][process_state] = [
                     process_id
-                    for process_id in process_ids
+                    for process_id in census_before_leader_reap[process_state]
                     if process_id != process.pid
                 ]
-                for process_state, process_ids in census_before_leader_reap.items()
-            }
         cleanup["census_before_leader_reap"] = census_before_leader_reap
         reply = parse_readiness_reply(result_directory / "stdout.log", returncode)
         accepted = (
@@ -439,8 +511,9 @@ def run_probe(
             and reply == "accepted"
             and cleanup["state"] == "completed"
             and not cleanup["residuals"]["live"]
+            and cancellation.signal_number is None
         )
-        record = {
+        record: dict[str, Any] = {
             **common,
             "record_state": "complete",
             "outcome": "accepted" if accepted else "refused",
@@ -464,7 +537,23 @@ def run_probe(
             "service_verification": "not_observed",
             "restoration": "not_applicable",
         }
-        runtime.publish(terminal_path, record)
+        blocked_signals = {signal.SIGINT, signal.SIGTERM}
+        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, blocked_signals)
+        try:
+            runtime.publish(terminal_path, record)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        if (
+            record["primary"]["cancellation_count"] != cancellation.count
+            or record["primary"]["cancellation_signal"] != cancellation.signal_number
+        ):
+            accepted = False
+            record["outcome"] = "refused"
+            record["finished_utc"] = utc_now()
+            record["finished_monotonic_ns"] = runtime.clock_ns()
+            record["primary"]["cancellation_signal"] = cancellation.signal_number
+            record["primary"]["cancellation_count"] = cancellation.count
+            runtime.publish(terminal_path, record)
         return (0 if accepted else 1), record
     finally:
         for number, previous_handler in previous_handlers.items():
@@ -492,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"readiness_result={result_directory / 'terminal.json'}")
         return exit_status
-    except (DriverError, OSError, ValueError) as error:
+    except (DriverError, OSError, RuntimeError, ValueError) as error:
         print(f"readiness_driver=failed reason={error}", file=sys.stderr)
         return 2
 

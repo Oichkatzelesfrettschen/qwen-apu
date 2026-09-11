@@ -23,6 +23,7 @@ SURFACE_ORDER = (
     "gate-infrastructure",
     "ngram-screen",
     "q8-sampler-attribution",
+    "readiness-driver",
     "webui",
 )
 CI_ROUTING_PATHS = {
@@ -61,6 +62,10 @@ Q8_SAMPLER_ATTRIBUTION_PATHS = {
 NGRAM_SCREEN_PATHS = {
     "remote/screen-ngram-retrieval.py",
     "remote/test-screen-ngram-retrieval.py",
+}
+READINESS_DRIVER_PATHS = {
+    "remote/readiness-driver.py",
+    "remote/test-readiness-driver.py",
 }
 CI_ROUTING_PYTHON_PATHS = tuple(
     sorted(path for path in CI_ROUTING_PATHS if path.endswith(".py"))
@@ -117,6 +122,8 @@ def path_surfaces(path: str) -> set[str]:
         surfaces.add("q8-sampler-attribution")
     if path in NGRAM_SCREEN_PATHS:
         surfaces.add("ngram-screen")
+    if path in READINESS_DRIVER_PATHS:
+        surfaces.add("readiness-driver")
     if (
         path.startswith("webui/")
         or path in WEBUI_INPUT_PATHS
@@ -164,6 +171,7 @@ def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
         "browser-preflight",
         "gate-infrastructure",
         "q8-sampler-attribution",
+        "readiness-driver",
         "webui",
     }:
         checks.insert(
@@ -264,6 +272,25 @@ def selected_checks(paths: Sequence[str], scope: str) -> list[tuple[str, ...]]:
                     *sorted(NGRAM_SCREEN_PATHS),
                 ),
                 ("python3", "remote/test-screen-ngram-retrieval.py"),
+            ),
+        )
+    if "readiness-driver" in surfaces:
+        append_unique(
+            checks,
+            (
+                (
+                    "ruff",
+                    "format",
+                    "--check",
+                    *sorted(READINESS_DRIVER_PATHS),
+                ),
+                (
+                    "mypy",
+                    "--strict",
+                    *sorted(READINESS_DRIVER_PATHS),
+                ),
+                ("python3", "remote/test-readiness-driver.py"),
+                ("remote/repository-quality-gates.sh", "--declarations"),
             ),
         )
     if "gate-infrastructure" in surfaces:
