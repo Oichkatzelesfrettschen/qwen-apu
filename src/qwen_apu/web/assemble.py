@@ -28,7 +28,7 @@ from qwen_apu.tools import approvals, calculator, documents, files, images, matr
 from qwen_apu.tools import web as web_tools
 from qwen_apu.tools.ledger import Ledger
 from qwen_apu.web import artifacts, chat, conversations, status
-from qwen_apu.web.app import Gateway, GatewayConfig, RequestRefused
+from qwen_apu.web.app import LOOPBACK_HOSTS, Gateway, GatewayConfig, RequestRefused
 from qwen_apu.web.auth import SessionGate
 from qwen_apu.web.http import Request, Route
 
@@ -223,6 +223,16 @@ def active_router_presets(paths: RuntimePaths) -> Path | None:
         return None
 
 
+def lan_exposure(bind_host: str) -> str:
+    """The one Host literal a LAN bind admits beside the loopback names.
+
+    A gateway bound to a routable address answers requests whose Host names
+    that address, the way `QWEN_WEB_LAN=1` admits one IPv4 literal in the
+    shell lane; a loopback bind adds nothing to the closed set.
+    """
+    return "" if bind_host in LOOPBACK_HOSTS else bind_host
+
+
 def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, SessionGate]:
     for line in preflight_gateway(paths, request):
         print(line, flush=True)
@@ -240,6 +250,7 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         port=request.port,
         bind_host=request.bind_host,
         origins=(origin,),
+        exposure=lan_exposure(request.bind_host),
     )
     session = SessionGate(state, secure_cookie=not config.binds_loopback)
 

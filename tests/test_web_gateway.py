@@ -1068,3 +1068,13 @@ def test_one_origin_answers_the_matrix_on_get_and_the_executor_on_post(
     finally:
         gateway.shutdown()
         serving.join(timeout=EXCHANGE_DEADLINE_SECONDS)
+
+
+def test_a_lan_bind_admits_its_own_host_literal() -> None:
+    assert gateway_assembly.lan_exposure("127.0.0.1") == ""
+    assert gateway_assembly.lan_exposure("::1") == ""
+    assert gateway_assembly.lan_exposure("10.0.0.170") == "10.0.0.170"
+    config = gateway_assembly.GatewayConfig(
+        static_root=Path("."), port=1, bind_host="10.0.0.170", exposure="10.0.0.170"
+    )
+    assert "10.0.0.170" in config.admitted_hosts()
