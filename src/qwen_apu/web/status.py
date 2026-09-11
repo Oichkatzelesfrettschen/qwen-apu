@@ -22,6 +22,7 @@ from pathlib import Path
 from qwen_apu.engines.llama import LlamaClient, UpstreamRefused, collect
 from qwen_apu.runtime import state as runtime_state
 from qwen_apu.runtime.health import health_is_serving
+from qwen_apu.web.app import LOOPBACK_HOSTS
 from qwen_apu.web.auth import SessionGate
 from qwen_apu.web.http import Request, Response, Route
 
@@ -86,6 +87,21 @@ class StatusService:
         }
 
     def health(self, request: Request) -> Response:
+        """Answer the launcher's own liveness probe, ahead of the page.
+
+        A shell probe runs this before a browser exists, so a request from
+        loopback meets the Host guard alone: no session cookie is available to
+        a caller that never loaded a page. A peer outside `LOOPBACK_HOSTS`
+        presents a session, because every field here is a process identity --
+        this pid, the upstream port, whether the exchange binds to a process --
+        that a LAN reader holds no claim on. authorize-broker.py's
+        `handle_health` applies the same rule, and it reads the peer address
+        the kernel accepted rather than the caller-controlled Host header: a
+        LAN peer that spells `Host: 127.0.0.1` against an exposed listener
+        still carries its own routable source address.
+        """
+        if request.client_address not in LOOPBACK_HOSTS and self.session_gate is not None:
+            self.session_gate.require_session(request)
         return Response.json({"gateway": {"pid": os.getpid()}, "upstream": self.upstream_report()})
 
     def status(self, request: Request) -> Response:

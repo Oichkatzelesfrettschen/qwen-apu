@@ -217,13 +217,22 @@ class SessionGate:
         return "; ".join(attributes)
 
     def require_session(self, request: Request) -> None:
-        """Admit a request carrying a live session cookie, and refuse every other."""
+        """Admit a request carrying a live session cookie, and refuse every other.
+
+        The session binds to the peer address the kernel accepted the pairing
+        connection from, so a cookie copied to another machine presents a token
+        this store holds against an address it was never issued for. The
+        appliance is the origin its page loads from and no proxy stands between
+        them, so that address is the browser's own for the session's lifetime.
+        """
         token = self.presented_token(request)
         now = self.clock()
         with self._lock:
             session = self._sessions.get(token) if token else None
             if session is not None and session.expiry <= now:
                 del self._sessions[session.token]
+                session = None
+            if session is not None and session.client_address != request.client_address:
                 session = None
         if session is None:
             raise RequestRefused(

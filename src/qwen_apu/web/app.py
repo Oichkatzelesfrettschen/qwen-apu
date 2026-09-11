@@ -50,7 +50,13 @@ DEFAULT_INDEX = "index.html"
 # request, so the cap sits at one mebibyte where `REQUEST_BODY_BYTE_CAP` in
 # authorize-broker.py sits at 16384 bytes.
 REQUEST_BODY_BYTE_CAP = 1 << 20
-STREAM_READ_TIMEOUT_SECONDS = 600.0
+
+# The deadline authorize-broker.py arms as `expire_request_read`, applied here
+# as the connection's own timeout: `socketserver.StreamRequestHandler.setup`
+# calls `settimeout` with it, so a request line that never arrives, a body
+# shorter than its Content-Length, and a client that stops reading a stream all
+# end at this bound rather than holding a thread for the process lifetime.
+REQUEST_DEADLINE_SECONDS = 60.0
 
 SECURITY_HEADERS: Mapping[str, str] = {
     "x-content-type-options": "nosniff",
@@ -286,6 +292,7 @@ class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "qwen-apu-gateway/1"
     sys_version = ""
+    timeout = REQUEST_DEADLINE_SECONDS
 
     # Set true by `_read_body`; a refusal ahead of it leaves the request body
     # in the socket and the connection unusable for a second request.

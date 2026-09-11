@@ -23,14 +23,14 @@ import stat
 import threading
 import time
 from collections.abc import Iterator
-from http.client import HTTPConnection, HTTPResponse
+from http.client import HTTPConnection, HTTPResponse, IncompleteRead
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 from qwen_apu.config import models as registry
-from qwen_apu.engines.llama import LlamaClient, binding_from_runtime
+from qwen_apu.engines.llama import LlamaClient, UpstreamRefused, binding_from_runtime
 from qwen_apu.runtime.process import read_start_time
 from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
 from qwen_apu.web import auth as auth_module
@@ -49,6 +49,7 @@ from qwen_apu.web.auth import (
     SessionGate,
 )
 from qwen_apu.web.chat import PICKER_TIERS, ChatService, quantization, roster
+from qwen_apu.web.http import Route, StreamingResponse
 from qwen_apu.web.status import StatusService
 
 EXCHANGE_DEADLINE_SECONDS = 20.0
@@ -297,10 +298,15 @@ def test_path_traversal_is_refused(gateway: Fixture) -> None:
 
 
 def test_a_directory_answers_no_listing(gateway: Fixture) -> None:
-    response, _ = _exchange(gateway, "GET", "/app.js")
+    """A directory that holds a file answers 404 under both spellings."""
+    nested = gateway.gateway.static.root / "assets"
+    nested.mkdir()
+    (nested / "note.txt").write_text("nested\n", encoding="utf-8")
+    response, _ = _exchange(gateway, "GET", "/assets/note.txt")
     assert response.status == 200
-    response, body = _exchange(gateway, "GET", "/nonexistent/")
-    assert response.status == 404
+    for path in ("/assets", "/assets/", "/nonexistent/"):
+        response, _ = _exchange(gateway, "GET", path)
+        assert response.status == 404, path
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +561,94 @@ def test_status_carries_the_runtime_record_and_no_bearer(gateway: Fixture) -> No
     # neither reaches the answer.
     assert BEARER_MARKER.encode("utf-8") not in body
     assert b"env" not in body
+
+
+def test_health_from_a_routable_peer_presents_a_session(gateway: Fixture) -> None:
+    """Every field here is a process identity, so a LAN peer pairs first."""
+    service = StatusService(
+        lambda: LlamaClient(binding_from_runtime(gateway.state / "runtime.json", fallback_port=1)),
+        runtime_record=gateway.state / "runtime.json",
+        session_gate=gateway.gate,
+    )
+    loopback = _probe_request("127.0.0.1")
+    assert json.loads(service.health(loopback).body)["gateway"]["pid"] == os.getpid()
+    with pytest.raises(auth_module.RequestRefused) as refused:
+        service.health(_probe_request("192.0.2.7"))
+    assert refused.value.status == 401
+
+
+def _probe_request(client_address: str) -> auth_module.Request:
+    return auth_module.Request(
+        method="GET",
+        path="/api/health",
+        query={},
+        headers={},
+        body=b"",
+        client_address=client_address,
+    )
+
+
+def test_a_session_binds_to_the_address_it_was_issued_for(gateway: Fixture) -> None:
+    paired, _ = _pair(gateway, gateway.code)
+    cookie = _session_cookie(paired)
+    carried = auth_module.Request(
+        method="GET",
+        path="/api/models",
+        query={},
+        headers={"cookie": cookie},
+        body=b"",
+        client_address="127.0.0.1",
+    )
+    gateway.gate.require_session(carried)
+    replayed = auth_module.Request(
+        method="GET",
+        path="/api/models",
+        query={},
+        headers={"cookie": cookie},
+        body=b"",
+        client_address="192.0.2.7",
+    )
+    with pytest.raises(auth_module.RequestRefused):
+        gateway.gate.require_session(replayed)
+
+
+def test_a_stream_that_fails_mid_body_reaches_the_client_truncated(gateway: Fixture) -> None:
+    """A listener that changed identity mid-exchange ends the body unterminated.
+
+    `LlamaClient._read` raises where the closing `probe_listener` names another
+    inode, and the bytes already written cannot be recalled, so the gateway
+    leaves the terminating zero-length chunk unwritten. `http.client` reads
+    that as `IncompleteRead`, which is the signal a complete body would have
+    hidden.
+    """
+    frames = [b"data: one\n\n", b"data: two\n\n"]
+
+    def failing() -> Iterator[bytes]:
+        yield from frames
+        raise UpstreamRefused("listener inode changed across the exchange: 11 -> 12")
+
+    gateway.gateway.routes = (
+        *gateway.gateway.routes,
+        Route.make(
+            "GET",
+            "/api/fixture-stream",
+            lambda request: StreamingResponse(
+                200, failing(), {"content-type": "text/event-stream"}
+            ),
+        ),
+    )
+    paired, _ = _pair(gateway, gateway.code)
+    connection = gateway.connection()
+    try:
+        connection.request(
+            "GET", "/api/fixture-stream", headers={"Cookie": _session_cookie(paired)}
+        )
+        response = connection.getresponse()
+        assert response.status == 200
+        with pytest.raises(IncompleteRead):
+            response.read()
+    finally:
+        connection.close()
 
 
 def test_shutdown_leaves_no_listener(gateway: Fixture) -> None:
