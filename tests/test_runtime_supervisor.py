@@ -536,3 +536,222 @@ def test_stop_leaves_a_supervisor_pid_whose_start_time_moved_alone(
 def test_stop_reports_an_empty_root(runtime_root: RuntimePaths) -> None:
     outcome = stop(runtime_root, timeout_s=0.1)
     assert "no runtime record" in outcome
+
+
+@shell_required
+def test_supervisor_stops_during_the_load_without_waiting_out_the_deadline(
+    tmp_path: Path, runtime_root: RuntimePaths, leased_port: int
+) -> None:
+    """A stop arriving before readiness ends the launch at once, and cleanly.
+
+    The appliance holds the readiness loop for up to 120 s on a model load, so
+    a stop the loop cannot read waits out that whole interval. The child here
+    lives and binds nothing, which is that wait exactly: it neither becomes
+    ready nor departs, so the stop flag is the only thing that can end the
+    loop. The outcome is `stopped` rather than a readiness failure, because
+    the operator caused it.
+    """
+    hazard_source = tmp_path / "kernel.log"
+    hazard_source.write_text("", encoding="utf-8")
+    plan = plan_payload(
+        runtime_root,
+        leased_port,
+        tmp_path / "argv.txt",
+        serve=False,
+        argv=[SH, "-c", "sleep 300"],
+        readiness_deadline_s=FIXTURE_DEADLINE_SECONDS,
+    )
+    supervisor = launch_supervisor(runtime_root, tmp_path, plan, hazard_source)
+    try:
+        await_condition(
+            "guard_ready",
+            FIXTURE_DEADLINE_SECONDS,
+            lambda: RuntimeRecord(path=runtime_root["qwen_home_runtime_state"]).read(),
+            "runtime.json never appeared",
+        )
+        started = time.monotonic()
+        supervisor.send_signal(signal.SIGTERM)
+        assert supervisor.wait(timeout=OBSERVATION_DEADLINE_SECONDS) == 0
+        elapsed = time.monotonic() - started
+    finally:
+        supervisor.kill()
+    assert elapsed < OBSERVATION_DEADLINE_SECONDS / 2, (
+        f"the stop waited {elapsed:.3f} s of a {OBSERVATION_DEADLINE_SECONDS:.0f} s "
+        f"readiness deadline; loadavg={os.getloadavg()}"
+    )
+    stopped = await_state(
+        runtime_root, "stopped", "guard_observation", OBSERVATION_DEADLINE_SECONDS
+    )
+    assert stopped.primary_failure is None
+    assert stopped.exit_status == 0
+    require_clean_departure(runtime_root, leased_port)
+
+
+@shell_required
+def test_supervisor_reports_a_held_lease_as_residue_and_exits_non_zero(
+    tmp_path: Path, runtime_root: RuntimePaths, leased_port: int
+) -> None:
+    """A lease held past the departure proof is residue, and residue is the status.
+
+    This test takes the lease itself, because the fixture server never does:
+    without a holder the free-lease assertion elsewhere observes a file nobody
+    ever locked, and `qwen-teardown.sh`'s rule that a caller cannot mistake a
+    partial stop for a clean one goes untested.
+    """
+    hazard_source = tmp_path / "kernel.log"
+    hazard_source.write_text("", encoding="utf-8")
+    supervisor = launch_supervisor(
+        runtime_root,
+        tmp_path,
+        plan_payload(runtime_root, leased_port, tmp_path / "argv.txt"),
+        hazard_source,
+    )
+    lease = WorkloadLease.in_state_directory(runtime_root["qwen_home_state"])
+    descriptor: int | None = None
+    try:
+        await_state(runtime_root, "running", "guard_ready", FIXTURE_DEADLINE_SECONDS)
+        descriptor = os.open(lease.path, os.O_RDWR)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        supervisor.send_signal(signal.SIGTERM)
+        assert supervisor.wait(timeout=OBSERVATION_DEADLINE_SECONDS) == 1
+    finally:
+        supervisor.kill()
+        if descriptor is not None:
+            os.close(descriptor)
+    stopped = await_state(
+        runtime_root, "stopped", "guard_observation", OBSERVATION_DEADLINE_SECONDS
+    )
+    assert stopped.primary_failure is None
+    assert stopped.exit_status == 1
+    assert len(stopped.restoration_failures) == 1
+    assert "vulkan workload lease is still held" in stopped.restoration_failures[0]
+    assert not paths_listener_present(leased_port)
+
+
+def paths_listener_present(port: int) -> bool:
+    try:
+        probe_listener(port)
+    except ListenerAbsent:
+        return False
+    return True
+
+
+@shell_required
+def test_supervisor_daemonizes_into_its_own_session_and_stops_over_the_socket(
+    tmp_path: Path, runtime_root: RuntimePaths, leased_port: int
+) -> None:
+    """`--daemon` returns once the detached copy exists; the record reports service.
+
+    The detached copy is a session leader, so the launcher's own exit leaves it
+    serving and `stop` is the only route back to it.
+    """
+    hazard_source = tmp_path / "kernel.log"
+    hazard_source.write_text("", encoding="utf-8")
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        plan_payload(runtime_root, leased_port, tmp_path / "argv.txt"), encoding="utf-8"
+    )
+    environment = dict(os.environ)
+    environment["QWEN_HOME"] = str(runtime_root.root)
+    environment["QWEN_TREE_ROOT"] = str(TREE)
+    environment["PYTHONPATH"] = str(TREE / "src")
+    launcher = subprocess.run(
+        [
+            PYTHON,
+            "-m",
+            "qwen_apu.runtime.supervisor",
+            "--plan",
+            str(plan_path),
+            "--daemon",
+            "--hazard-source",
+            str(hazard_source),
+        ],
+        env=environment,
+        # The detached copy writes to its own log files rather than to these
+        # pipes, so capturing them ends with the launcher rather than with the
+        # supervisor it started.
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=FIXTURE_DEADLINE_SECONDS,
+    )
+    assert launcher.stdout.startswith("supervisor pid=")
+    daemon_pid = int(launcher.stdout.split("pid=")[1].split()[0])
+    try:
+        running = await_state(runtime_root, "running", "guard_ready", FIXTURE_DEADLINE_SECONDS)
+        assert running.supervisor_pid == daemon_pid
+        # A session leader's process group is its own pid, so the terminal that
+        # started it reaches nothing.
+        assert running.supervisor_pgid == daemon_pid
+        assert os.getpgid(daemon_pid) == daemon_pid
+
+        outcome = stop(runtime_root, timeout_s=OBSERVATION_DEADLINE_SECONDS)
+        assert "control socket" in outcome
+        await_condition(
+            "guard_observation",
+            OBSERVATION_DEADLINE_SECONDS,
+            lambda: read_start_time(daemon_pid) is None,
+            f"detached supervisor {daemon_pid} never left",
+        )
+    finally:
+        if read_start_time(daemon_pid) is not None:
+            os.kill(daemon_pid, signal.SIGKILL)
+    stopped = await_state(
+        runtime_root, "stopped", "guard_observation", OBSERVATION_DEADLINE_SECONDS
+    )
+    assert stopped.exit_status == 0
+    require_clean_departure(runtime_root, leased_port)
+
+
+@shell_required
+def test_supervisor_names_the_workload_lease_to_the_child(
+    tmp_path: Path, runtime_root: RuntimePaths, leased_port: int
+) -> None:
+    """QWEN_VULKAN_WORKLOAD_LOCK crosses into the child's own environment.
+
+    The patched llama-server reads that name and fails its init() where the
+    path cannot be opened, so the value reaching the child is what arms the
+    lease at all. The child here prints the name it received and exits, which
+    refuses readiness; the record's failure is expected and the printed value
+    is the claim under test.
+    """
+    hazard_source = tmp_path / "kernel.log"
+    hazard_source.write_text("", encoding="utf-8")
+    captured = tmp_path / "child-lease.txt"
+    plan = plan_payload(
+        runtime_root,
+        leased_port,
+        tmp_path / "argv.txt",
+        serve=False,
+        argv=[SH, "-c", 'printenv QWEN_VULKAN_WORKLOAD_LOCK > "$1"', "sh", str(captured)],
+        readiness_deadline_s=5.0,
+    )
+    supervisor = launch_supervisor(runtime_root, tmp_path, plan, hazard_source)
+    try:
+        assert supervisor.wait(timeout=FIXTURE_DEADLINE_SECONDS) == 1
+    finally:
+        supervisor.kill()
+    lease = WorkloadLease.in_state_directory(runtime_root["qwen_home_state"])
+    assert captured.read_text(encoding="utf-8").strip() == lease.environment_value
+    assert lease.path.is_file()
+
+
+def test_hazard_watcher_treats_a_stream_that_ended_as_uncovered(tmp_path: Path) -> None:
+    """A source that stops answering disarms the watcher and records the reason.
+
+    `watch-qwen-kernel-hazards.sh` signals the server where its reader ends
+    while the server runs, so the supervise loop reads the same condition as
+    terminal rather than as an empty poll.
+    """
+    source = tmp_path / "kernel.log"
+    source.write_text("", encoding="utf-8")
+    watcher = KernelHazardWatcher(source)
+    assert watcher.open() is None
+    assert watcher.armed
+    descriptor = watcher.descriptor
+    assert descriptor is not None
+    os.close(descriptor)
+    assert watcher.poll() == []
+    assert not watcher.armed
+    assert watcher.reason is not None
+    assert "stopped answering" in watcher.reason

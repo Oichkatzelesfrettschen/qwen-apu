@@ -125,6 +125,16 @@ class KernelHazardWatcher:
             os.lseek(descriptor, 0, os.SEEK_END)
         return None
 
+    @property
+    def armed(self) -> bool:
+        """Whether the watcher still holds a readable source."""
+        return self._descriptor is not None
+
+    @property
+    def descriptor(self) -> int | None:
+        """The open source descriptor, for a caller proving what the watcher holds."""
+        return self._descriptor
+
     def poll(self) -> list[str]:
         """Every line the source produced since the last poll, and the matches."""
         if self._descriptor is None:
@@ -328,8 +338,14 @@ class Supervisor:
             must_be_pid=owned.pid,
             must_be_start_time=owned.start_time,
             departed=owned.has_exited,
+            cancelled=lambda: self._stop.requested,
         )
         if not readiness.ready:
+            # A stop that arrived during the load ends the launch the way a
+            # stop during service does, so it lands on `stopped` rather than on
+            # a readiness failure the operator caused.
+            if self._stop.requested:
+                return self._shut_down(plan, owned, primary_failure=None)
             return self._shut_down(
                 plan, owned, primary_failure=f"readiness_refused {readiness.reason}"
             )
@@ -347,6 +363,7 @@ class Supervisor:
         """Sample the child every period until something ends the service."""
         samples = 0
         health_failures = 0
+        armed = watcher.armed
         while True:
             if self._stop.requested:
                 return None
@@ -356,6 +373,13 @@ class Supervisor:
             hazards = watcher.poll()
             if hazards:
                 return f"kernel_hazard {hazards[0][:200]}"
+            if armed and not watcher.armed:
+                # `watch-qwen-kernel-hazards.sh` signals the server where its
+                # reader ends while the server runs, because a record left
+                # unread is a reset nobody acted on. A record that still said
+                # the watcher covered the session would report coverage that
+                # had gone.
+                return f"hazard_stream_ended {watcher.reason}"
             samples += 1
             if samples % plan.health_every_samples == 0:
                 if self._health_answers(plan, owned):

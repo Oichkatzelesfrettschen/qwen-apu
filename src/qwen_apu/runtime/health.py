@@ -192,6 +192,7 @@ def wait_ready(
     must_be_pid: int | None = None,
     must_be_start_time: int | None = None,
     departed: Callable[[], bool] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> Readiness:
     """Poll GET on a loopback URL until it reports a serving model.
 
@@ -203,6 +204,9 @@ def wait_ready(
     caller has not reaped: an exited process keeps its `/proc/<pid>/stat` and
     its start time until its parent collects it, so the start-time comparison
     alone reads a zombie as a live server and spends the whole deadline on it.
+    `cancelled` ends the wait on an operator's stop, which arrives while a
+    model is still loading: the appliance holds this loop for up to 120 s on a
+    load, and a stop the loop cannot read waits out that whole interval.
     """
     parts = urlsplit(url)
     if parts.hostname not in LOOPBACK_HOSTS:
@@ -222,6 +226,9 @@ def wait_ready(
 
     while True:
         attempts += 1
+        if cancelled is not None and cancelled():
+            reason = "stop requested before readiness"
+            break
         if departed is not None and departed():
             reason = f"pid {must_be_pid} left before readiness"
             break
