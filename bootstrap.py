@@ -71,6 +71,15 @@ def main() -> int:
             return fail(outcome)
     wheelhouse = tree / "wheelhouse"
     lock = wheelhouse / "requirements.lock"
+    source = (tree / SRC / PACKAGE).is_dir()
+    if not lock.is_file() and not source:
+        return fail(
+            "neither wheelhouse/requirements.lock nor src/qwen_apu exists beside bootstrap.py"
+        )
+    # The lock carries the third-party dependencies and the source link
+    # carries the package itself, so a checkout holding both installs the
+    # lock first and links the tree second; a lock alone is the deployed
+    # wheelhouse and a tree alone is a dependency-free developer checkout.
     if lock.is_file():
         command = [
             str(python),
@@ -87,12 +96,8 @@ def main() -> int:
         result = subprocess.run(command, check=False)
         if result.returncode != 0:
             return fail("hash-locked install failed", 1)
-    elif (tree / SRC / PACKAGE).is_dir():
+    if source:
         link_source_tree(venv_dir, python, tree)
-    else:
-        return fail(
-            "neither wheelhouse/requirements.lock nor src/qwen_apu exists beside bootstrap.py"
-        )
 
     try:
         outcome_text = paths.lay_out(rebind=os.environ.get("QWEN_RUNTIME_ROOT_REBIND"))
