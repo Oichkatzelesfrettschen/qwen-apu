@@ -301,7 +301,10 @@ stays there. `--daemon` now waits for the detached supervisor to publish a
 record naming an owned child before it returns, which is exactly the claim
 `--daemon` makes; the previous form returned as soon as the relaunch was a
 session leader, so a held workload lock or a child that left at exec landed in a
-log file nobody read.
+log file nobody read. The wait passes over every record still naming the
+supervisor the record held before the launch, because the detached child spends
+its interpreter startup before publishing anything and a clean stop leaves a
+`stopped` record the wait would otherwise report as this launch's failure.
 
 ### Three preflights, each leaving the tree untouched
 
@@ -352,6 +355,15 @@ tier, role, depth, and projector. Each entry carries `state` in `ready`,
 authority that left it out. `?research=1` widens the candidate set to the whole
 registry and states why each unserved row is absent from the ordinary answer.
 
+The alias is what makes the join a join rather than a name comparison. A
+standalone launch's argv carries `--alias qwen-apu`, so the upstream reports
+that name for whichever checkpoint the argv loaded, and the admitted set holds
+both it and the registry id the record carries. The roster's candidates in that
+mode are the admitted names the registry describes, so one served checkpoint
+produces one picker row carrying `served_as` rather than two rows one of which
+names nothing; a gateway against a server it did not supervise matches no
+registry row at all, and the upstream's own names then stand as the answer.
+
 `POST /api/chat` and `POST /api/models/tokenize` refuse a model the live router
 does not admit with 409 and the reason. Router mode admits every preset section,
 including those no load has made resident, since residency bounds latency rather
@@ -369,6 +381,9 @@ signal.
   observably; the probe accepts three shapes and the device reading selects one.
 - `qwen-apu appliance serve` end to end with a real checkpoint, the router
   preset of a real bundle, and the image and search children armed.
+- The alias mapping itself: `--alias qwen-apu` reaching `/v1/models` and the
+  completion body is asserted from the argv here rather than observed on the
+  deployed server.
 - Router decode rates per section, which belong to a sweep rather than to this
   pass.
 
