@@ -14,7 +14,7 @@ lane	pattern	pr	merge_sha
 # Comment line that should be skipped
 census-timing	remote/census-arm-lib.sh	116	717dbef
 dpm-telemetry	e0d179a:remote/telemetry-broker.c	-	-
-shared	CLAUDE.md	-	-
+shared	DOCTRINE-SNAPSHOT.md	-	-
 build-cache-identity	remote/gate-cell-key.sh	-	-
 EOF
 
