@@ -20,7 +20,7 @@ import http.client
 import json
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -34,6 +34,8 @@ TCP_LISTEN_STATE = "0A"
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
 
 DEFAULT_HEALTH_PATH = "/health"
+DEFAULT_MODELS_PATH = "/v1/models"
+DEFAULT_PROPS_PATH = "/props"
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 HEALTH_REQUEST_TIMEOUT_SECONDS = 5.0
 
@@ -82,6 +84,141 @@ class Readiness:
             f"status={self.status if self.status is not None else '-'} "
             f"listener={listener} reason={self.reason}"
         )
+
+
+@dataclass(frozen=True)
+class ModelReadiness:
+    """What one model probe observed: the names the server answered with.
+
+    `/health` reports that the process finished loading a checkpoint; it names
+    none. The name is what separates a server that loaded the requested weights
+    from one that loaded a different row of the same preset, so the probe reads
+    a route that carries it and records every name the answer held.
+    """
+
+    ready: bool
+    served_models: tuple[str, ...]
+    status: int | None
+    reason: str
+
+    def render(self) -> str:
+        names = ",".join(self.served_models) if self.served_models else "-"
+        return (
+            f"model_ready={'yes' if self.ready else 'no'} served_models={names} "
+            f"status={self.status if self.status is not None else '-'} reason={self.reason}"
+        )
+
+
+def _name_from_entry(entry: object) -> str:
+    """One model name from a list member, whichever key that member carries."""
+    if isinstance(entry, str):
+        return entry
+    if not isinstance(entry, dict):
+        return ""
+    for key in ("id", "name", "model", "model_path"):
+        value = entry.get(key)
+        if isinstance(value, str) and value:
+            return value.rpartition("/")[2] if key == "model_path" else value
+    return ""
+
+
+def served_model_names(body: str) -> tuple[str, ...]:
+    """Every model name one llama-server answer states, in the order it states them.
+
+    Three shapes reach this reader. `/v1/models` answers the OpenAI list form,
+    `{"object": "list", "data": [{"id": ...}]}`. Some builds answer `/models`
+    with `{"models": [...]}` whose members carry `name` rather than `id`.
+    `/props` answers one object naming the resident checkpoint through
+    `model_path`, `model_alias`, `model`, or a `default_generation_settings`
+    object holding one of those. The reader accepts each, because which one the
+    deployed server answers with at the pinned commit is a device observation
+    rather than a claim this tree carries, and a name is the only field any
+    caller here reads.
+    """
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return ()
+    if not isinstance(payload, dict):
+        return ()
+    names: list[str] = []
+    for key in ("data", "models"):
+        entries = payload.get(key)
+        if isinstance(entries, list):
+            names.extend(name for name in map(_name_from_entry, entries) if name)
+    if not names:
+        nested = payload.get("default_generation_settings")
+        sources: tuple[object, ...] = (payload, nested) if isinstance(nested, dict) else (payload,)
+        for source in sources:
+            name = _name_from_entry(source)
+            if name:
+                names.append(name)
+                break
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in names:
+        if name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    return tuple(ordered)
+
+
+def probe_served_models(
+    port: int,
+    *,
+    host: str = "127.0.0.1",
+    path: str = DEFAULT_MODELS_PATH,
+    pid: int | None = None,
+    start_time: int | None = None,
+    require: Sequence[str] = (),
+) -> ModelReadiness:
+    """Read the names one bound server serves, and require the ones a caller names.
+
+    The exchange is bracketed by the same listener observation `wait_ready`
+    applies, so the names come from the process the caller launched rather than
+    from whatever now holds the port. `require` states the names a launch
+    declared: the single-model argv carries `--alias`, so the server reports
+    that alias rather than the registry id, and the caller passes whichever of
+    the two its own argv named. An empty `require` accepts any parseable
+    answer, which is what router mode reads, since a preset admitting several
+    checkpoints loads one at a time and the names it has yet to load are absent
+    by design.
+    """
+    try:
+        listener = probe_listener(port, pid=pid, start_time=start_time)
+    except ListenerAbsent as error:
+        return ModelReadiness(False, (), None, str(error))
+    try:
+        status, body = _get(host, port, path)
+    except OSError as error:
+        return ModelReadiness(False, (), None, f"model request refused: {error}")
+    try:
+        after = probe_listener(port, pid=pid, start_time=start_time)
+    except ListenerAbsent as error:
+        return ModelReadiness(
+            False, (), status, f"listener left during the model exchange: {error}"
+        )
+    if after.inode != listener.inode:
+        return ModelReadiness(
+            False,
+            (),
+            status,
+            f"listener inode changed across the model exchange: {listener.inode} -> {after.inode}",
+        )
+    if status != 200:
+        return ModelReadiness(False, (), status, f"{path} answered status={status}")
+    names = served_model_names(body)
+    if not names:
+        return ModelReadiness(False, (), status, f"{path} named no loaded model")
+    missing = [name for name in require if name not in names]
+    if missing:
+        return ModelReadiness(
+            False,
+            names,
+            status,
+            f"{path} names {','.join(names)} rather than the launched {','.join(missing)}",
+        )
+    return ModelReadiness(True, names, status, "serving")
 
 
 def _socket_inodes(pid: int) -> set[str]:

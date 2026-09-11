@@ -30,8 +30,23 @@ from typing import Any, Literal
 SCHEMA = "qwen-apu-runtime-state-v1"
 RECORD_MODE = 0o600
 
-State = Literal["starting", "running", "stopping", "stopped", "failed"]
-STATES: tuple[State, ...] = ("starting", "running", "stopping", "stopped", "failed")
+# `loading` and `ready` split what `running` states as one condition: the child
+# owns its process group and its listener from the spawn onward, while the model
+# reaches the device tens of seconds later. A page that reads process health as
+# model readiness sends a completion into a server holding no weights, which is
+# the defect the shadow pass recorded. `running` stays in the vocabulary because
+# a record an earlier supervisor published parses under the same reader.
+State = Literal["starting", "loading", "ready", "running", "stopping", "stopped", "failed"]
+STATES: tuple[State, ...] = (
+    "starting",
+    "loading",
+    "ready",
+    "running",
+    "stopping",
+    "stopped",
+    "failed",
+)
+SERVING_STATES: frozenset[str] = frozenset({"ready", "running"})
 TERMINAL_STATES: frozenset[str] = frozenset({"stopped", "failed"})
 
 
@@ -55,6 +70,8 @@ class RuntimeState:
     listener_inode: str = "-"
     port: int = 0
     model_id: str = "-"
+    served_models: tuple[str, ...] = ()
+    mode: str = "standalone"
     deployment: str = "-"
     profile: str = "-"
     control_socket: str = "-"
@@ -70,22 +87,29 @@ class RuntimeState:
     def to_json(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["restoration_failures"] = list(self.restoration_failures)
+        payload["served_models"] = list(self.served_models)
         return payload
 
     @classmethod
     def from_json(cls, payload: Mapping[str, Any]) -> RuntimeState:
         fields = {entry.name for entry in cls.__dataclass_fields__.values()}
         values = {key: value for key, value in payload.items() if key in fields}
-        restoration = values.get("restoration_failures") or ()
-        if isinstance(restoration, Sequence) and not isinstance(restoration, str):
-            values["restoration_failures"] = tuple(str(entry) for entry in restoration)
-        else:
-            values["restoration_failures"] = ()
+        for name in ("restoration_failures", "served_models"):
+            entries = values.get(name) or ()
+            if isinstance(entries, Sequence) and not isinstance(entries, str):
+                values[name] = tuple(str(entry) for entry in entries)
+            else:
+                values[name] = ()
         return cls(**values)
 
     @property
     def is_terminal(self) -> bool:
         return self.state in TERMINAL_STATES
+
+    @property
+    def is_serving(self) -> bool:
+        """Whether the record states a model the upstream answers completions from."""
+        return self.state in SERVING_STATES
 
 
 @dataclass

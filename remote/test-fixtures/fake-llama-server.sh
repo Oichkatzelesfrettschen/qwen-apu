@@ -196,6 +196,10 @@ rebind_on_completion = os.environ.get(
     "QWEN_FAKE_SERVER_REBIND_ON_COMPLETION", "") == "1"
 rebind_on_post_health = os.environ.get(
     "QWEN_FAKE_SERVER_REBIND_ON_POST_HEALTH", "") == "1"
+# The names /v1/models answers with. The single-model policy argv carries
+# `--alias qwen-apu`, so that is the name the deployed server reports for an
+# ordinary launch and the default here; a router arm names its preset sections.
+served_models = os.environ.get("QWEN_FAKE_SERVER_MODELS", "qwen-apu").split()
 
 
 def rebind_listener(server):
@@ -249,6 +253,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_GET(self):
+        # The model roster llama-server answers /v1/models with. A readiness
+        # probe reads a name here because /health reports that some checkpoint
+        # loaded and names none.
+        if self.path.startswith("/v1/models"):
+            self.respond({
+                "object": "list",
+                "data": [{"id": name, "object": "model"} for name in served_models],
+            })
+            return
         if self.path.startswith("/health"):
             if (
                 rebind_on_post_health
