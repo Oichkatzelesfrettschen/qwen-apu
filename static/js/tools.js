@@ -30,7 +30,7 @@ import { conversationState } from './conversations.js';
    model or transcript revokes it. */
 export const toolState = {
   handleRegistry: null,
-  definitions: null,
+  matrix: null,
   model: null,
   generation: -1
 };
@@ -44,6 +44,9 @@ export const toolState = {
 export const WEB_SEARCH_TOOL_NAME = 'web_search_exa';
 export const WEB_FETCH_TOOL_NAME = 'web_fetch_exa';
 export const WEB_TOOL_NAMES = [WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME];
+// The two matrix rows those names execute: `web_search` runs one approved
+// query and `read_url` redeems one signed Result ID that query issued.
+export const WEB_MATRIX_TOOL_IDS = ['web_search', 'read_url'];
 const WEB_RESULT_HANDLE_PATTERN = /^r_[0-9a-f]{24}$/;
 
 export function clearWebResultHandles() {
@@ -123,15 +126,15 @@ export function resolveWebResultHandle(handle, turnNonce, model, generation) {
 // id and the selection generation that produced it.
 
 export function webToolDefinition(entry) {
-  /* Return the request-body tool definition for one `GET /api/tools` row.
+  /* Return the request-body tool definition for one matrix row that carries one.
 
-     llama-server renders each tool as `{tool, definition}` where `definition`
-     is the OpenAI function object it builds from the MCP input schema
-     (server-tools.cpp:75-85 and 1823-1834). The definition travels as the
-     server emits it, with one field removed: `search_exa` advertises an
-     `authorization` property, and the broker is the only issuer of a grant,
-     so a model that reads the property can only author a token the served
-     path refuses. */
+     A row's `definition` is the OpenAI function object whichever executor runs
+     the tool declares, and it travels as that executor emits it with one field
+     removed: `search_exa` advertises an `authorization` property, the gateway
+     is the only issuer of a grant, and a model that reads the property can
+     only author a token the served path refuses. A row that carries no
+     definition composes nothing, which is how a state that admits no call
+     reaches the turn as an absent tool rather than as a schema. */
   const definition = entry && entry.definition;
   if (!definition || definition.type !== 'function') return null;
   const fn = definition.function;
@@ -150,83 +153,183 @@ export function webToolDefinition(entry) {
 
 const TOOLS_LISTING_RETRY_DELAY_MS = 300;
 
+/* The five states `GET /api/tools` closes over, and the two that admit a call.
+   `available` runs inside the gateway and `available_through_helper` runs in a
+   named second process or against a named second checkpoint; the other three
+   each state a different party's refusal, which the page renders rather than
+   discovering after a proposal. */
+export const TOOL_STATES = [
+  'available',
+  'available_through_helper',
+  'temporarily_unavailable',
+  'not_installed',
+  'policy_refused'
+];
+const EXECUTING_TOOL_STATES = ['available', 'available_through_helper'];
+
+export const TOOL_STATE_LABELS = {
+  available: 'available',
+  available_through_helper: 'available through',
+  temporarily_unavailable: 'temporarily unavailable',
+  not_installed: 'not installed',
+  policy_refused: 'refused by policy'
+};
+
+export function toolStateExecutes(state) {
+  return EXECUTING_TOOL_STATES.includes(state);
+}
+
 export function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-export async function fetchWebToolListing(selectedModel) {
-  /* Return the parsed `GET /api/tools` array for one model, or throw.
+export async function fetchToolMatrix(selectedModel) {
+  /* Return the parsed matrix document for one model, or throw.
 
-     The router resolves `?model=` the way it does for `/props` and forwards
-     the request to that child, and the child that read the section's MCP
-     configuration is the process that holds the tool set, so the listing is
-     a property of the selected model rather than of the server. `autoload`
-     is stated because discovery is a selection action: the child loads if it
-     is not resident rather than the answer depending on the router's
-     default.
-
-     A non-2xx status and a body that is not a JSON array both leave the
-     caller unable to read a web tool from the response, so both raise here
-     rather than one being read as "no tools" and the other as a crash;
-     `resolveWebTools` treats every throw from this function the same way. */
+     `GET /api/tools?model=ID` joins the tool table against
+     remote/models.tsv, remote/web-profiles.tsv, remote/image-profiles.tsv, the
+     approval settings, and the filesystem, so the answer is a property of the
+     selected model rather than of the server. A non-2xx status, a body that is
+     not an object, a foreign `schema`, and a `tools` field that is not an
+     array all leave the caller unable to read a state, so each raises here and
+     `resolveToolMatrix` treats every throw the same way. */
   const response = await fetch(
-    `/api/tools?model=${encodeURIComponent(selectedModel)}&autoload=true`);
+    `/api/tools?model=${encodeURIComponent(selectedModel)}`);
   recordSessionStatus(response.status);
   if (!response.ok) {
     throw new Error(`GET /api/tools returned HTTP ${response.status}`);
   }
-  const listed = await response.json();
-  if (!Array.isArray(listed)) {
-    throw new Error('GET /tools returned a body that is not an array');
+  const document_ = await response.json();
+  if (!document_ || typeof document_ !== 'object' || Array.isArray(document_)) {
+    throw new Error('GET /api/tools returned a body that is not an object');
   }
-  return listed;
+  if (document_.schema !== 'qwen.tool-matrix' || !Array.isArray(document_.tools)) {
+    throw new Error('GET /api/tools returned no tool matrix');
+  }
+  return document_;
 }
 
-export async function resolveWebTools(selectedModel, generation) {
-  /* Return the web tool definitions this server exposes, or an empty list.
-
-     `GET /api/tools` is the authority for what the browser may later invoke
-     through `POST /api/tools`, so the same listing that composes `body.tools`
-     decides whether a web surface exists at all. A build without the tool
-     routes answers 404 and a build without the MCP child lists no web tool;
-     both leave the request carrying no web tool rather than advertising a
-     schema nothing executes.
+export async function resolveToolMatrix(selectedModel, generation) {
+  /* Return the matrix for one model selection, or null where none was read.
 
      A transient failure -- a dropped connection, a 5xx during restart, a
      response cut short mid-body -- retries once after a short delay rather
-     than being read the same as a build that serves no tool route at all.
-     Only a listing this loop actually parsed reaches the cache: caching an
-     empty result on failure would leave every later turn on this model and
-     generation silently offering no web tool until a reselect or a reload,
-     even once the endpoint recovers, so a failure after the retry returns
-     the turn's tools empty without writing the cache. */
+     than being read the same as a gateway that serves no matrix at all. Only a
+     document this loop actually parsed reaches the cache: caching a failure
+     would leave every later turn on this model and generation reading no
+     matrix until a reselect or a reload, even once the route recovered. */
   if (toolState.model === selectedModel && toolState.generation === generation) {
-    return toolState.definitions || [];
+    return toolState.matrix;
   }
-  let listed = null;
+  let matrix = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      listed = await fetchWebToolListing(selectedModel);
+      matrix = await fetchToolMatrix(selectedModel);
       break;
     } catch {
       if (attempt === 0) await sleep(TOOLS_LISTING_RETRY_DELAY_MS);
     }
   }
-  if (listed === null) return [];
-  const composed = listed
-    .filter(entry => WEB_TOOL_NAMES.includes(entry && entry.tool))
-    .map(webToolDefinition)
-    .filter(Boolean);
+  if (matrix === null) return null;
   if (modelStateMatches(selectedModel, generation)) {
-    toolState.definitions = composed;
+    toolState.matrix = matrix;
     toolState.model = selectedModel;
     toolState.generation = generation;
   }
-  return composed;
+  return matrix;
+}
+
+export function toolMatrixRow(matrix, toolId) {
+  /* One row by its identifier, or null where the matrix carries none. */
+  if (!matrix || !Array.isArray(matrix.tools)) return null;
+  return matrix.tools.find(row => row && row.tool_id === toolId) || null;
+}
+
+export function renderToolMatrix(container, matrix) {
+  /* Write one row per tool: its title, its state, the helper that runs it,
+     and the authority the state comes from.
+
+     Every field is written through `textContent`, because a reason names a
+     ledger row and a helper names a checkpoint, both of which are text this
+     appliance treats as content. A helper is shown only where the state is
+     `available_through_helper`, since that is the state whose whole content is
+     that a second party runs the call. */
+  container.textContent = '';
+  const rows = (matrix && Array.isArray(matrix.tools)) ? matrix.tools : [];
+  for (const row of rows) {
+    const entry = document.createElement('div');
+    entry.className = `tool-row tool-${row.state}`;
+    const title = document.createElement('span');
+    title.className = 'tool-title';
+    title.textContent = row.title;
+    entry.append(title);
+    const state = document.createElement('span');
+    state.className = 'tool-state';
+    const label = TOOL_STATE_LABELS[row.state] || row.state;
+    state.textContent = row.state === 'available_through_helper' && row.helper
+      ? `${label} ${row.helper}`
+      : label;
+    entry.append(state);
+    const reason = document.createElement('span');
+    reason.className = 'tool-reason meta';
+    reason.textContent = row.reason;
+    entry.append(reason);
+    container.append(entry);
+  }
+  return rows.length;
+}
+
+export async function refreshToolMatrix(selectedModel, generation) {
+  /* Read the matrix for the selected model and render it into the page.
+
+     A read that failed after its one retry leaves the panel stating that
+     rather than leaving the previous model's rows on screen, since a stale
+     row would report a state for a checkpoint the reader is no longer on. */
+  const panel = $('#tool-matrix');
+  const body = $('#tool-matrix-body');
+  if (!panel || !body) return null;
+  const matrix = await resolveToolMatrix(selectedModel, generation);
+  if (!modelStateMatches(selectedModel, generation)) return matrix;
+  if (!matrix) {
+    body.textContent = '';
+    $('#tool-matrix-summary').textContent = 'tool support unread';
+    panel.hidden = false;
+    return null;
+  }
+  const count = renderToolMatrix(body, matrix);
+  const offered = matrix.tools.filter(row => toolStateExecutes(row.state)).length;
+  $('#tool-matrix-summary').textContent =
+    `tool support: ${offered} of ${count} available for ${selectedModel}`;
+  panel.hidden = false;
+  return matrix;
+}
+
+export async function resolveWebTools(selectedModel, generation) {
+  /* Return the web tool definitions this turn may offer the model.
+
+     The matrix is the authority for what the browser may later invoke, and it
+     carries a function schema only for a row this origin can execute. The web
+     rows carry none: `executeWebTool` posts to `POST /api/tools` and the
+     gateway serves no such route, so the matrix reports `web_search` and
+     `read_url` as temporarily unavailable and names the missing executor.
+     Composing a schema the page cannot run would put the refusal after the
+     proposal, which is the ordering the matrix exists to reverse, so a turn
+     under that state carries no web tool and the panel shows the row's own
+     reason.
+
+     The composition returns on its own the moment a row carries a definition,
+     because this filter reads the state and the definition rather than a name
+     kept here. */
+  const matrix = await resolveToolMatrix(selectedModel, generation);
+  if (!matrix) return [];
+  return matrix.tools
+    .filter(row => WEB_MATRIX_TOOL_IDS.includes(row.tool_id) && toolStateExecutes(row.state))
+    .map(webToolDefinition)
+    .filter(Boolean);
 }
 
 export function forgetWebTools() {
-  toolState.definitions = null;
+  toolState.matrix = null;
   toolState.model = null;
   toolState.generation = -1;
 }

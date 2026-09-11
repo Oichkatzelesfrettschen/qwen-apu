@@ -23,7 +23,13 @@ import {
   writeBrowserStorage
 } from './api.js';
 import { attachments, renderAttached } from './attachments.js';
-import { clearWebResultHandles, forgetWebTools } from './tools.js';
+import { clearWebResultHandles, forgetWebTools, refreshToolMatrix } from './tools.js';
+
+// The three matrix rows the per-turn Web and Image toggles govern, and the
+// two states that admit a call. A model offering neither can act on neither
+// toggle, which is what `probeToolOffering` answers about.
+const TOGGLE_BACKED_TOOL_IDS = ['web_search', 'read_url', 'image_generation'];
+const EXECUTING_STATES = ['available', 'available_through_helper'];
 import { forgetImageTools } from './artifacts.js';
 
 /* The selection this page routes under, and the generation that dates it. A
@@ -378,32 +384,34 @@ export function selectRequestModel(selectedModel, persist = true) {
   }
   $('#ctx').textContent = 'context pending for selected model';
   renderAttached();
+  // The tool panel belongs to one selection the way the context length does,
+  // so the read follows the generation bump above and `refreshToolMatrix`
+  // writes nothing where a later selection has already replaced it.
+  void refreshToolMatrix(selectedModel, generation);
   void refreshModelContext(selectedModel, generation);
   void refreshAttachmentTokens(selectedModel, generation);
 }
 export async function probeToolOffering(modelId) {
-  /* Return true where `GET /tools` answers 200 for this model, false where it
-     answers 403, and null for any other status or a transport failure.
+  /* Return true where the tool matrix offers this model a toggle-backed tool,
+     false where it offers none, and null for any status other than 200 or a
+     transport failure.
 
-     A review-only section carries no MCP configuration, so its child answers
-     `403 feature_disabled` the way `evidence/web-admission-router-tools.md`
-     records for an ordinary model with no armed lane; a section with tools
-     armed answers 200. The probe needs no new server surface -- it is the
-     same request `resolveWebTools` makes once a model is already selected --
-     so `boot()` reads it per roster row to pick a default that can act on the
-     per-turn Web or image toggle rather than one that can only sit idle
-     behind it. */
+     `GET /api/tools?model=ID` states one of five states per tool, and the two
+     that admit a call are `available` and `available_through_helper`. The
+     three rows the per-turn toggles govern -- the two web rows and the image
+     generation row -- are what decides a usable default, since a model whose
+     every offered tool runs without a toggle can only sit idle behind both.
+     The probe needs no new server surface: it is the same request
+     `resolveToolMatrix` makes once a model is already selected. */
   try {
     const response = await fetch(`/api/tools?model=${encodeURIComponent(modelId)}`);
     recordSessionStatus(response.status);
     if (response.status === 200) {
-      const listing = await response.json();
-      if (!Array.isArray(listing)) return null;
-      return listing.some(row =>
-        row && typeof row.tool === 'string' && row.tool.length > 0 &&
-        row.definition && row.definition.function &&
-        typeof row.definition.function.name === 'string' &&
-        row.definition.function.name === row.tool);
+      const matrix = await response.json();
+      if (!matrix || typeof matrix !== 'object' || !Array.isArray(matrix.tools)) return null;
+      return matrix.tools.some(row =>
+        row && TOGGLE_BACKED_TOOL_IDS.includes(row.tool_id) &&
+        EXECUTING_STATES.includes(row.state));
     }
     if (response.status === 403) return false;
     return null;
@@ -431,6 +439,7 @@ export async function boot() {
   modelPicker.hidden = true;
   $('#model-tier').hidden = true;
   $('#roster-matrix').hidden = true;
+  $('#tool-matrix').hidden = true;
   $('#ctx').textContent = 'context pending';
   renderAttached();
 

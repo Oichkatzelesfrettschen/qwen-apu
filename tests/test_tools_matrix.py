@@ -417,3 +417,29 @@ def test_the_ledgers_load_from_the_tracked_tree() -> None:
 def test_a_blank_selector_is_refused(selector: str) -> None:
     response = matrix.handle(settings_for(), request_for({"model": selector}))
     assert response.status in (400, 404)
+
+
+def test_the_image_row_carries_the_profiles_own_ceilings(tmp_path: Path) -> None:
+    """The page checks a proposal against these before it opens the dialog."""
+    served = next(
+        row for row in tracked().image_profiles if row.execution_policy == "validator-gated"
+    )
+    listed = rows_of(
+        answer(
+            settings_for(image_profile=served.profile_id, image_socket=bound_socket(tmp_path)),
+            WEB_PROFILE,
+        )
+    )
+    assert listed["image_generation"]["bounds"] == {
+        "profile_id": served.profile_id,
+        "width": served.width,
+        "height": served.height,
+        "max_dimension": served.max_dimension,
+        "max_steps": served.max_steps,
+    }
+
+
+def test_a_row_that_admits_no_call_states_no_bounds() -> None:
+    listed = rows_of(answer(settings_for(image_profile=""), WEB_PROFILE))
+    assert "bounds" not in listed["image_generation"]
+    assert "bounds" not in listed["calculator"]

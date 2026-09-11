@@ -33,6 +33,7 @@ export class FakeElement {
     this.href = '';
     this.listeners = new Map();
     this.options = [];
+    this.parentNode = null;
     this.scrollHeight = 0;
     this.scrollTop = 0;
     this._textContent = '';
@@ -72,18 +73,34 @@ export class FakeElement {
   append(...children) {
     this.children.push(...children);
     for (const child of children) {
+      if (child instanceof FakeElement) child.parentNode = this;
       if (this.tagName === 'select' && child instanceof FakeElement) this.options.push(child);
     }
   }
 
   insertBefore(node) {
     this.children.unshift(node);
+    if (node instanceof FakeElement) node.parentNode = this;
     return node;
   }
 
-  after() {}
+  // `after` and `remove` move a node in its parent the way the DOM does, so a
+  // control the page inserts beside a state line is reachable from that
+  // parent and a card the page removes leaves it. A node with no parent is
+  // inert under both, which is what an element built for a unit assertion is.
+  after(node) {
+    if (!this.parentNode) return;
+    const index = this.parentNode.children.indexOf(this);
+    this.parentNode.children.splice(index + 1, 0, node);
+    if (node instanceof FakeElement) node.parentNode = this.parentNode;
+  }
 
-  remove() {}
+  remove() {
+    if (!this.parentNode) return;
+    const index = this.parentNode.children.indexOf(this);
+    if (index !== -1) this.parentNode.children.splice(index, 1);
+    this.parentNode = null;
+  }
 
   querySelector(selector) {
     // One class selector, depth first: the artifact card reaches its own Open,
@@ -303,12 +320,90 @@ export async function drainPending(harness, answer = () => jsonResponse({ models
   }
 }
 
-export const WEB_TOOL_LISTING = [{
-  tool: 'web_search_exa',
-  definition: { type: 'function', function: { name: 'web_search_exa', parameters: {
-    type: 'object', properties: { query: { type: 'string' }, authorization: { type: 'string' } },
-    required: ['query'] } } }
-}];
+/* The matrix `GET /api/tools?model=ID` answers, as `qwen_apu.tools.matrix`
+   writes it: one row per tool with a closed state, the helper that runs it,
+   and the authority the state comes from. A row carries a `definition` only
+   where this origin can execute the call, and `bounds` only on the image
+   generation row, where they come from the armed profile's own
+   remote/image-profiles.tsv ceilings. */
+export function toolRow(toolId, state, overrides = {}) {
+  return {
+    tool_id: toolId,
+    title: toolId,
+    lane: 'fixture',
+    approval: 'user-explicit',
+    execution_path: 'fixture',
+    state,
+    helper: '',
+    reason: `the fixture states ${state}`,
+    ...overrides
+  };
+}
+
+export const IMAGE_BOUNDS = {
+  profile_id: 'image-sdxs-512-a',
+  width: 512,
+  height: 512,
+  max_dimension: 512,
+  max_steps: 4
+};
+
+export function toolMatrix(rows = [], overrides = {}) {
+  return {
+    schema: 'qwen.tool-matrix',
+    version: 1,
+    selection: { selector: 'model-A', kind: 'model', model_id: 'model-A', tier: 'production',
+                 projector: 'none', guarded_tool_execution: 'refused', web_profile: '' },
+    launch: { approval_profile: 'web-open', image_profile: '', provider: 'searxng',
+              open_lan: false },
+    tools: rows,
+    ...overrides
+  };
+}
+
+// The default a boot answers with: nothing the toggles govern executes, which
+// is the state a gateway that mounts no tool executor and arms no image lane
+// reports.
+export const NO_TOOL_MATRIX = toolMatrix([
+  toolRow('web_search', 'temporarily_unavailable'),
+  toolRow('read_url', 'temporarily_unavailable'),
+  toolRow('image_generation', 'not_installed'),
+  toolRow('image_review', 'not_installed'),
+  toolRow('calculator', 'available')
+]);
+
+// A matrix whose image lane runs, which is what a turn proposing a generation
+// reads.
+export const IMAGE_TOOL_MATRIX = toolMatrix([
+  toolRow('web_search', 'temporarily_unavailable'),
+  toolRow('read_url', 'temporarily_unavailable'),
+  toolRow('image_generation', 'available_through_helper',
+    { helper: 'sdxs-512', bounds: IMAGE_BOUNDS }),
+  toolRow('image_review', 'available_through_helper', { helper: 'lfm25-vl-16b' }),
+  toolRow('calculator', 'available')
+]);
+
+function webToolDefinitionFixture(name) {
+  return { type: 'function', function: { name, parameters: {
+    type: 'object',
+    properties: { query: { type: 'string' }, authorization: { type: 'string' } },
+    required: ['query', 'authorization'] } } };
+}
+
+// A matrix whose web lane runs. A row in an executing state carries the
+// function object the executor declares, and `search_exa` advertises an
+// `authorization` property the gateway alone issues, which the page strips.
+export const WEB_TOOL_MATRIX = toolMatrix([
+  toolRow('web_search', 'available_through_helper',
+    { helper: 'searxng', definition: webToolDefinitionFixture('web_search_exa') }),
+  toolRow('read_url', 'available_through_helper',
+    { helper: 'searxng', definition: webToolDefinitionFixture('web_fetch_exa') }),
+  toolRow('image_generation', 'not_installed'),
+  toolRow('image_review', 'not_installed'),
+  toolRow('calculator', 'available')
+]);
+
+export const WEB_TOOL_LISTING = WEB_TOOL_MATRIX;
 
 export function registryRow(id, overrides = {}) {
   return {
@@ -355,13 +450,14 @@ export async function bootPage(options = {}) {
       // decides the default rather than the sort.
       const answer = typeof toolListing === 'function'
         ? toolListing(row)
-        : (toolListing && !Array.isArray(toolListing) && row.id in toolListing
+        : (toolListing && !toolListing.schema && row.id in toolListing
           ? toolListing[row.id]
           : toolListing);
       (await page.take(request => request.url === `/api/tools?model=${encodeURIComponent(row.id)}`,
         `tool probe for ${row.id}`)).resolve(
-        Array.isArray(answer) ? jsonResponse(answer) : jsonResponse(
-          answer ?? { error: 'feature_disabled' }, 403));
+        answer && answer.schema === 'qwen.tool-matrix'
+          ? jsonResponse(answer)
+          : jsonResponse(answer ?? { error: 'feature_disabled' }, 403));
       await flushPromises();
     }
   }
@@ -369,8 +465,26 @@ export async function bootPage(options = {}) {
     (await page.take(request => request.url === '/api/models', 'selection registry read'))
       .resolve(registryResponse(rows));
     await flushPromises();
+    // The selection reads the matrix once for the tool panel, which is the
+    // same read `resolveToolMatrix` caches for the turn that follows.
+    await answerToolMatrix(page, toolListing);
   }
   return page;
+}
+
+export async function answerToolMatrix(page, matrix = NO_TOOL_MATRIX) {
+  /* Answer every pending `GET /api/tools?` with one matrix document.
+
+     The page reads the route once per selection for the panel and once per
+     turn for the web and image rows, and the second read is a cache hit, so
+     this drains whatever is outstanding rather than asserting a count. */
+  const answer = matrix && matrix.schema === 'qwen.tool-matrix' ? matrix : NO_TOOL_MATRIX;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const index = page.pending.findIndex(request => request.url.startsWith('/api/tools?'));
+    if (index === -1) break;
+    page.pending.splice(index, 1)[0].resolve(jsonResponse(answer));
+    await flushPromises();
+  }
 }
 
 export function streamResponse(events, status = 200) {

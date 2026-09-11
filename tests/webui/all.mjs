@@ -15,6 +15,7 @@ import './test-artifact-origin.mjs';
 import './test-broker-origin.mjs';
 import './test-conversations.mjs';
 import './test-image-review.mjs';
+import './test-image-workflow.mjs';
 import './test-lan-bounds.mjs';
 import './test-mixed-roster.mjs';
 import './test-model-state.mjs';
@@ -29,6 +30,7 @@ const ENROLLED = [
   'test-broker-origin.mjs',
   'test-conversations.mjs',
   'test-image-review.mjs',
+  'test-image-workflow.mjs',
   'test-lan-bounds.mjs',
   'test-mixed-roster.mjs',
   'test-model-state.mjs',

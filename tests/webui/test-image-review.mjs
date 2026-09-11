@@ -176,98 +176,13 @@ test('a correction needs a failed constraint, a regenerate flag, and a delta', a
     'a failed constraint, a regenerate flag, and a stated delta together admit a correction');
 });
 
-test('the review grammar equals remote/image-review.py build_verdict_schema', async () => {
-  const page = await reviewPage();
-  const api = page.modules.artifacts;
-  const constraints = [
-    { name: 'prompt_subject', description: 'the requested subject is visible' },
-    { name: 'negative_prompt_absent', description: 'the excluded subject is absent' }
-  ];
-  const javascriptSchema = JSON.parse(JSON.stringify(api.buildReviewVerdictSchema(constraints)));
-  const program = [
-    'import importlib.util, json, pathlib',
-    'path = pathlib.Path("remote/image-review.py")',
-    'spec = importlib.util.spec_from_file_location("image_review", path)',
-    'module = importlib.util.module_from_spec(spec)',
-    'spec.loader.exec_module(module)',
-    `constraints = ${JSON.stringify(constraints.map(({ name, description }) =>
-      [name, description]))}`,
-    'print(json.dumps(module.build_verdict_schema(constraints)))'
-  ].join('; ');
-  const pythonSchema = JSON.parse(childProcess.execFileSync(
-    'python3', ['-c', program], { encoding: 'utf8', cwd: new URL('../../', import.meta.url) }));
-  assert.deepEqual(javascriptSchema, pythonSchema,
-    'the page review schema drifted from remote/image-review.py');
-});
-
-test('the review request offers no tool and bounds its own budget', async () => {
-  const page = await reviewPage();
-  const api = page.modules.artifacts;
-  const constraints = [
-    { name: 'prompt_subject', description: 'the requested subject is visible' },
-    { name: 'negative_prompt_absent', description: 'the excluded subject is absent' }
-  ];
-  const request = api.buildReviewRequestBody(
-    VISION_MODEL, 'data:image/png;base64,AA==', 'f'.repeat(64), constraints);
-  assert.equal(request.max_tokens, 400);
-  assert.equal(request.model, VISION_MODEL);
-  assert.equal(request.tools, undefined, 'the review offers the vision model a tool');
-  assert.equal(request.response_format.type, 'json_schema');
-  assert.equal(request.response_format.json_schema.name, 'image_review');
-  const schema = request.response_format.json_schema.schema;
-  assert.equal(schema.properties.hard_constraints.minItems, 2);
-  assert.equal(schema.properties.hard_constraints.maxItems, 2);
-  assert.deepEqual(schema.properties.hard_constraints.items.properties.name.enum,
-    ['prompt_subject', 'negative_prompt_absent']);
-});
-
-test('a verdict outside the schema, or past a terminal status, is refused', async () => {
-  const page = await reviewPage();
-  const api = page.modules.artifacts;
-  const names = ['prompt_subject', 'negative_prompt_absent'];
-  const verdict = {
-    hard_constraints: names.map(name => ({ name, passed: true, observation: 'present' })),
-    composition_change_required: false,
-    prompt_delta: '',
-    regenerate: false
-  };
-  assert.deepEqual(api.parseReviewVerdict(
-    { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(verdict) } }] },
-    names), verdict);
-
-  const diagnostic = api.buildReviewResult({
-    model: 'loaded-vision-model',
-    usage: { prompt_tokens: 900, completion_tokens: 37, total_tokens: 937 },
-    choices: [{ finish_reason: 'stop', message: {
-      reasoning_content: 'private reasoning diagnostic',
-      content: JSON.stringify(verdict)
-    } }]
-  }, names, VISION_MODEL);
-  assert.deepEqual(diagnostic.verdict, verdict,
-    'response diagnostics changed the strict verdict fields');
-  assert.equal(diagnostic.requested_model, VISION_MODEL);
-  assert.equal(diagnostic.response_model, 'loaded-vision-model');
-  assert.equal(diagnostic.finish_reason, 'stop');
-  assert.equal(diagnostic.completion_tokens, 37);
-  assert.equal(diagnostic.usage.total_tokens, 937);
-  assert.equal(diagnostic.reasoning_present, true);
-  assert.equal(diagnostic.reasoning_content, 'private reasoning diagnostic');
-
-  for (const completionTokens of [-1, 1.5, Infinity]) {
-    assert.throws(() => api.buildReviewResult({
-      usage: { completion_tokens: completionTokens },
-      choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(verdict) } }]
-    }, names, VISION_MODEL), /completion_tokens is no finite nonnegative integer/);
-  }
-  for (const finishReason of ['length', 'tool_calls', 'content_filter']) {
-    assert.throws(() => api.parseReviewVerdict({
-      choices: [{ finish_reason: finishReason, message: { content: JSON.stringify(verdict) } }]
-    }, names), new RegExp(`finish_reason ${finishReason}`));
-  }
-  assert.throws(() => api.parseReviewVerdict(
-    { choices: [{ message: { content: JSON.stringify(verdict) } }] }, names),
-    /no terminal finish reason/);
-});
+// The review grammar, the request shape, and the strict verdict parser left
+// this page with the client-side review: `POST /api/tools/image/review` builds
+// the request through `remote/image-review.py`'s own `build_review_request`
+// and parses the reply through its own `parse_verdict`, so one reading serves
+// both sides and tests/test_web_artifacts.py is where it is proven. What the
+// page still owns, and the tests below cover, is the three findings it renders
+// and the correction cap it counts.
 
 test('a composed prompt meets the tool schema maxima ahead of the dialog', async () => {
   const page = await reviewPage();
@@ -290,23 +205,50 @@ test('a composed prompt meets the tool schema maxima ahead of the dialog', async
     'a dimension above the served profile ceiling is refused the same way');
 });
 
+function reviewLineage(container, shared) {
+  return {
+    sha256: FIXTURE_PNG_SHA256, state: shared, model: VISION_MODEL, bounds: null,
+    // The grant the generation ran under. The review route verifies the claim
+    // and spends nothing, so the already-spent token still proves which prompt
+    // a human approved.
+    authorization: 'grant-token',
+    reviewModel: VISION_MODEL, entry: null, entryGeneration: 0, container
+  };
+}
+
+function findingsFor(verdict, overrides = {}) {
+  /* The three findings `POST /api/tools/image/review` reports apart. */
+  return {
+    model: VISION_MODEL,
+    artifact_sha256: FIXTURE_PNG_SHA256,
+    prompt_hash: 'f'.repeat(64),
+    completion: { answered: true, raw_reply: JSON.stringify(verdict),
+                  reasoning_emitted: true, refusal_code: null },
+    schema_validity: { valid: true, refusal_code: null, verdict },
+    judgment: {
+      failed: verdict.hard_constraints.filter(entry => !entry.passed)
+        .map(entry => entry.name),
+      correction_admitted: true,
+      correction_reason: 'the verdict names a failed hard constraint and states its correction'
+    },
+    ...overrides
+  };
+}
+
 test('an artifact the gateway no longer holds spends no correction', async () => {
   const page = await reviewPage();
   const container = new FakeElement();
   const card = await renderCard(page, container, fields({ seed: 4242 }));
   const shared = { correctionsUsed: 0 };
-  const lineage = {
-    sha256: FIXTURE_PNG_SHA256, state: shared, model: VISION_MODEL, cancelToolName: null,
-    bounds: null, reviewModel: VISION_MODEL, entry: null, entryGeneration: 0, container
-  };
   const historyBefore = page.modules.chat.history.length;
-  const reviewing = page.modules.artifacts.runImageReview(card, fields({ seed: 4242 }), lineage);
+  const reviewing = page.modules.artifacts.runImageReview(
+    card, fields({ seed: 4242 }), reviewLineage(container, shared));
   await flushPromises();
   (await page.take(request => request.url === '/api/models', 'reviewer registry read'))
     .resolve(jsonResponse({ models: [registryRow(VISION_MODEL, { projector: 'required' })] }));
   await flushPromises();
-  (await page.take(request => request.url === `/api/artifacts/${FIXTURE_PNG_SHA256}.png`,
-    'expired artifact read')).resolve(pngResponse(404));
+  (await page.take(request => request.url === '/api/tools/image/review', 'the review request'))
+    .resolve(jsonResponse({ error: 'no such artifact' }, 404));
   await flushPromises();
   await reviewing;
   assert.equal(shared.correctionsUsed, 0,
@@ -317,6 +259,94 @@ test('an artifact the gateway no longer holds spends no correction', async () =>
     'the card states the review did not complete rather than staying silent');
 });
 
+test('a review without the generation grant reaches no route', async () => {
+  /* A restored card carries no grant, so the review states that rather than
+     posting a request the gateway would refuse for want of a claim. */
+  const page = await reviewPage();
+  const container = new FakeElement();
+  const card = await renderCard(page, container, fields());
+  const shared = { correctionsUsed: 0 };
+  const lineage = { ...reviewLineage(container, shared), authorization: undefined };
+  const reviewing = page.modules.artifacts.runImageReview(card, fields(), lineage);
+  await flushPromises();
+  (await page.take(request => request.url === '/api/models', 'reviewer registry read'))
+    .resolve(jsonResponse({ models: [registryRow(VISION_MODEL, { projector: 'required' })] }));
+  await flushPromises();
+  await reviewing;
+  assert.equal(page.pending.length, 0, 'a review without a grant reached the review route');
+  assert.ok(card.children.some(child =>
+    (child.textContent || '').includes('no longer held by this page')),
+    'the card did not name the absent grant');
+});
+
+test('completion, schema validity, and judgment are reported apart', async () => {
+  const page = await reviewPage();
+  const container = new FakeElement();
+  const shared = { correctionsUsed: 0 };
+
+  async function answerWith(findings) {
+    const card = await renderCard(page, container, fields());
+    const reviewing = page.modules.artifacts.runImageReview(
+      card, fields(), reviewLineage(container, shared));
+    await flushPromises();
+    (await page.take(request => request.url === '/api/models', 'reviewer registry read'))
+      .resolve(jsonResponse({ models: [registryRow(VISION_MODEL, { projector: 'required' })] }));
+    await flushPromises();
+    (await page.take(request => request.url === '/api/tools/image/review', 'the review request'))
+      .resolve(jsonResponse(findings));
+    await flushPromises();
+    await reviewing;
+    return card;
+  }
+
+  // A router that answered nothing is a completion failure and stops there.
+  const unanswered = await answerWith({
+    model: VISION_MODEL,
+    completion: { answered: false, raw_reply: null, reasoning_emitted: false,
+                  refusal_code: 'reply_refused' },
+    schema_validity: { valid: false, refusal_code: null, verdict: null },
+    judgment: null
+  });
+  assert.ok(unanswered.children.some(child =>
+    (child.textContent || '').includes('no completion: reply_refused')),
+    'an unanswered review did not report its refusal code');
+  assert.equal(unanswered.querySelector('.image-review'), null,
+    'an unanswered review rendered a checklist');
+
+  // A router that answered and left the schema is a second, separate finding.
+  const invalid = await answerWith({
+    model: VISION_MODEL,
+    completion: { answered: true, raw_reply: 'not a verdict', reasoning_emitted: false,
+                  refusal_code: null },
+    schema_validity: { valid: false, refusal_code: 'verdict_not_json', verdict: null },
+    judgment: null
+  });
+  assert.ok(invalid.children.some(child =>
+    (child.textContent || '').includes('failed the verdict schema: verdict_not_json')),
+    'a completed reply that left the schema was reported as no completion');
+  assert.equal(invalid.querySelector('.image-review'), null,
+    'a reply outside the verdict schema rendered a checklist');
+
+  // A verdict the parser admitted, whose judgment proposes nothing.
+  const passing = {
+    hard_constraints: [{ name: 'prompt_subject', passed: true, observation: 'present' }],
+    composition_change_required: false,
+    prompt_delta: '',
+    regenerate: false
+  };
+  const judged = await answerWith(findingsFor(passing, {
+    judgment: { failed: [], correction_admitted: false,
+                correction_reason: 'the verdict asks for no regeneration' }
+  }));
+  const block = judged.querySelector('.image-review');
+  assert.ok(block, 'an admitted verdict rendered no checklist');
+  assert.equal(block.children[0].textContent, `reviewed by ${VISION_MODEL}`);
+  assert.ok(judged.children.some(child =>
+    (child.textContent || '').includes('asks for no regeneration')),
+    'the card did not carry the judgment reason the gateway stated');
+  assert.equal(shared.correctionsUsed, 0, 'a verdict admitting no correction spent one');
+});
+
 test('two approved corrections are the whole allowance, counted on one lineage', async () => {
   const page = await reviewPage();
   const api = page.modules.artifacts;
@@ -325,10 +355,7 @@ test('two approved corrections are the whole allowance, counted on one lineage',
   const originalFields = fields({ seed, prompt: 'a bicycle on a lawn' });
   const firstCard = await renderCard(page, container, originalFields);
   const shared = { correctionsUsed: 0 };
-  const lineageFor = () => ({
-    sha256: FIXTURE_PNG_SHA256, state: shared, model: VISION_MODEL, cancelToolName: null,
-    bounds: null, reviewModel: VISION_MODEL, entry: null, entryGeneration: 0, container
-  });
+  const lineageFor = () => reviewLineage(container, shared);
 
   async function runAdmittedReview(card, reviewFields) {
     const historyBefore = page.modules.chat.history.length;
@@ -337,36 +364,35 @@ test('two approved corrections are the whole allowance, counted on one lineage',
     (await page.take(request => request.url === '/api/models', 'reviewer registry read'))
       .resolve(jsonResponse({ models: [registryRow(VISION_MODEL, { projector: 'required' })] }));
     await flushPromises();
-    (await page.take(request => request.url.startsWith('/api/artifacts/'), 'artifact read for review'))
-      .resolve(pngResponse(200));
-    await flushPromises();
-    const completion = (await page.take(request => request.url === '/api/chat',
-      'the review completion request'));
-    assert.equal(JSON.parse(completion.options.body).tools, undefined,
-      'the review offers the vision model no tool');
-    completion.resolve(jsonResponse({
-      model: VISION_MODEL,
-      usage: { prompt_tokens: 800, completion_tokens: 29, total_tokens: 829 },
-      choices: [{ finish_reason: 'stop', message: {
-        reasoning_content: 'private review reasoning',
-        content: JSON.stringify({
-          hard_constraints: [
-            { name: 'prompt_subject', passed: false, observation: 'missing the lawn' }],
-          composition_change_required: false,
-          prompt_delta: 'on a green lawn',
-          regenerate: true
-        })
-      } }]
-    }));
+    const review = (await page.take(request => request.url === '/api/tools/image/review',
+      'the review request'));
+    const reviewBody = JSON.parse(review.options.body);
+    assert.equal(reviewBody.sha256, FIXTURE_PNG_SHA256,
+      'the review named an artifact other than the card own');
+    assert.equal(reviewBody.model, VISION_MODEL,
+      'the review named a model other than the confirmed reviewer');
+    assert.equal(reviewBody.authorization, 'grant-token',
+      'the review carried no grant, so the gateway would refuse it for want of a claim');
+    assert.ok(Array.isArray(reviewBody.constraints) && reviewBody.constraints.length,
+      'the review declared no hard constraint');
+    review.resolve(jsonResponse(findingsFor({
+      hard_constraints: [
+        { name: 'prompt_subject', passed: false, observation: 'missing the lawn' }],
+      composition_change_required: false,
+      prompt_delta: 'on a green lawn',
+      regenerate: true
+    })));
     await flushPromises();
 
     const block = card.querySelector('.image-review');
     assert.ok(block, 'the admitted review rendered no checklist');
     assert.equal(block.children[0].textContent, `reviewed by ${VISION_MODEL}`);
-    assert.ok(block.children[1].textContent.includes('finish stop; completion tokens 29'),
-      'the review diagnostics omitted validated terminal status or completion usage');
-    assert.equal(block.reviewResult.completion_tokens, 29);
-    assert.equal(block.reviewResult.reasoning_content, 'private review reasoning');
+    assert.ok(block.children[1].textContent.includes(`response model ${VISION_MODEL}`),
+      'the review diagnostics omitted the model the gateway named');
+    assert.equal(block.reviewResult.reasoning_present, true,
+      'the reviewer emitted reasoning and the card recorded none');
+    assert.equal(block.reviewResult.reasoning_content, null,
+      'reasoning text reached the page from a gateway that reports its presence alone');
 
     page.element('#image-approve-once').onclick();
     await flushPromises();
@@ -422,19 +448,14 @@ test('two approved corrections are the whole allowance, counted on one lineage',
   (await page.take(request => request.url === '/api/models', 'capped reviewer registry read'))
     .resolve(jsonResponse({ models: [registryRow(VISION_MODEL, { projector: 'required' })] }));
   await flushPromises();
-  (await page.take(request => request.url.startsWith('/api/artifacts/'),
-    'artifact read for the capped review')).resolve(pngResponse(200));
-  await flushPromises();
-  (await page.take(request => request.url === '/api/chat', 'the capped review completion'))
-    .resolve(jsonResponse({
-      choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
-        hard_constraints: [
-          { name: 'prompt_subject', passed: false, observation: 'still wrong' }],
-        composition_change_required: false,
-        prompt_delta: 'one more change',
-        regenerate: true
-      }) } }]
-    }));
+  (await page.take(request => request.url === '/api/tools/image/review',
+    'the capped review request')).resolve(jsonResponse(findingsFor({
+      hard_constraints: [
+        { name: 'prompt_subject', passed: false, observation: 'still wrong' }],
+      composition_change_required: false,
+      prompt_delta: 'one more change',
+      regenerate: true
+    })));
   await flushPromises();
   await capped;
   assert.equal(page.pending.length, pendingBefore,

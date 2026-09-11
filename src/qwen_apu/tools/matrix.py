@@ -38,7 +38,7 @@ whether the launch declared a file root.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -75,9 +75,13 @@ class ToolOffer:
     state: ToolState
     helper: str
     reason: str
+    # The ledger ceilings a caller checks a proposal against before it asks a
+    # human to approve one. Only the image generation row carries them, from
+    # the armed profile's own remote/image-profiles.tsv fields.
+    bounds: Mapping[str, object] | None = None
 
     def as_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "tool_id": self.tool_id,
             "title": self.title,
             "lane": self.lane,
@@ -87,6 +91,9 @@ class ToolOffer:
             "helper": self.helper,
             "reason": self.reason,
         }
+        if self.bounds is not None:
+            payload["bounds"] = dict(self.bounds)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,7 +192,13 @@ def resolve_selection(ledgers: Ledgers, selector: str) -> Selection | None:
     return Selection(selector, "model", model)
 
 
-def _offer(entry: ToolEntry, state: ToolState, reason: str, helper: str = "") -> ToolOffer:
+def _offer(
+    entry: ToolEntry,
+    state: ToolState,
+    reason: str,
+    helper: str = "",
+    bounds: Mapping[str, object] | None = None,
+) -> ToolOffer:
     return ToolOffer(
         tool_id=entry.tool_id,
         title=entry.title,
@@ -195,6 +208,7 @@ def _offer(entry: ToolEntry, state: ToolState, reason: str, helper: str = "") ->
         state=state,
         helper=helper,
         reason=reason,
+        bounds=bounds,
     )
 
 
@@ -371,6 +385,13 @@ def _image_generation(
         f"one grant binds the prompt digests, the seed, and the {profile.width}x{profile.height} "
         f"geometry at most {profile.max_steps} steps, and the worker runs one job with no queue",
         profile.model_id,
+        bounds={
+            "profile_id": profile.profile_id,
+            "width": profile.width,
+            "height": profile.height,
+            "max_dimension": profile.max_dimension,
+            "max_steps": profile.max_steps,
+        },
     )
 
 

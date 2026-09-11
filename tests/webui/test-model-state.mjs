@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  answerToolMatrix,
   bootPage,
   flushPromises,
   jsonResponse,
@@ -19,7 +20,8 @@ import {
   streamResponse,
   toolCallEvent,
   answerEvent,
-  finishEvent
+  finishEvent,
+  WEB_TOOL_MATRIX
 } from './page.mjs';
 
 const MODEL_A = 'model-A';
@@ -31,15 +33,17 @@ function registryAnswer(rows) {
   return jsonResponse({ models: rows });
 }
 
-const LISTING = [{ tool: 'web_search_exa', definition: { function: { name: 'web_search_exa' } } }];
+// The matrix a tool-offering section answers: the web rows execute through
+// the provider the launch names, which is what `probeToolOffering` reads.
+const LISTING = WEB_TOOL_MATRIX;
 
 async function twoModelPage(options = {}) {
   /* Boot a page whose roster carries a tool-offering row and a review-only one.
 
-     `boot()` probes `GET /api/tools` per row and prefers a row whose section
-     answers a listing over sort position, so the probes below answer per id:
-     model A carries the listing and model B answers 403 feature_disabled, the
-     shape a review-only section takes. */
+     `boot()` probes `GET /api/tools` per row and prefers a row whose matrix
+     offers a toggle-backed tool over sort position, so the probes below answer
+     per id: model A carries an executing web lane and model B answers 403
+     feature_disabled, the shape a review-only section takes. */
   const page = await bootPage({
     rows: [ROW_A, ROW_B],
     toolListing: { [MODEL_A]: LISTING, [MODEL_B]: { error: 'feature_disabled' } },
@@ -354,7 +358,6 @@ test('a fetch redeems the exact signed id and refuses every other reference', as
       false,
       { remaining: 1 },
       null,
-      null,
       turnNonce
     ).then(() => chat.history.slice(before));
   };
@@ -438,15 +441,10 @@ test('a turn that cannot allocate a handle releases the send button', async () =
   }
 });
 
-async function answerListings(page, listing = []) {
-  // A web turn reads `GET /api/tools` twice: once for the web tool set and
-  // once for the image tool set, which keeps its own cache on the same route.
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const index = page.pending.findIndex(request => request.url.startsWith('/api/tools?'));
-    if (index === -1) break;
-    page.pending.splice(index, 1)[0].resolve(jsonResponse(listing));
-    await flushPromises();
-  }
+async function answerListings(page, matrix = WEB_TOOL_MATRIX) {
+  // A web turn reads `GET /api/tools` for the web rows and the image row,
+  // which share one cached matrix on the same route.
+  await answerToolMatrix(page, matrix);
 }
 
 test('a failed source ends the turn on the missing-source notice', async () => {

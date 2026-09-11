@@ -310,7 +310,7 @@ export function answerCall(callId, toolName, content, turnGeneration) {
 
 export async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
                                  searchBudget, turnGeneration, proposalModel,
-                                 webPermission, imagePermission, imageBudget, imageCancelToolName, imageBounds,
+                                 webPermission, imagePermission, imageBudget, imageBounds,
                                  resultHandleTurn) {
   /* Execute this round's proposed calls and answer each one.
 
@@ -434,7 +434,7 @@ export async function runProposedTools(calls, callIds, view, roundBudgetExhauste
         const execution = await executeImageGeneration(
           stateEl, view.turn.root, imageFields, params,
           { state: { correctionsUsed: 0 }, model: proposalModel,
-            cancelToolName: imageCancelToolName, bounds: imageBounds });
+            bounds: imageBounds, authorization: imageOutcome.authorization });
         if (!execution.ok) refused = true;
         answerTool(callId, toolName, execution.text, turnGeneration);
       } else {
@@ -769,12 +769,12 @@ export async function send() {
       // A cache hit: buildRequestBody() already populated this entry inside
       // streamCompletion() when imagePermission was on, so this call issues
       // no second GET /tools.
-      const { cancelToolName: imageCancelToolName, bounds: imageBounds } =
+      const { bounds: imageBounds } =
         await resolveImageTools(modelState.requestModel, modelState.generation);
       const toolOutcome = await runProposedTools(
         outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
         searchBudget, turnGeneration, proposalModel, webPermission,
-        imagePermission, imageBudget, imageCancelToolName, imageBounds, resultHandleTurn);
+        imagePermission, imageBudget, imageBounds, resultHandleTurn);
       if (turnGeneration !== conversationState.generation) return;
       if (toolOutcome.webFailed) {
         const notice = missingSourceNotice();
