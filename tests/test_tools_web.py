@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -221,6 +222,7 @@ def _harness(
     *,
     timeout_seconds: float = 10.0,
     max_fetches: int = 2,
+    max_results: int = 5,
 ) -> Harness:
     tmp_path.mkdir(parents=True, exist_ok=True)
     key = tmp_path / "web-token.key"
@@ -250,7 +252,7 @@ def _harness(
             timeout_seconds=timeout_seconds,
             address_resolver=resolver,
         ),
-        max_results=5,
+        max_results=max_results,
         max_fetches=max_fetches,
         max_chars_per_fetch=12000,
         session_admits=lambda request: True,
@@ -337,6 +339,42 @@ def test_every_answer_carries_the_provenance_a_transcript_names(harness: Harness
     assert str(record["url"]).startswith(f"http://{SOURCE_HOST}:")
     assert int(record["returned_characters"]) > 0
     assert len(str(record["text_sha256"])) == 64
+
+
+def test_the_rendered_reply_matches_the_pattern_the_page_rewrites(harness: Harness) -> None:
+    """The renderer and the page's handle table agree on one block layout.
+
+    `modelVisibleSearchResult` in `static/js/tools.js` replaces the `Result ID:`
+    field of a complete block and then refuses a reply carrying a signed
+    identifier anywhere else, so a renderer that moved a field or a separator
+    would answer `invalid_result_handle` on every search rather than failing a
+    test. The two expressions below are that function's own, transcribed.
+    """
+    results = tuple(
+        web_tools.SearchResult(
+            url=f"https://example.org/note-{index}",
+            title=f"Raven2 note {index}",
+            published="2026-09-08",
+            author="A. Measurer",
+            engines=("duckduckgo", "wikipedia"),
+            category=CATEGORY,
+            highlights=("one measured snippet",),
+        )
+        for index in range(2)
+    )
+    rendered, issued = web_tools.render_search_results(
+        results, "searxng", "a signing key", "search-id", int(time.time()), 900
+    )
+    assert len(issued) == 2
+    result_field = re.compile(
+        r"(^|\n---\n)(Title: [^\n]*\nURL: [^\n]*\nPublished: [^\n]*\nAuthor: [^\n]*"
+        r"\nResult ID: )([^\n]+)"
+        r"(\nTrust: untrusted-web-result\n(?:Sources: [^\n]*\n)?Highlights:)"
+    )
+    assert len(result_field.findall(rendered)) == 2, rendered
+    visible = result_field.sub(r"\1\2r_" + "0" * 24 + r"\4", rendered)
+    signed = re.compile(r"(^|\n)Result ID: [A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(\n|$)")
+    assert signed.search(visible) is None, visible
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +561,30 @@ def test_a_replayed_grant_is_refused_before_the_instance_is_reached(
     assert replay["status"] == "authorization_denied"
     assert "spent" in str(replay["reason"])
     assert len(searxng.plan["requests"]) == issued  # type: ignore[attr-defined]
+
+
+def test_a_profile_admitting_more_than_the_default_admits_a_countless_search(
+    tmp_path: Path, searxng: ThreadingHTTPServer, source: ThreadingHTTPServer
+) -> None:
+    """The resolved count narrows toward the grant's own default, never past it.
+
+    `approvals.parse_search_request` signs an omitted `max_results` at
+    RESULT_COUNT_DEFAULT and the comparison refuses a resolved count above the
+    granted one, so a profile like `web-balanced` at 8 would refuse every
+    search that named no count if the executor resolved its own ceiling.
+    """
+    built = _harness(tmp_path, searxng, source, max_results=8)
+    status, answer = built.call(
+        web_tools.SEARCH_TOOL,
+        {"query": "raven2 decode", "authorization": built.grant("raven2 decode")},
+    )
+    assert status == 200, answer.get("reason")
+    assert answer["outcome"] == "success"
+    definitions = web_tools.tool_definitions(built.settings)
+    search = dict(dict(definitions[web_tools.SEARCH_TOOL])["function"])  # type: ignore[arg-type]
+    properties = dict(dict(search["parameters"])["properties"])  # type: ignore[arg-type]
+    assert "Default 5." in str(dict(properties["max_results"])["description"])
+    assert dict(properties["max_results"])["maximum"] == 8
 
 
 def test_a_query_that_leaves_the_grant_is_refused(harness: Harness) -> None:
