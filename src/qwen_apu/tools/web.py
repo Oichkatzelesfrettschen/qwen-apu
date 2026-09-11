@@ -413,7 +413,7 @@ class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
     redirect from it is a reachable rule change rather than a route to follow.
     """
 
-    def redirect_request(
+    def redirect_request(  # noqa: PLR0917 -- urllib's own signature
         self,
         req: urllib.request.Request,
         fp: object,
@@ -551,6 +551,7 @@ class SearxngProvider:
         self,
         base_url: str,
         primary_category: str,
+        *,
         fallback_category: str = "",
         minimum_results: int = 1,
         language: str = "",
@@ -852,6 +853,7 @@ def _map_result(record: Mapping[str, object], category: str) -> SearchResult:
 
 
 def issue_result_id(
+    *,
     signing_key: str,
     url: str,
     provider_name: str,
@@ -916,6 +918,7 @@ def clip(value: object, cap: int) -> str:
 
 def render_search_results(
     results: Sequence[SearchResult],
+    *,
     provider_name: str,
     signing_key: str,
     search_id: str,
@@ -944,7 +947,12 @@ def render_search_results(
             f"Author: {clip(record.author, AUTHOR_CHARACTER_CAP)}",
             "Result ID: "
             + issue_result_id(
-                signing_key, record.url, provider_name, search_id, issued_at, lifetime_seconds
+                signing_key=signing_key,
+                url=record.url,
+                provider_name=provider_name,
+                search_id=search_id,
+                issued_at=issued_at,
+                lifetime_seconds=lifetime_seconds,
             ),
             "Trust: untrusted-web-result",
         ]
@@ -1184,6 +1192,7 @@ def _constraints(params: Mapping[str, object]) -> SearchConstraints:
 
 def enforce_search_authorization(
     settings: WebToolSettings,
+    *,
     signing_key: str,
     token: str,
     query: str,
@@ -1274,7 +1283,13 @@ def run_search(settings: WebToolSettings, params: Mapping[str, object]) -> dict[
     )
     signing_key = approvals.read_secret_file(settings.token_key_file, "token signing")
     granted = enforce_search_authorization(
-        settings, signing_key, token, query, max_results, constraints, now
+        settings,
+        signing_key=signing_key,
+        token=token,
+        query=query,
+        max_results=max_results,
+        constraints=constraints,
+        now=now,
     )
     # The single use is spent between admission and the request, the way
     # `tools/images.py` spends a generation grant: a replay meets the grants
@@ -1286,11 +1301,11 @@ def run_search(settings: WebToolSettings, params: Mapping[str, object]) -> dict[
     search_id = approvals.base64url_encode(os.urandom(9))
     rendered, issued = render_search_results(
         results,
-        provider.name,
-        signing_key,
-        search_id,
-        int(now),
-        settings.result_lifetime_seconds,
+        provider_name=provider.name,
+        signing_key=signing_key,
+        search_id=search_id,
+        issued_at=int(now),
+        lifetime_seconds=settings.result_lifetime_seconds,
     )
     settings.open_search(
         search_id, settings.max_fetches, now + settings.result_lifetime_seconds, issued

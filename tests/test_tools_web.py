@@ -363,7 +363,12 @@ def test_the_rendered_reply_matches_the_pattern_the_page_rewrites(harness: Harne
         for index in range(2)
     )
     rendered, issued = web_tools.render_search_results(
-        results, "searxng", "a signing key", "search-id", int(time.time()), 900
+        results,
+        provider_name="searxng",
+        signing_key="a signing key",
+        search_id="search-id",
+        issued_at=int(time.time()),
+        lifetime_seconds=900,
     )
     assert len(issued) == 2
     result_field = re.compile(

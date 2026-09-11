@@ -166,8 +166,8 @@ def build_web_tool_settings(
         searxng=web_tools.SearxngProvider(
             profile.searxng_url,
             profile.primary_category or "",
-            profile.fallback_category or "",
-            profile.minimum_results or 1,
+            fallback_category=profile.fallback_category or "",
+            minimum_results=profile.minimum_results or 1,
         ),
         max_results=profile.max_results,
         max_fetches=profile.max_fetches,
