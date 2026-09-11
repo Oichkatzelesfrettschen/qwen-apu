@@ -755,3 +755,82 @@ def test_hazard_watcher_treats_a_stream_that_ended_as_uncovered(tmp_path: Path) 
     assert not watcher.armed
     assert watcher.reason is not None
     assert "stopped answering" in watcher.reason
+
+
+@shell_required
+def test_supervisor_ends_a_group_whose_leader_died_first(
+    tmp_path: Path, runtime_root: RuntimePaths, leased_port: int
+) -> None:
+    """A leader that exits leaving children leaves them holding the device.
+
+    llama-server in router mode spawns one child per loaded model, so the
+    leader's own departure proves nothing about what still submits. The leader
+    here starts one background process and exits immediately, which is the
+    shape where a proof bound to the leader alone answers absent while the
+    group runs on.
+    """
+    hazard_source = tmp_path / "kernel.log"
+    hazard_source.write_text("", encoding="utf-8")
+    child_record = tmp_path / "grandchild.pid"
+    plan = plan_payload(
+        runtime_root,
+        leased_port,
+        tmp_path / "argv.txt",
+        serve=False,
+        argv=[SH, "-c", 'sleep 300 & printf "%s\n" "$!" > "$1"; exit 0', "sh", str(child_record)],
+        readiness_deadline_s=5.0,
+    )
+    supervisor = launch_supervisor(runtime_root, tmp_path, plan, hazard_source)
+    grandchild = 0
+    try:
+        assert supervisor.wait(timeout=FIXTURE_DEADLINE_SECONDS) == 1
+        grandchild = int(child_record.read_text(encoding="ascii").strip())
+    finally:
+        supervisor.kill()
+        if grandchild and read_start_time(grandchild) is not None:
+            os.kill(grandchild, signal.SIGKILL)
+            pytest.fail(f"the leader's group survived its leader: pid {grandchild}")
+    assert read_start_time(grandchild) is None
+    failed = await_state(runtime_root, "failed", "guard_observation", OBSERVATION_DEADLINE_SECONDS)
+    assert failed.restoration_failures == ()
+
+
+@shell_required
+def test_terminate_ends_a_group_whose_leader_was_already_reaped(tmp_path: Path) -> None:
+    """A reaped leader's own identity answers absent while its group runs on.
+
+    An exited child keeps its `/proc/<pid>/stat` until its parent collects it,
+    so a leader-bound proof reads a zombie as present and happens to signal the
+    group anyway. Reaping the leader first removes that accident: the leader is
+    gone by every measure and the surviving member is what the group
+    enumeration has to find.
+    """
+    child_record = tmp_path / "grandchild.pid"
+    owned = spawn(
+        [SH, "-c", 'sleep 300 & printf "%s\n" "$!" > "$1"; exit 0', "sh", str(child_record)],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+        cwd=tmp_path,
+        stdout_path=tmp_path / "out.log",
+        stderr_path=tmp_path / "err.log",
+    )
+    assert owned.process is not None
+    owned.process.wait(timeout=FIXTURE_DEADLINE_SECONDS)
+    grandchild = int(
+        await_condition(
+            "guard_ready",
+            FIXTURE_DEADLINE_SECONDS,
+            lambda: child_record.read_text(encoding="ascii").strip() or None,
+            "the leader never published its child's pid",
+        )
+    )
+    assert not owned.is_same_process()
+    assert read_start_time(grandchild) is not None
+    try:
+        termination = terminate(owned, grace_s=2.0)
+        assert termination.absent, termination.render()
+        assert termination.survivors == ()
+        assert read_start_time(grandchild) is None
+    finally:
+        if read_start_time(grandchild) is not None:
+            os.kill(grandchild, signal.SIGKILL)
+        owned.close()

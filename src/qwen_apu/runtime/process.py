@@ -12,9 +12,16 @@ and the search instance.
 
 `terminate` signals the group rather than the pid, because a child that spawns
 its own children -- llama-server in router mode spawns one per loaded model --
-leaves them orphaned when only the leader is signalled. SIGTERM, a grace of
-2.0 s matching `monitor-qwen-runtime.sh`'s SIGKILL grace, then SIGKILL, and the
-absence proof reads the start time back.
+leaves them orphaned when only the leader is signalled. A departed leader is
+exactly when that matters, so the group is enumerated rather than inferred
+from the leader: `group_members` reads every `/proc/<pid>/stat` whose process
+group equals the owned one and whose start time is at or after the leader's,
+which are the processes this spawn produced. The start-time floor is what
+keeps a recycled process-group id from drawing an unrelated group into the
+signal, the hazard the leader's own start-time comparison closes for the
+leader. SIGTERM, a grace of 2.0 s matching `monitor-qwen-runtime.sh`'s SIGKILL
+grace, then SIGKILL, and the absence proof requires the leader gone and the
+group empty.
 """
 
 from __future__ import annotations
@@ -138,6 +145,42 @@ class Owned:
                 pass
 
 
+def group_members(pgid: int, *, not_before: int) -> list[int]:
+    """Every live process in the group that this spawn could have produced.
+
+    A process group id is reused once its last member leaves, so membership
+    alone names whatever group now carries the number. The start-time floor is
+    the leader's own, and a descendant is created after its ancestor, so a
+    process in the group whose start time precedes the leader's belongs to the
+    recycled group rather than to this one.
+    """
+    members = []
+    self_pid = os.getpid()
+    for entry in Path("/proc").iterdir():  # appliance-path: named
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == self_pid:
+            continue
+        try:
+            text = (entry / "stat").read_text(encoding="ascii")
+        except OSError:
+            continue
+        tail = text.rsplit(")", 1)
+        if len(tail) != 2:
+            continue
+        fields = tail[1].split()
+        if len(fields) < 20:
+            continue
+        try:
+            if int(fields[2]) != pgid or int(fields[19]) < not_before:
+                continue
+        except ValueError:
+            continue
+        members.append(pid)
+    return members
+
+
 @dataclass(frozen=True)
 class Termination:
     """What one termination did and what it proved afterwards."""
@@ -146,12 +189,14 @@ class Termination:
     waited_seconds: float
     exit_status: int | None
     absent: bool
+    survivors: tuple[int, ...] = ()
 
     def render(self) -> str:
+        survivors = ",".join(str(pid) for pid in self.survivors) or "-"
         return (
             f"signalled={self.signalled} waited_seconds={self.waited_seconds:.3f} "
             f"exit_status={'-' if self.exit_status is None else self.exit_status} "
-            f"absent={'yes' if self.absent else 'no'}"
+            f"absent={'yes' if self.absent else 'no'} survivors={survivors}"
         )
 
 
@@ -229,9 +274,7 @@ def spawn(
 
 
 def _signal_group(owned: Owned, number: int) -> bool:
-    """Signal the owned process group, once its identity still answers."""
-    if not owned.is_same_process():
-        return False
+    """Signal the owned process group, whose membership the caller has proved."""
     try:
         os.killpg(owned.pgid, number)
     except ProcessLookupError:
@@ -243,15 +286,24 @@ def _signal_group(owned: Owned, number: int) -> bool:
     return True
 
 
-def _await_absence(owned: Owned, limit_seconds: float) -> bool:
+def _survivors(owned: Owned) -> list[int]:
+    """The group members outliving one termination attempt, leader included."""
+    if owned.process is not None:
+        owned.process.poll()
+    remaining = group_members(owned.pgid, not_before=owned.start_time)
+    if owned.is_same_process() and owned.pid not in remaining:
+        remaining.append(owned.pid)
+    return remaining
+
+
+def _await_absence(owned: Owned, limit_seconds: float) -> list[int]:
     deadline = time.monotonic() + limit_seconds
     while True:
-        if owned.process is not None:
-            owned.process.poll()
-        if not owned.is_same_process():
-            return True
+        remaining = _survivors(owned)
+        if not remaining:
+            return []
         if time.monotonic() >= deadline:
-            return False
+            return remaining
         time.sleep(ABSENCE_POLL_SECONDS)
 
 
@@ -260,13 +312,13 @@ def terminate(owned: Owned, *, grace_s: float = TERMINATION_GRACE_SECONDS) -> Te
 
     SIGTERM reaches the group, the grace is the 2.0 s
     `monitor-qwen-runtime.sh` allows, SIGKILL follows where the group outlives
-    it, and the absence proof reads the start time back so a number reused
-    between the two signals is left alone.
+    it, and the absence proof requires the leader's start time gone and no
+    group member this spawn could have produced. A leader that exited leaving
+    children is the case the group enumeration exists for: its own identity
+    check answers absent while its children still hold the device.
     """
     started = time.monotonic()
-    if not owned.is_same_process():
-        if owned.process is not None:
-            owned.process.poll()
+    if not _survivors(owned):
         return Termination(
             signalled="none",
             waited_seconds=0.0,
@@ -275,7 +327,7 @@ def terminate(owned: Owned, *, grace_s: float = TERMINATION_GRACE_SECONDS) -> Te
         )
 
     _signal_group(owned, signal.SIGTERM)
-    if _await_absence(owned, grace_s):
+    if not _await_absence(owned, grace_s):
         return Termination(
             signalled="SIGTERM",
             waited_seconds=time.monotonic() - started,
@@ -284,10 +336,11 @@ def terminate(owned: Owned, *, grace_s: float = TERMINATION_GRACE_SECONDS) -> Te
         )
 
     _signal_group(owned, signal.SIGKILL)
-    absent = _await_absence(owned, grace_s)
+    survivors = _await_absence(owned, grace_s)
     return Termination(
         signalled="SIGKILL",
         waited_seconds=time.monotonic() - started,
         exit_status=owned.exit_status(),
-        absent=absent,
+        absent=not survivors,
+        survivors=tuple(survivors),
     )
