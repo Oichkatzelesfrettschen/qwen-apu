@@ -373,14 +373,152 @@ than a per-model offering, so the web and image lanes route on an unproven
 row until a 403 excludes it; the review button stays hidden until a claim
 ledger names a review model; image cancel and `/api/tools/image/review`
 have no route; the ten `remote/test-fallback-webui-*.mjs` and
-`webui/index.html` leave with their gate cells in Phase 10.
+`webui/index.html` leave with their gate cells at the cutover.
+
+## Phase 10: router-mode serving and the application supervisor
+
+The shadow pass read thirteen models from `GET /api/models` against one served
+checkpoint, because `qwen-apu serve --model` starts one model by registry id
+while the roster answered from `remote/models.tsv` alone. Four changes close
+that gap, and each one is an authority the previous pass assumed.
+
+| Component | Python authority | Shell authority it matches | Test |
+| --- | --- | --- | --- |
+| Router argv from the bundle | `runtime.serve.build_plan(router=True)` | `qwen-launch.sh` router branch, `run-qwen-capacity-server.sh` | `tests/test_runtime_serve.py` |
+| Preset subject selection | `runtime.policy.router_preflight_subject` | `qwen-launch.sh` largest-servable AWK | same |
+| Model readiness | `runtime.health.probe_served_models`, `serve`/`loading`/`ready` | -- (`/health` alone in the shell) | `tests/test_runtime_supervisor.py` |
+| Three preflights | `runtime.preflight.resolve_model`, `verify_signing_key`, `verify_deployment` | `model-memory-preflight.sh`, the session's key checks | `tests/test_runtime_preflight.py` |
+| Application ownership | `runtime.appliance` | `qwen-webui-session.sh` and `qwen-teardown.sh` | `tests/test_runtime_appliance.py` |
+| Roster and admission | `web.roster`, `web.chat` | `build-router-presets.sh` picker rules | `tests/test_web_gateway.py` |
+
+### Router mode reads the activated bundle whole
+
+`runtime.policy.build_launch_plan` already carried router mode: the argv is
+`--models-preset PRESET --models-max N --host --port --cors-origins`, the six
+per-checkpoint flags stay off it because `common_preset::merge` overwrites every
+section's key with the router's value, and `tests/test_runtime_policy.py`
+compares the whole argv with the shell's element by element. What Phase 10 adds
+is where the inputs come from. `serve --router` resolves the active deployment
+and takes five things from it: `router-presets.ini` under `--models-preset`,
+`ctx-checkpoints.tsv` as the checkpoint authority, `llama-server` as the
+identity the build guard measures, `q4k-policy.tsv` as the formulation authority
+(`legacy` where a bundle predates the file, the rule `qwen-launch.sh` applies
+when the preset is the bundle's own), and the web profile ledger through the
+preset's own markers. `--llama-server` is refused in router mode, because a
+server outside the bundle carries no artifact manifest the preset's checkpoint
+semantics were validated against.
+
+`build_launch_plan` checks the positional model path and depth in router mode as
+well, and `qwen-launch.sh` supplies the largest preset subject for both, so
+`router_preflight_subject` ports that selection: one `LLAMA_ARG_MODEL` per
+section, at most one `LLAMA_ARG_SPEC_DRAFT_MODEL`, and a draft pairing charged
+as the sum of both checkpoints, since `common_speculative_init_result` loads the
+draft as its own model beside the target. A preflight run against a smaller
+checkpoint would report headroom for a load that never happens.
+
+### Process health and model readiness are two states
+
+`state/runtime.json` gains `loading` and `ready` beside the `running` an earlier
+supervisor wrote, and carries `served_models` and `mode`. The supervisor
+publishes `loading` the moment it owns the child and `ready` only after
+`/health` reports `{"status": "ok"}` **and** `/v1/models` answers with a name.
+The distinction is what the shadow pass's fourth defect names: prompts sent into
+a server that had not loaded. `/health` reports that some checkpoint finished
+loading and names none, so a single-model launch requires the alias its own argv
+carries -- `--alias qwen-apu`, not the registry id, since the argv never gives
+the server that name -- and a router launch requires a parseable roster alone,
+because `--models-max 1` keeps one section resident and the rest unloaded by
+design.
+
+`served_model_names` accepts the OpenAI list form, a `{"models": [...]}` list,
+and a `/props` object naming `model_path`, `model_alias`, or `model`. Which of
+those the deployed server answers with at the pinned commit is a device
+observation this tree does not yet carry.
+
+`serve` without `--daemon` is the supervise loop, so it reaches `ready` and
+stays there. `--daemon` now waits for the detached supervisor to publish a
+record naming an owned child before it returns, which is exactly the claim
+`--daemon` makes; the previous form returned as soon as the relaunch was a
+session leader, so a held workload lock or a child that left at exec landed in a
+log file nobody read.
+
+### Three preflights, each leaving the tree untouched
+
+`runtime.preflight` gains the three decisions the shadow pass's command-side
+windows ended on. `resolve_model` resolves a registry id through
+`qwen_apu.install.models`, which is the one authority that turns a row and its
+artifact pin into an install destination, requires the result inside the model
+root, and compares bytes and SHA-256 against `remote/model-artifacts.tsv`; a
+derived row carries no publisher pin, so its absence is recorded as
+`unrecorded` rather than refused. `verify_signing_key` calls
+`tools.approvals.signing_key_digest`, which is the rule set a grant itself
+meets: a regular file this user owns, no group or other bit, nonempty, UTF-8
+text after the strip the HMAC key is taken from. Hexadecimal is not among those
+rules, and the shadow window that wrote random bytes established the UTF-8
+requirement from the other side. `verify_deployment` resolves and verifies the
+bundle under the activation lock and names any member the bundle is missing.
+
+`serve` runs all three (the signing key where the file exists, since the
+ordinary serving path signs no grant) and the gateway assembly runs the key and
+the deployment before it writes anything.
+
+### One application supervisor
+
+`runtime.appliance` owns the whole application. The router server keeps
+`runtime.supervisor`, which holds the Vulkan workload lease, the deployment
+lock, and `state/runtime.json`, and runs as an ordinary child of the appliance
+rather than a thread, because it installs SIGTERM and SIGINT handlers and
+`signal.signal` admits those on the main thread alone; `--daemon` is absent, so
+the appliance stays the parent and `Owned.has_exited` and `terminate` answer for
+it. The gateway runs in this process. The image worker and SearXNG join as
+children where their profile arms them, each spawned from an argv list.
+
+`state/appliance.json` is published whole through a same-directory temporary
+leaf and `os.replace` at mode 0600, carrying each child's pid, process group,
+start time, `argv[0]`, and listener or socket identity, the deployment the
+router resolved, and the readiness the supervisor published. `appliance stop`
+signals only a child whose recorded pid still carries the recorded start time,
+retains the primary failure apart from cleanup residue, and matches no process
+by name; tmux and `pkill` are absent from the path.
+
+### The roster is a join, and chat is admitted
+
+`web/roster.py` builds `GET /api/models` from three authorities: the activated
+deployment's preset sections state what this bundle is configured to serve, the
+live upstream's `/v1/models` states what is resident, and the registry supplies
+tier, role, depth, and projector. Each entry carries `state` in `ready`,
+`loading`, `unavailable`, `quarantined`, or `refused`, so a row names the
+authority that left it out. `?research=1` widens the candidate set to the whole
+registry and states why each unserved row is absent from the ordinary answer.
+
+`POST /api/chat` and `POST /api/models/tokenize` refuse a model the live router
+does not admit with 409 and the reason. Router mode admits every preset section,
+including those no load has made resident, since residency bounds latency rather
+than admission; the standalone launch admits the checkpoint its argv named under
+either the registry id or the alias. After the exchange, the model the answer
+states is compared with the model the request selected and a difference returns
+502: the streamed path reads the first SSE frame before any byte reaches the
+browser, because a started chunked body leaves truncation as the only remaining
+signal.
+
+### What Phase 10 leaves to the device
+
+- The payload shape `/v1/models` answers with on the deployed llama-server at
+  the pinned commit, and whether `--models-max 1` surfaces a `loading` section
+  observably; the probe accepts three shapes and the device reading selects one.
+- `qwen-apu appliance serve` end to end with a real checkpoint, the router
+  preset of a real bundle, and the image and search children armed.
+- Router decode rates per section, which belong to a sweep rather than to this
+  pass.
 
 ## Order of the remaining phases
 
 9. Shadow deployment on alternate loopback ports (first pass recorded in
    `docs/handoff/shadow-deployment-20260911.md`; the split page and the
    document routes need a second pass).
-10. Cutover, shell deletion in batches, Makefile removal last.
+10. Router-mode serving, readiness states, the preflights, the application
+    supervisor, and the roster join (recorded above).
+11. Cutover, shell deletion in batches, Makefile removal last.
 
 ## Size receipt at Phase 1 (scc)
 
