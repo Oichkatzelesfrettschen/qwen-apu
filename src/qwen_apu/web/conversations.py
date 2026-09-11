@@ -357,10 +357,11 @@ def _rename(settings: ConversationSettings, request: Request) -> Response:
     conversation_id = _identifier(request)
     payload = _body(request)
     if "mode" in payload:
-        raise DocumentRefused(
+        raise RequestRefused(
+            409,
             "a conversation never changes mode after creation: a saved conversation "
             "lives in the database and a temporary one lives in memory and under "
-            "tmp/conversations/, so a mode change is a move rather than an update"
+            "tmp/conversations/, so a mode change is a move rather than an update",
         )
     if "title" not in payload:
         raise DocumentRefused("the request body names no title")

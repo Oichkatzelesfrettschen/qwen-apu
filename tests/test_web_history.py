@@ -520,7 +520,7 @@ def test_a_patch_carrying_mode_is_refused_for_either_home(tmp_path: Path) -> Non
             f"{CONVERSATIONS_PATH}/{identifier}",
             {"title": "renamed", "mode": "saved"},
         )
-        assert refusal.status == 400
+        assert refusal.status == 409
         assert "never changes mode" in str(decoded(refusal)["error"])
     # The same PATCH without the key renames.
     renamed = call(
