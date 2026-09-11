@@ -356,15 +356,24 @@ def _digest_file(path: Path, block: int = 1024 * 1024) -> str:
 
 
 def _publish(staging: Path, stored: Path) -> None:
-    """Move the staging directory into the store, keeping the copy that arrives first."""
+    """Move the staging directory into the store, keeping the published copy.
+
+    `os.rename` refuses a non-empty target, which is the ordinary case for a
+    content-addressed store: a second extraction of the same bytes lost the
+    race and drops its own copy. A target holding no `<digest>.json` published
+    nothing -- a run killed between `mkdir` and the record write leaves exactly
+    that -- so the partial directory goes and the rename runs again, which
+    keeps a crash from making one digest permanently unreadable.
+    """
     stored.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.rename(staging, stored)
+        return
     except OSError:
-        # A second extraction of the same bytes finished first. Its directory
-        # holds the same digests this one wrote, so the loser drops its copy.
-        if not stored.is_dir():
-            raise
+        if (stored / f"{stored.name}.json").is_file():
+            return
+    shutil.rmtree(stored, ignore_errors=True)
+    os.rename(staging, stored)
 
 
 def _kill_group(process: subprocess.Popen[bytes]) -> None:

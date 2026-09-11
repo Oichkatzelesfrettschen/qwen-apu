@@ -55,6 +55,7 @@ from qwen_apu.tools.documents import (
     DocumentRefused,
     DocumentService,
     DocumentSettings,
+    _publish,
     handle_record,
     handle_search,
     handle_upload,
@@ -588,6 +589,37 @@ def test_a_second_extraction_of_the_same_bytes_answers_from_the_store(
     ).extract(FIXTURES / "notes.md", "text/markdown")
     assert second.sha256 == first.sha256
     assert second.chunks == first.chunks
+
+
+def test_a_partial_store_directory_is_replaced_rather_than_treated_as_published(
+    service: DocumentService, settings: DocumentSettings
+) -> None:
+    """A run killed before its record write leaves a directory that publishes nothing."""
+    digest = hashlib.sha256(fixture("rows.csv")).hexdigest()
+    # A non-empty directory is what makes the rename refuse; an empty one the
+    # kernel renames over, so the partial run leaves its chunk directory here.
+    (settings.store() / digest / "chunks").mkdir(parents=True)
+    (settings.store() / digest / "chunks" / "1.txt").write_text("partial", encoding="utf-8")
+    record = service.extract(FIXTURES / "rows.csv", "text/csv")
+    assert record.sha256 == digest
+    assert service.record(digest).detected_format == "csv"
+    assert service.search(digest, "north")
+
+
+def test_a_lost_publication_race_keeps_the_published_copy(
+    service: DocumentService, settings: DocumentSettings, tmp_path: Path
+) -> None:
+    """A published directory under the digest wins and the loser keeps its own copy."""
+    first = service.extract(FIXTURES / "rows.csv", "text/csv")
+    stored = settings.store() / first.sha256
+    (stored / "marker").write_text("the published copy", encoding="utf-8")
+    staging = tmp_path / "staging"
+    (staging / "chunks").mkdir(parents=True)
+    (staging / f"{first.sha256}.json").write_text("{}", encoding="utf-8")
+    _publish(staging, stored)
+    assert (stored / "marker").is_file()
+    assert (stored / f"{first.sha256}.json").read_text(encoding="utf-8") != "{}"
+    assert staging.is_dir()
 
 
 def test_every_record_names_what_the_isolation_probe_established(
