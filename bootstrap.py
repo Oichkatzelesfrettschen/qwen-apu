@@ -46,6 +46,9 @@ def main() -> int:
             f"this interpreter is {sys.version.split()[0]}"
         )
     tree = Path(__file__).resolve().parent
+    # Bytecode for the checkout's own modules lands under the root rather
+    # than beside the sources, which keeps the checkout untouched.
+    sys.dont_write_bytecode = True
     sys.path.insert(0, str(tree / SRC))
     from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError  # noqa: PLC0415
 
@@ -142,6 +145,7 @@ def link_source_tree(venv_dir: Path, python: Path, tree: Path) -> None:
         f"#!{python}\nimport os\nimport sys\n"
         f"os.environ.setdefault('QWEN_HOME', {str(venv_dir.parent)!r})\n"
         f"os.environ.setdefault('QWEN_TREE_ROOT', {str(tree)!r})\n"
+        f"sys.pycache_prefix = {str(venv_dir.parent / 'cache' / 'pycache')!r}\n"
         f"from {PACKAGE}.cli import main\nsys.exit(main())\n",
         encoding="utf-8",
     )
