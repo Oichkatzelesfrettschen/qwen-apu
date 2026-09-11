@@ -50,10 +50,17 @@ belong to the second class.
 ├── models/              immutable fetched checkpoints, pinned by download-*.sh
 ├── deployments/         immutable deployment bundles and deployment-current
 ├── state/               mutable application state, the session directory
+├── artifacts/           persistent user-visible generated outputs, content-addressed
 ├── cache/               disposable caches (build, gate, pip, ryzenadj-build)
 ├── tmp/                 process-lifetime scratch
+├── logs/                bounded operational logs
+├── venv/                the qwen-apu Python environment bootstrap.py creates
 └── results/             measurement outputs a harness names by label
 ```
+
+The deletion preflight reads `venv/` and `logs/` as reconstructible beside
+`bin/`, `opt/`, `cache/`, and `tmp/`, and expands `artifacts/` the way it
+expands `results/`: every child is one protected object.
 
 `remote/qwen-home.sh paths` prints every declared name with its value, and
 `remote/qwen_home.py` resolves the same root for a python child.

@@ -391,7 +391,7 @@ plan_rows() {
             manifest.tsv | .qwen-runtime-root)
                 printf 'declared\t%s\n' "$plan_entry"
                 ;;
-            results | models)
+            results | models | artifacts)
                 plan_expand "$plan_entry" acquisition
                 ;;
             deployments)
@@ -400,7 +400,7 @@ plan_rows() {
             state)
                 printf 'transient-state\t%s\n' "$plan_entry"
                 ;;
-            bin | opt | cache | tmp)
+            bin | opt | cache | tmp | venv | logs)
                 printf 'reconstructible\t%s\n' "$plan_entry"
                 ;;
             *)

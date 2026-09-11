@@ -1,0 +1,39 @@
+name: python control plane
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  python-control-plane:
+    name: python-control-plane
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the ratchet's tool set
+        run: pip install ruff mypy pytest
+
+      - name: Run the ratchet, lint, type check, and test suite
+        env:
+          PYTHONPATH: src
+        run: python -m qwen_apu.ci

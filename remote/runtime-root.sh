@@ -63,7 +63,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 action=$1
 
 runtime_schema_version=1
-layout_directories='bin opt models deployments state cache tmp results'
+layout_directories='bin opt models deployments state cache tmp results venv artifacts logs'
 
 sha256_of() {
     sha256sum -- "$1" | cut -d ' ' -f 1
