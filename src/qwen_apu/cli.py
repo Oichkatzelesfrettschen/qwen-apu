@@ -25,6 +25,7 @@ from qwen_apu.install import models as model_installer
 from qwen_apu.runtime import deployment, deployment_write
 from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError, render_paths
+from qwen_apu.web import assemble as gateway_assembly
 
 UNPORTED: dict[str, str] = {
     "verify": "remote/runtime-root.sh verify-layout, verify-components, verify-live",
@@ -117,6 +118,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="research arm on a host without RADV; the appliance keeps the check",
     )
     sub.add_parser("stop", help="stop the supervised server and prove absence")
+    gateway = sub.add_parser("gateway", help="serve the one-origin browser gateway")
+    gateway.add_argument("--port", type=int, default=gateway_assembly.DEFAULT_GATEWAY_PORT)
+    gateway.add_argument(
+        "--upstream-port", type=int, default=gateway_assembly.DEFAULT_UPSTREAM_PORT
+    )
+    gateway.add_argument("--bind-host", default="127.0.0.1")
+    gateway.add_argument("--web-profile", default=gateway_assembly.DEFAULT_WEB_PROFILE)
+    gateway.add_argument("--image-profile", default="")
+    gateway.add_argument("--static", type=Path, default=None)
     status = sub.add_parser("status", help="runtime root binding and declared paths")
     status.add_argument("--json", action="store_true")
     sub.add_parser("doctor", help="prerequisites a user-space installer can only detect")
@@ -312,6 +322,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             return serving.serve(paths, request)
         if args.command == "stop":
             return serving.stop(paths)
+        if args.command == "gateway":
+            return gateway_assembly.run(
+                paths,
+                gateway_assembly.GatewayRequest(
+                    port=args.port,
+                    upstream_port=args.upstream_port,
+                    bind_host=args.bind_host,
+                    web_profile=args.web_profile,
+                    image_profile=args.image_profile,
+                    static_root=args.static,
+                ),
+            )
         if args.command == "doctor":
             return cmd_doctor(paths)
         if args.command == "paths":

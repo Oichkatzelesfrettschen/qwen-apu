@@ -1,0 +1,146 @@
+"""What the gateway reports about itself, the upstream, and the supervisor.
+
+`GET /api/health` is the probe a launcher runs before a page loads, so it
+passes the session gate unguarded and answers the two facts a readiness loop
+acts on: this process is up, and the upstream reports a serving model.
+`GET /api/status` adds what the supervisor last published to
+`state/runtime.json` and the pairing state an operator needs to reach the page.
+
+Every field is named here rather than serialized from a record: the launch
+plan the supervisor writes beside that record carries the profile environment
+whole, and `QWEN_WEB_TOKEN_KEY_FILE` and the appliance bearer live in exactly
+that environment. A fixed field list is what keeps a credential out of a
+response no matter what a future record gains.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Callable, Mapping
+from pathlib import Path
+
+from qwen_apu.engines.llama import LlamaClient, UpstreamRefused, collect
+from qwen_apu.runtime import state as runtime_state
+from qwen_apu.runtime.health import health_is_serving
+from qwen_apu.web.app import LOOPBACK_HOSTS
+from qwen_apu.web.auth import SessionGate
+from qwen_apu.web.http import Request, Response, Route
+
+# The record fields a browser reads. Every one names a process identity, a
+# deployment, or a timestamp; the launch plan, the profile environment, and
+# the signing key stay out of the answer by staying off this list.
+REPORTED_STATE_FIELDS: tuple[str, ...] = (
+    "state",
+    "server_pid",
+    "server_start_time",
+    "listener_inode",
+    "port",
+    "model_id",
+    "deployment",
+    "profile",
+    "primary_failure",
+    "started_utc",
+    "updated_utc",
+)
+
+
+def _start_time() -> int:
+    """This process's start time, the identity a teardown compares before a signal."""
+    try:
+        text = Path("/proc/self/stat").read_text(encoding="ascii")  # appliance-path: named
+    except OSError:
+        return 0
+    return int(text.rsplit(")", 1)[1].split()[19])
+
+
+class StatusService:
+    """The gateway's own health and status routes."""
+
+    def __init__(
+        self,
+        client_factory: Callable[[], LlamaClient],
+        *,
+        runtime_record: Path,
+        session_gate: SessionGate | None = None,
+        approval_identity: Mapping[str, str] | None = None,
+    ) -> None:
+        self.client_factory = client_factory
+        self.runtime_record = runtime_record
+        self.session_gate = session_gate
+        # What the session script read from the broker's /health and failed
+        # the launch on: profile, image_profile, provider, signing_key_sha256.
+        self.approval_identity = dict(approval_identity or {})
+
+    def routes(self) -> tuple[Route, ...]:
+        return (
+            Route.make("GET", "/api/health", self.health),
+            Route.make("GET", "/api/status", self.status),
+        )
+
+    def upstream_report(self) -> dict[str, object]:
+        """The upstream's own answer, reduced to what a page acts on.
+
+        `health_is_serving` reads the status field rather than the 200:
+        llama-server answers `{"status": "loading model"}` with a 200 while it
+        streams a checkpoint in, and a page that reads the code alone sends a
+        completion into a server that holds no model yet.
+        """
+        client = self.client_factory()
+        try:
+            answer = client.health()
+            body = collect(answer).decode("utf-8", "replace")
+        except UpstreamRefused as error:
+            return {"reachable": False, "serving": False, "reason": str(error)}
+        return {
+            "reachable": True,
+            "serving": answer.status == 200 and health_is_serving(body),
+            "status": answer.status,
+            "port": client.binding.port,
+            "bound_to_process": client.binding.bound_to_process,
+        }
+
+    def health(self, request: Request) -> Response:
+        """Answer the launcher's own liveness probe, ahead of the page.
+
+        A shell probe runs this before a browser exists, so a request from
+        loopback meets the Host guard alone: no session cookie is available to
+        a caller that never loaded a page. A peer outside `LOOPBACK_HOSTS`
+        presents a session, because every field here is a process identity --
+        this pid, the upstream port, whether the exchange binds to a process --
+        that a LAN reader holds no claim on. authorize-broker.py's
+        `handle_health` applies the same rule, and it reads the peer address
+        the kernel accepted rather than the caller-controlled Host header: a
+        LAN peer that spells `Host: 127.0.0.1` against an exposed listener
+        still carries its own routable source address.
+        """
+        if request.client_address not in LOOPBACK_HOSTS and self.session_gate is not None:
+            self.session_gate.require_session(request)
+        return Response.json({"gateway": {"pid": os.getpid()}, "upstream": self.upstream_report()})
+
+    def status(self, request: Request) -> Response:
+        record = runtime_state.read(self.runtime_record)
+        reported: dict[str, object] = {}
+        if record is not None:
+            payload = record.to_json()
+            reported = {name: payload[name] for name in REPORTED_STATE_FIELDS}
+        pairing: dict[str, object] = {}
+        if self.session_gate is not None:
+            pairing = {
+                # The code itself stays in its 0600 file; the answer states
+                # whether one is outstanding and how many attempts remain.
+                "paired": not self.session_gate.secret_path.exists(),
+                "attempts_spent": self.session_gate.attempts,
+                "live_sessions": self.session_gate.live_sessions(),
+            }
+        return Response.json(
+            {
+                "gateway": {
+                    "pid": os.getpid(),
+                    "start_time": _start_time(),
+                    "pairing": pairing,
+                    "approvals": self.approval_identity,
+                },
+                "upstream": self.upstream_report(),
+                "runtime": reported,
+            }
+        )
