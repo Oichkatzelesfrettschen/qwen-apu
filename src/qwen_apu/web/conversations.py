@@ -26,6 +26,7 @@ identifiers whatever order a later edit puts the tuple in.
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import threading
 import time
 from collections.abc import Callable
@@ -279,6 +280,15 @@ def _answer(settings: ConversationSettings, request: Request, work: Work) -> Res
     The check runs ahead of every lookup, so a present identifier and an absent
     one answer 401 alike and the routes are no existence oracle for a caller
     holding no session.
+
+    `sqlite3.Error` reaches here uncaught where the database file or its
+    directory refuses a write -- a read-only mode bit, a full filesystem, a
+    lock another process holds past the busy timeout -- and every write in
+    `web/history.py` runs inside `BEGIN IMMEDIATE` with its own rollback, so
+    the transaction that failed leaves no partial row behind. Answering 500
+    here is what keeps that failure a status the caller reads rather than a
+    dropped connection that leaves the caller unable to tell a failed save
+    from a save the network lost.
     """
     verdict = settings.session_check(request)
     if not verdict.admitted:
@@ -291,6 +301,10 @@ def _answer(settings: ConversationSettings, request: Request, work: Work) -> Res
         return Response.json({"error": str(refused)}, status=400)
     except RequestRefused as refusal:
         return Response.json({"error": refusal.message}, status=refusal.status)
+    except sqlite3.Error as storage_failure:
+        return Response.json(
+            {"error": f"the conversation store refused the write: {storage_failure}"}, status=500
+        )
 
 
 def _listing(settings: ConversationSettings, request: Request) -> Response:
