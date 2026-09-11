@@ -6,6 +6,7 @@ on:
       - opened
       - synchronize
       - reopened
+      - ready_for_review
   push:
     branches:
       - main
@@ -20,6 +21,7 @@ permissions:
 
 jobs:
   clone-local:
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft && 'draft-targeted' || 'clone-local' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -63,7 +65,8 @@ jobs:
           fast_status=3
           echo 'full_gate_ran=false' >> "$GITHUB_OUTPUT"
           echo 'cache_promoted=false' >> "$GITHUB_OUTPUT"
-          if test "${{ github.event_name }}" = pull_request; then
+          if test "${{ github.event_name }}" = pull_request &&
+            test "${{ github.event.pull_request.draft }}" = true; then
             git diff --name-only \
               "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}" \
               | sort -u > "$RUNNER_TEMP/qwen-changed-files"
@@ -91,25 +94,21 @@ jobs:
               case $source_run_id:$source_run_attempt in
                 *[!0-9:]* | :* | *:) fast_status=3 ;;
                 *)
-                  case $source_gate_kind in
-                    targeted)
-                      echo 'main_gate_reuse=targeted'
-                      ;;
-                    exhaustive)
-                      import_root="$RUNNER_TEMP/qwen-pr-gate-cache-import"
-                      artifact_name="repository-gate-cache-$source_run_id-$source_run_attempt"
-                      if gh run download "$source_run_id" \
-                        --name "$artifact_name" --dir "$import_root" &&
-                        test -d "$import_root/cells"; then
-                        mkdir -p "$RUNNER_TEMP/qwen-gate-cache/cells"
-                        cp -a "$import_root/cells/." "$RUNNER_TEMP/qwen-gate-cache/cells/"
-                        echo 'cache_promoted=true' >> "$GITHUB_OUTPUT"
-                      else
-                        fast_status=3
-                      fi
-                      ;;
-                    *) fast_status=3 ;;
-                  esac
+                  if test "$source_gate_kind" = exhaustive; then
+                    import_root="$RUNNER_TEMP/qwen-pr-gate-cache-import"
+                    artifact_name="repository-gate-cache-$source_run_id-$source_run_attempt"
+                    if gh run download "$source_run_id" \
+                      --name "$artifact_name" --dir "$import_root" &&
+                      test -d "$import_root/cells"; then
+                      mkdir -p "$RUNNER_TEMP/qwen-gate-cache/cells"
+                      cp -a "$import_root/cells/." "$RUNNER_TEMP/qwen-gate-cache/cells/"
+                      echo 'cache_promoted=true' >> "$GITHUB_OUTPUT"
+                    else
+                      fast_status=3
+                    fi
+                  else
+                    fast_status=3
+                  fi
                   ;;
               esac
             fi
