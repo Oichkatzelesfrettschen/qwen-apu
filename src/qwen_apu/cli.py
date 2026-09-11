@@ -27,7 +27,7 @@ from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError, render_paths
 from qwen_apu.web import assemble as gateway_assembly
 from qwen_apu.web import browser_import
-from qwen_apu.web.history import ConversationStore
+from qwen_apu.web.history import ConversationStore, HistoryError
 
 UNPORTED: dict[str, str] = {
     "verify": "remote/runtime-root.sh verify-layout, verify-components, verify-live",
@@ -398,7 +398,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except RuntimeRootError as error:
         print(f"qwen-apu: {error}", file=sys.stderr)
         return 2
-    except (ValueError, RuntimeError, browser_import.BrowserExportRefused) as error:
+    except (ValueError, RuntimeError, HistoryError) as error:
         print(f"qwen-apu: {error}", file=sys.stderr)
         return 1
     except subprocess.CalledProcessError as error:
