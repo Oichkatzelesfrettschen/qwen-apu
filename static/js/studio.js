@@ -17,7 +17,6 @@ import {
 
 const IMAGE_GRANT_CONTEXT = 'qwen-image-generate-v1';
 const IMAGE_TOOL_ID = 'image_generation';
-const MATRIX_ROUTE = '/api/tools';
 const GENERATE_ROUTE = '/api/tools/image/generate';
 const STATUS_ROUTE = '/api/tools/image/status';
 const CANCEL_ROUTE = '/api/tools/image/cancel';
@@ -78,7 +77,7 @@ async function postJson(route, body, signal) {
 // -- the profile ----------------------------------------------------------
 
 export async function readBounds(languageProfile) {
-  const response = await fetch(`${MATRIX_ROUTE}?model=${encodeURIComponent(languageProfile)}`);
+  const response = await fetch('/api/tools?model=' + encodeURIComponent(languageProfile));
   recordSessionStatus(response.status);
   if (!response.ok) throw new Error(`the tool matrix answered HTTP ${response.status}`);
   const matrix = await response.json();
