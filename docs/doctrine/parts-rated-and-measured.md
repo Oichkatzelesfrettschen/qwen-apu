@@ -72,12 +72,14 @@ through a table entry, and `/proc/cpuinfo` reads it back from aperf/mperf.
 The engine clock has three values and they answer different questions: the
 table states which steps exist, hwmon's `freq1_input` states what an idle
 machine delivers, and the census runs state what a decode window holds. The
-operating point every campaign runs at is named `manual-gfx1100-fclk933`:
+appliance runs at `power_dpm_force_performance_level=auto`, the firmware's
+whole range, with the server at nice 19, and no launch pins a level. The
+census runs were held at a forced point named `manual-gfx1100-fclk933`:
 `power_dpm_force_performance_level=manual` with `pp_dpm_sclk` at level 2 and
-`pp_dpm_mclk` at level 2, which delivers 1100 MHz GFXCLK on every sample and
-holds FCLK at 933 MHz as both hard minimum and soft maximum. It is the
-highest commandable graphics state paired with the highest fabric state the
-firmware honors as a hard minimum, and a maximum of neither clock table.
+`pp_dpm_mclk` at level 2, which delivered 1100 MHz GFXCLK on every sample and
+held FCLK at 933 MHz as both hard minimum and soft maximum. That point is the
+measured state those records were taken under, retained as evidence, and the
+clock record beside each later arm states the level the firmware delivered.
 
 `high` and `profile_peak` are invalid for inference on this machine. Both
 pin GFXCLK at 1100 MHz and drop delivered FCLK to 400 MHz, and the 2B
