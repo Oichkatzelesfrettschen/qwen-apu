@@ -470,3 +470,49 @@ def test_a_row_that_admits_no_call_states_no_bounds() -> None:
     listed = rows_of(answer(settings_for(image_profile=""), WEB_PROFILE))
     assert "bounds" not in listed["image_generation"]
     assert "bounds" not in listed["calculator"]
+
+
+def quarantined(
+    ledgers: matrix.Ledgers, subject: str, scope: str = "model", **fields: Any
+) -> matrix.Ledgers:
+    """One quarantine row over the tracked ledger's own shape, at `scope`."""
+    row = dataclasses.replace(
+        ledgers.quarantine[0],
+        id=f"{subject}-test",
+        scope=scope,
+        subject=subject,
+        **fields,
+    )
+    return dataclasses.replace(ledgers, quarantine=(*ledgers.quarantine, row))
+
+
+def test_a_model_scope_quarantine_refuses_every_row_whatever_the_tier() -> None:
+    """The ledger decides, so a row raised to candidate without losing its
+    quarantine entry still refuses."""
+    ledgers = quarantined(
+        replace_model(tracked(), TEXT_MODEL, tier="candidate"),
+        TEXT_MODEL,
+        failure_class="graph-assertion-abort",
+        reason_record="evidence/model-admission/universal-candidate-ladder.md",
+    )
+    listed = rows_of(answer(settings_for(ledgers), TEXT_MODEL))
+    assert {row["state"] for row in listed.values()} == {str(matrix.ToolState.POLICY_REFUSED)}
+    reason = listed["calculator"]["reason"]
+    assert "remote/quarantine.tsv" in reason
+    assert "graph-assertion-abort" in reason
+    assert "evidence/model-admission/universal-candidate-ladder.md" in reason
+
+
+def test_a_profile_scope_quarantine_leaves_the_checkpoint_serving() -> None:
+    """A quarantined tuple excludes that geometry, and the picker still serves
+    the checkpoint under the tuple its registry row carries."""
+    ledgers = quarantined(tracked(), TEXT_MODEL, "profile")
+    listed = rows_of(answer(settings_for(ledgers), TEXT_MODEL))
+    assert listed["calculator"]["state"] == str(matrix.ToolState.AVAILABLE)
+
+
+def test_the_tracked_ledger_carries_its_quarantine_rows() -> None:
+    """`Ledgers.load` reads the fourth ledger, so a live gateway refuses from it."""
+    rows = tracked().quarantine
+    assert rows, "the tracked ledger loaded no quarantine row"
+    assert {row.scope for row in rows} <= {"model", "profile"}
