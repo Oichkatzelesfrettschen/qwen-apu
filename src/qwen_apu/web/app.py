@@ -286,12 +286,24 @@ class GatewayConfig:
     exposure: str = ""
     exposure_name: str = ""
     origins: tuple[str, ...] = ()
+    # Bind 127.0.0.1 beside `bind_host`, so a browser on the appliance itself
+    # reaches the page without going out to the LAN address. The port is
+    # shared, so both sockets answer the same routes and one `port` reads back;
+    # a port-zero bind names two different ephemeral ports and is refused.
+    loopback_alias: bool = False
     # The origins the served page may frame; the shell names the second
     # listener here, and the empty tuple leaves `frame-src 'none'`.
     frame_sources: tuple[str, ...] = ()
 
     def admitted_hosts(self) -> tuple[str, ...]:
         return admitted_hosts(self.exposure, self.exposure_name)
+
+    def bind_addresses(self) -> tuple[tuple[str, int], ...]:
+        """Every address this gateway listens on, the named bind first."""
+        addresses = [(self.bind_host, self.port)]
+        if self.loopback_alias and self.bind_host not in LOOPBACK_HOSTS:
+            addresses.append((DEFAULT_BIND_HOST, self.port))
+        return tuple(addresses)
 
     @property
     def binds_loopback(self) -> bool:
@@ -668,10 +680,18 @@ class Gateway:
         self.content_security_policy = content_security_policy(
             self.static.index(), config.frame_sources
         )
-        self._server = _GatewayServer((config.bind_host, config.port), _Handler, self)
+        addresses = config.bind_addresses()
+        if len(addresses) > 1 and config.port == 0:
+            raise ValueError(
+                "a loopback alias shares one port with the named bind, and port zero "
+                "names a different ephemeral port per socket"
+            )
+        self._servers = tuple(_GatewayServer(address, _Handler, self) for address in addresses)
+        self._server = self._servers[0]
         self._lock = threading.Lock()
         self._on_shutdown = tuple(on_shutdown)
         self._serving = False
+        self._threads: tuple[threading.Thread, ...] = ()
 
     @property
     def port(self) -> int:
@@ -680,8 +700,21 @@ class Gateway:
         return int(address[1])
 
     def serve_forever(self) -> None:
+        """Accept on every bound address, the named bind on the caller's thread.
+
+        A second socket runs its accept loop on a thread of its own, so the
+        caller's own blocking semantics stay what a single-bind gateway gave
+        it and `shutdown` ends both loops.
+        """
+        extra = tuple(
+            threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1})
+            for server in self._servers[1:]
+        )
         with self._lock:
             self._serving = True
+            self._threads = extra
+        for thread in extra:
+            thread.start()
         try:
             self._server.serve_forever(poll_interval=0.1)
         finally:
@@ -690,8 +723,12 @@ class Gateway:
 
     def shutdown(self) -> None:
         with self._lock:
-            if self._serving:
-                self._server.shutdown()
-            self._server.server_close()
+            for server in self._servers:
+                if self._serving:
+                    server.shutdown()
+                server.server_close()
+            for thread in self._threads:
+                thread.join(timeout=5)
+            self._threads = ()
             for hook in self._on_shutdown:
                 hook()

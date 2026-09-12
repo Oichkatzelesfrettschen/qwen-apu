@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
 from pathlib import Path
 
-from qwen_apu.web.app import RequestRefused
+from qwen_apu.web.app import LOOPBACK_HOSTS, RequestRefused
 from qwen_apu.web.http import Request, Response, Route
 
 SESSION_COOKIE = "qwen_apu_session"
@@ -116,9 +116,16 @@ class SessionGate:
         secure_cookie: bool = False,
         lifetime_s: float = SESSION_LIFETIME_SECONDS,
         clock: Callable[[], float] = time.time,
+        loopback_open: bool = False,
     ) -> None:
         self.state_directory = state_directory
         self.secure_cookie = secure_cookie
+        # A launch that admits the appliance's own machine without pairing. The
+        # kernel decides the peer address of a loopback connection, so the
+        # caller is a process on this host, which already reads the state
+        # directory the pairing code and the session store live in; requiring
+        # a code from it buys nothing and costs the operator a paste.
+        self.loopback_open = loopback_open
         self.lifetime_s = lifetime_s
         self.clock = clock
         self.attempts = 0
@@ -224,7 +231,13 @@ class SessionGate:
         this store holds against an address it was never issued for. The
         appliance is the origin its page loads from and no proxy stands between
         them, so that address is the browser's own for the session's lifetime.
+
+        A launch that opened loopback admits a connection the kernel accepted
+        from this host without a cookie, which is what makes the page usable
+        from the appliance's own browser with nothing to paste.
         """
+        if self.loopback_open and request.client_address in LOOPBACK_HOSTS:
+            return
         token = self.presented_token(request)
         now = self.clock()
         with self._lock:

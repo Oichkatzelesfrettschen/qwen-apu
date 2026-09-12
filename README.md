@@ -42,18 +42,36 @@ records them in `state/appliance.json` under the runtime root, and ends them
 together with `qwen-apu appliance stop`. On the laptop, in its checkout:
 
 ```sh
-qwen-apu appliance serve --router --port 8080 --gateway-port 42069 \
-    --llama-ui-port 42072 --bind-host <lan address> \
+qwen-apu appliance serve --router --both --bind-host <lan address> \
+    --port 8080 --gateway-port 42069 --llama-ui-port 42072 \
     --image-profile image-sdxs-512-a --web-profile web-open
 qwen-apu appliance status
 qwen-apu appliance stop
 ```
 
-Open `http://<lan address>:42069/` in a browser. The page asks for a pairing
-code once: `qwen-apu status` on the laptop prints it, the first browser that
-presents it receives an HttpOnly session cookie, and the code is spent. There
-is no key to keep or paste after that; a restart mints a new code. One pairing
-admits both ports, because the cookie is scoped to the host.
+One flag states which peers a launch serves:
+
+- `--local` binds this machine alone and admits it, so a browser on the
+  laptop opens `http://127.0.0.1:42069/` with nothing to enter. The kernel
+  decides a loopback peer's address, so the caller is a process on the
+  appliance, which already reads the state directory the pairing code lives
+  in.
+- `--lan` binds the address `--bind-host` names and pairs every peer.
+- `--both` binds each, so the laptop's own browser needs nothing and a peer
+  on the network pairs once. Both addresses share one port and answer the
+  same routes.
+
+Open `http://<lan address>:42069/` in a browser. A peer on the network is
+asked for a pairing code once: `qwen-apu status` on the laptop prints it, the
+first browser that presents it receives an HttpOnly session cookie, and the
+code is spent. There is no key to keep or paste after that; a restart mints a
+new code. One pairing admits both ports, because the cookie is scoped to the
+host rather than to the port.
+
+The served pages hold no bearer token. llama.cpp's own page offers an API key
+field, and this appliance needs nothing in it: the router listens on loopback
+without a key and the gateway carries the credential as that cookie. A page
+that asks for a key is a page whose session is absent, which pairing answers.
 
 - `42069` is the shell: a rail with **Chat** and **Image**. Chat frames
   llama.cpp's own page, with its model picker, attachments, reasoning display,

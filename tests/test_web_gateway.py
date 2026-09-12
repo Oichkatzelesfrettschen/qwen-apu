@@ -1325,3 +1325,125 @@ def test_the_served_page_carries_the_configured_frame_source(tmp_path: Path) -> 
     finally:
         gateway.shutdown()
         thread.join(timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# Exposure modes: which peers a launch serves, and which of them pair
+# ---------------------------------------------------------------------------
+
+
+def _exposure_request(mode: str, host: str = "10.0.0.170") -> gateway_assembly.GatewayRequest:
+    return gateway_assembly.GatewayRequest(
+        port=42069, llama_ui_port=42072, bind_host=host, exposure_mode=mode
+    )
+
+
+def test_local_serves_this_host_alone_and_admits_it() -> None:
+    request = _exposure_request("local", host="127.0.0.1")
+    assert gateway_assembly.loopback_open(request) is True
+    assert gateway_assembly.loopback_alias(request) is False
+    assert gateway_assembly.page_origins(request) == ("http://127.0.0.1:42069",)
+
+
+def test_lan_pairs_every_peer_and_binds_one_address() -> None:
+    request = _exposure_request("lan")
+    assert gateway_assembly.loopback_open(request) is False
+    assert gateway_assembly.loopback_alias(request) is False
+    assert gateway_assembly.page_origins(request) == ("http://10.0.0.170:42069",)
+    assert gateway_assembly.llama_ui_origins(request) == ("http://10.0.0.170:42072",)
+
+
+def test_both_binds_each_address_and_admits_this_host_alone() -> None:
+    request = _exposure_request("both")
+    assert gateway_assembly.loopback_open(request) is True
+    assert gateway_assembly.loopback_alias(request) is True
+    assert gateway_assembly.page_origins(request) == (
+        "http://10.0.0.170:42069",
+        "http://127.0.0.1:42069",
+    )
+    assert gateway_assembly.llama_ui_origins(request) == (
+        "http://10.0.0.170:42072",
+        "http://127.0.0.1:42072",
+    )
+
+
+def test_a_launch_binding_no_second_listener_frames_nothing() -> None:
+    request = gateway_assembly.GatewayRequest(port=42069, bind_host="10.0.0.170")
+    assert gateway_assembly.llama_ui_origins(request) == ()
+
+
+def test_the_loopback_alias_answers_the_same_routes_on_both_addresses(
+    tmp_path: Path,
+) -> None:
+    """`--both` shares one port across two sockets, so either address serves."""
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    (static_root / "index.html").write_text("<!doctype html><p>shell</p>", encoding="utf-8")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    gateway = Gateway(
+        GatewayConfig(
+            static_root=static_root,
+            port=port,
+            bind_host="127.0.0.1",
+            loopback_alias=True,
+            origins=(),
+        ),
+        (),
+    )
+    # A loopback bind needs no alias, so the config adds none and one socket
+    # answers; the alias applies to a named LAN address this test cannot bind.
+    assert gateway.config.bind_addresses() == (("127.0.0.1", port),)
+    thread = threading.Thread(target=gateway.serve_forever)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", gateway.port, timeout=5)
+        connection.request("GET", "/", headers={"Host": f"127.0.0.1:{gateway.port}"})
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 200
+    finally:
+        gateway.shutdown()
+        thread.join(timeout=5)
+
+
+def test_a_loopback_alias_refuses_a_port_zero_bind(tmp_path: Path) -> None:
+    """Two sockets on port zero name two ephemeral ports, so the page's own
+    origin would differ per socket."""
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    (static_root / "index.html").write_text("<!doctype html><p>x</p>", encoding="utf-8")
+    with pytest.raises(ValueError, match="ephemeral port"):
+        Gateway(
+            GatewayConfig(
+                static_root=static_root, port=0, bind_host="10.0.0.170", loopback_alias=True
+            ),
+            (),
+        )
+
+
+def test_an_opened_loopback_admits_this_host_without_a_cookie(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    opened = auth_module.SessionGate(state, loopback_open=True)
+    opened.start()
+    opened.require_session(_request_from("127.0.0.1"))
+    closed = auth_module.SessionGate(state, loopback_open=False)
+    closed.start()
+    with pytest.raises(auth_module.RequestRefused, match="no live session"):
+        closed.require_session(_request_from("127.0.0.1"))
+    # An opened loopback admits this host alone; every other peer pairs.
+    with pytest.raises(auth_module.RequestRefused, match="no live session"):
+        opened.require_session(_request_from("10.0.0.51"))
+
+
+def _request_from(client_address: str) -> Request:
+    return Request(
+        method="GET",
+        path="/api/status",
+        query={},
+        headers={},
+        body=b"",
+        client_address=client_address,
+    )
