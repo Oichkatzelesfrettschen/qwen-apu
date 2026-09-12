@@ -338,6 +338,9 @@ def assemble_llama_ui(
         # The shell on the chat page's port frames this page, so that origin
         # is the one `frame-ancestors` admits.
         frame_ancestors=page_origin(request),
+        # Read once here rather than per request: a build that replaces the
+        # bundle restarts this listener.
+        script_sources=llama_ui.bundle_script_sources(assets),
         # The same gate the chat page's rail decides on, so a call parked from
         # llama.cpp's page is the call the operator sees there.
         tool_gate=gate,

@@ -193,6 +193,22 @@ class _InlineBlockReader(HTMLParser):
             self.styles.append(data.encode("utf-8"))
 
 
+def inline_sources(page: bytes) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The script and style hash sources one page's inline blocks carry.
+
+    Both the gateway's own page and the second listener's bundle derive their
+    policy from this reader, so a page whose inline blocks are known names
+    them by digest rather than admitting `'unsafe-inline'`.
+    """
+    reader = _InlineBlockReader()
+    reader.feed(page.decode("utf-8", "replace"))
+    reader.close()
+    return (
+        tuple(hash_source(block) for block in reader.scripts),
+        tuple(hash_source(block) for block in reader.styles),
+    )
+
+
 def hash_source(block: bytes) -> str:
     """One CSP `'sha256-...'` source, base64 over the raw element text."""
     digest = base64.b64encode(hashlib.sha256(block).digest()).decode("ascii")
@@ -209,11 +225,9 @@ def content_security_policy(page: bytes, frame_sources: Sequence[str] = ()) -> s
     second listener that serves llama.cpp's own page, and a launch that binds
     none leaves the directive at `'none'`, so the page frames nothing.
     """
-    reader = _InlineBlockReader()
-    reader.feed(page.decode("utf-8", "replace"))
-    reader.close()
-    scripts = " ".join(hash_source(block) for block in reader.scripts)
-    styles = " ".join(hash_source(block) for block in reader.styles)
+    script_sources, style_sources = inline_sources(page)
+    scripts = " ".join(script_sources)
+    styles = " ".join(style_sources)
     frames = " ".join(source for source in frame_sources if source) or "'none'"
     return "; ".join(
         (
