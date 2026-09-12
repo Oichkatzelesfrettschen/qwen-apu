@@ -271,9 +271,7 @@ def read_producer_receipts(ledger_path: Path) -> dict[str, dict[str, list[str]]]
             # attribute bytes it never read, which is the inference by location
             # this ledger exists to replace.
             if directory_of(receipt_path) != directory:
-                raise ClassificationError(
-                    f"receipt outside its directory: {receipt_path}"
-                )
+                raise ClassificationError(f"receipt outside its directory: {receipt_path}")
             if (role == "unknown") != (evidence == "-"):
                 raise ClassificationError(f"role and evidence disagree: {receipt_path}")
             if role == "unknown":
@@ -282,9 +280,7 @@ def read_producer_receipts(ledger_path: Path) -> dict[str, dict[str, list[str]]]
     return {directory: dict(roles) for directory, roles in derived.items()}
 
 
-def resolve_producer(
-    markers: list[str], receipt_roles: dict[str, list[str]]
-) -> tuple[str, str]:
+def resolve_producer(markers: list[str], receipt_roles: dict[str, list[str]]) -> tuple[str, str]:
     """Return the producer role and the evidence naming both of its sources.
 
     An artifact marker and a receipt state different things -- the directory
@@ -351,9 +347,7 @@ def classify(
         occurrences[digest] += 1
 
     partial_directories = {
-        path
-        for path, retention in retention_classes.items()
-        if retention == "retained-partial"
+        path for path, retention in retention_classes.items() if retention == "retained-partial"
     }
 
     rows: list[tuple[str, ...]] = []
@@ -425,9 +419,7 @@ def classify(
     directory_rows: list[tuple[str, ...]] = []
     for directory in sorted(per_directory):
         summary = per_directory[directory]
-        markers = sorted(
-            basenames.get(directory, set()) & set(DEVICE_PRODUCED_ARTIFACTS)
-        )
+        markers = sorted(basenames.get(directory, set()) & set(DEVICE_PRODUCED_ARTIFACTS))
         producer_role, producer_evidence = resolve_producer(
             markers, receipt_roles.get(directory, {})
         )
@@ -512,9 +504,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 return 1
-        print(
-            f"sweep_coverage=current rows={len(rows)} directories={len(directory_rows)}"
-        )
+        print(f"sweep_coverage=current rows={len(rows)} directories={len(directory_rows)}")
         return 0
 
     for path, _, rendered in documents:

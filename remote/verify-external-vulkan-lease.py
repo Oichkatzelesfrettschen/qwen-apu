@@ -108,17 +108,14 @@ def verify_holder_identity(
     if not same_file(descriptor_status, lock_status):
         raise LeaseError("external lease holder descriptor names another file")
     if not descriptor_carries_lock(holder_pid, holder_fd, lock_status):
-        raise LeaseError(
-            "holder fdinfo does not bind the descriptor to the workload lease"
-        )
+        raise LeaseError("holder fdinfo does not bind the descriptor to the workload lease")
 
 
 def verify(proof_path: Path, expected_lock_path: Path) -> None:
     values = read_proof(proof_path)
     if values["lock_path"] != str(expected_lock_path):
         raise LeaseError(
-            f"external lease proof names {values['lock_path']} instead of "
-            f"{expected_lock_path}"
+            f"external lease proof names {values['lock_path']} instead of {expected_lock_path}"
         )
     if not expected_lock_path.is_absolute():
         raise LeaseError("expected workload lease path is not absolute")
@@ -128,9 +125,7 @@ def verify(proof_path: Path, expected_lock_path: Path) -> None:
         expected_start_time = int(values["holder_start_time_ticks"])
         holder_fd = int(values["holder_fd"])
     except ValueError as error:
-        raise LeaseError(
-            "external lease proof carries a non-integer process field"
-        ) from error
+        raise LeaseError("external lease proof carries a non-integer process field") from error
     if holder_pid <= 0 or expected_start_time <= 0 or holder_fd != 8:
         raise LeaseError("external lease proof carries an invalid process field")
 
@@ -138,12 +133,8 @@ def verify(proof_path: Path, expected_lock_path: Path) -> None:
     try:
         lock_status = os.fstat(descriptor)
         path_status = expected_lock_path.lstat()
-        if not stat.S_ISREG(lock_status.st_mode) or not same_file(
-            path_status, lock_status
-        ):
-            raise LeaseError(
-                f"workload lease path changed or is not regular: {expected_lock_path}"
-            )
+        if not stat.S_ISREG(lock_status.st_mode) or not same_file(path_status, lock_status):
+            raise LeaseError(f"workload lease path changed or is not regular: {expected_lock_path}")
         verify_holder_identity(holder_pid, expected_start_time, holder_fd, lock_status)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)

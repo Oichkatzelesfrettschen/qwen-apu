@@ -339,6 +339,10 @@ def test_the_single_model_plan_expects_the_alias_its_argv_names(
             llama_server=fixture_tree["server"],
             port=18080,
             require_radv_icd=False,
+            # The fabricated tree carries no row for this checkpoint, so the
+            # policy admits the 24576 fallback ceiling; the registry's own
+            # default sits above it and the alias is what this test reads.
+            context=24576,
         ),
     )
     assert plan.mode == "standalone"

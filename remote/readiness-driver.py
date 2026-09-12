@@ -58,9 +58,7 @@ def atomic_write_json(target: Path, record: dict[str, Any]) -> None:
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            json.dump(
-                record, output, allow_nan=False, separators=(",", ":"), sort_keys=True
-            )
+            json.dump(record, output, allow_nan=False, separators=(",", ":"), sort_keys=True)
             output.write("\n")
             output.flush()
             os.fsync(output.fileno())
@@ -91,18 +89,12 @@ def create_result_directory(requested: Path | None) -> Path:
         results_root_descriptor = os.open(results_root, open_flags)
     except OSError as error:
         if error.errno in (errno.ELOOP, errno.ENOTDIR):
-            raise DriverError(
-                f"results authority must be a directory: {results_root}"
-            ) from error
+            raise DriverError(f"results authority must be a directory: {results_root}") from error
         raise
     try:
-        canonical_results_root = Path(
-            f"/proc/self/fd/{results_root_descriptor}"
-        ).resolve()
+        canonical_results_root = Path(f"/proc/self/fd/{results_root_descriptor}").resolve()
         if results_root.resolve() != canonical_results_root:
-            raise DriverError(
-                f"results authority changed while opening: {results_root}"
-            )
+            raise DriverError(f"results authority changed while opening: {results_root}")
         if requested is None:
             stamp = utc_now().replace(":", "").replace("-", "")
             result_name = f"launch-readiness-{stamp}-{uuid.uuid4().hex[:12]}"
@@ -110,16 +102,13 @@ def create_result_directory(requested: Path | None) -> Path:
             requested_parent = requested.parent.resolve()
             if requested_parent != canonical_results_root:
                 raise DriverError(
-                    "result directory must be a direct child of "
-                    f"{canonical_results_root}"
+                    f"result directory must be a direct child of {canonical_results_root}"
                 )
             result_name = requested.name
             if result_name in ("", ".", ".."):
                 raise DriverError("result directory must have a child name")
         os.mkdir(result_name, mode=0o700, dir_fd=results_root_descriptor)
-        result_descriptor = os.open(
-            result_name, open_flags, dir_fd=results_root_descriptor
-        )
+        result_descriptor = os.open(result_name, open_flags, dir_fd=results_root_descriptor)
         try:
             os.fchmod(result_descriptor, 0o700)
         finally:
@@ -149,9 +138,7 @@ def read_process_session(process_id: int) -> tuple[str, int, int] | None:
 
 def process_owner_uid(process_id: int) -> int | None:
     try:
-        lines = (
-            Path(f"/proc/{process_id}/status").read_text(encoding="ascii").splitlines()
-        )
+        lines = Path(f"/proc/{process_id}/status").read_text(encoding="ascii").splitlines()
     except (FileNotFoundError, ProcessLookupError, PermissionError):
         return None
     for line in lines:
@@ -176,9 +163,7 @@ def session_census(session_id: int) -> dict[str, list[int]]:
             identity = read_process_session(process_id)
         except (OSError, UnicodeError, ValueError):
             owner_uid = process_owner_uid(process_id)
-            category = (
-                "unreadable_owned" if owner_uid == os.getuid() else "unreadable_unknown"
-            )
+            category = "unreadable_owned" if owner_uid == os.getuid() else "unreadable_unknown"
             census[category].append(process_id)
             continue
         if identity is None or identity[2] != session_id:
@@ -261,9 +246,7 @@ def cleanup_session(
                 signal_groups[signal_name].append(process_group)
 
     initial = runtime.census(process_id)
-    census_incomplete = bool(
-        initial.get("unreadable_owned") or initial.get("unreadable_unknown")
-    )
+    census_incomplete = bool(initial.get("unreadable_owned") or initial.get("unreadable_unknown"))
     signal_census_groups(initial, signal.SIGTERM)
     kill_at_ns = runtime.clock_ns() + max(0, deadline_ns - runtime.clock_ns()) // 2
     while runtime.clock_ns() < deadline_ns:
@@ -314,19 +297,11 @@ def parse_readiness_reply(stdout_path: Path, returncode: int | None) -> str:
         lines = stdout_path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
         return "malformed"
-    replies = [
-        line.split()[0] for line in lines if line.startswith("launch_readiness=")
-    ]
-    expected = (
-        "launch_readiness=accepted" if returncode == 0 else "launch_readiness=refused"
-    )
+    replies = [line.split()[0] for line in lines if line.startswith("launch_readiness=")]
+    expected = "launch_readiness=accepted" if returncode == 0 else "launch_readiness=refused"
     if len(replies) != 1:
         return "malformed"
-    return (
-        replies[0].removeprefix("launch_readiness=")
-        if replies[0] == expected
-        else "unknown"
-    )
+    return replies[0].removeprefix("launch_readiness=") if replies[0] == expected else "unknown"
 
 
 def run_probe(
@@ -421,9 +396,7 @@ def run_probe(
                             "message": str(error),
                         }
                         break
-                cleanup_deadline_ns = (
-                    runtime.clock_ns() + cleanup_timeout_ms * 1_000_000
-                )
+                cleanup_deadline_ns = runtime.clock_ns() + cleanup_timeout_ms * 1_000_000
                 try:
                     cleanup, reserved_status = cleanup_session(
                         runtime, process.pid, reserved_status, cleanup_deadline_ns
@@ -455,12 +428,8 @@ def run_probe(
                             "state": "internal_failure",
                             "signals": emergency_signals,
                             "signal_groups": {
-                                "SIGTERM": [process.pid]
-                                if "SIGTERM" in emergency_signals
-                                else [],
-                                "SIGKILL": [process.pid]
-                                if "SIGKILL" in emergency_signals
-                                else [],
+                                "SIGTERM": [process.pid] if "SIGTERM" in emergency_signals else [],
+                                "SIGKILL": [process.pid] if "SIGKILL" in emergency_signals else [],
                             },
                             "leader_reserved": reserved_status is not None,
                             "leader_reaped": False,

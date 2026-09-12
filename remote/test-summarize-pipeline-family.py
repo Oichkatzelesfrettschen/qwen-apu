@@ -115,9 +115,7 @@ def build_ledger(
     return "\n".join(lines) + "\n"
 
 
-def run(
-    directory: pathlib.Path, text: str, *flags: str
-) -> "subprocess.CompletedProcess[str]":
+def run(directory: pathlib.Path, text: str, *flags: str) -> "subprocess.CompletedProcess[str]":
     path = directory / "ledger.tsv"
     path.write_text(text, encoding="utf-8")
     return subprocess.run(
@@ -263,9 +261,7 @@ def case_partition_refusals(directory: pathlib.Path) -> None:
     assert "states no exclusive_ms_per_graph" in result.stderr, result.stderr
     result = run(
         directory,
-        original.replace(
-            "bracket_union_ms_per_graph=9.900", "bracket_union_ms_per_graph=9.990"
-        ),
+        original.replace("bracket_union_ms_per_graph=9.900", "bracket_union_ms_per_graph=9.990"),
     )
     assert result.returncode == 1, result.stdout
     assert "pipeline unions conflict" in result.stderr, result.stderr
@@ -300,9 +296,7 @@ def case_numeric_refusals(directory: pathlib.Path) -> None:
         ("overlap_threshold", "0.0500"),
     ):
         for invalid in ("nan", "inf", "-inf", "-1", "true"):
-            result = run(
-                directory, original.replace(f"{field}={accepted}", f"{field}={invalid}")
-            )
+            result = run(directory, original.replace(f"{field}={accepted}", f"{field}={invalid}"))
             assert result.returncode == 1, (field, invalid, result.stdout)
             mutations += 1
     for invalid in ("0", "01", "1.5", "true", "9999999999"):

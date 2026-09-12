@@ -37,7 +37,7 @@ def write_session_status(path: Path, server_pid: int = 1234) -> None:
         "profile=low-async "
         "host=127.0.0.1 "
         "port=8080 "
-        "context=8192 "
+        "context=32768 "
         "latency_mode=observe "
         "utc=2026-09-01T00:00:00Z\n"
         "speculation spec_type=off draft_backend_sampling=0 backend_sampling=0\n"
@@ -204,9 +204,7 @@ def main() -> int:
 
         runtime_inputs = json.loads(runtime_inputs_path.read_text(encoding="utf-8"))
         runtime_inputs["model"]["descriptor_path"] = "/proc/04321/fd/7"
-        runtime_inputs_path.write_text(
-            json.dumps(runtime_inputs) + "\n", encoding="utf-8"
-        )
+        runtime_inputs_path.write_text(json.dumps(runtime_inputs) + "\n", encoding="utf-8")
         expect_resealed_refusal(
             summarizer,
             session_status_path,
@@ -222,9 +220,7 @@ def main() -> int:
         write_runtime_inputs(runtime_inputs_path, server_path, server_sha256, model)
         runtime_inputs = json.loads(runtime_inputs_path.read_text(encoding="utf-8"))
         runtime_inputs["executable"]["descriptor_path"] = "/proc/4322/fd/6"
-        runtime_inputs_path.write_text(
-            json.dumps(runtime_inputs) + "\n", encoding="utf-8"
-        )
+        runtime_inputs_path.write_text(json.dumps(runtime_inputs) + "\n", encoding="utf-8")
         expect_resealed_refusal(
             summarizer,
             session_status_path,
@@ -240,9 +236,7 @@ def main() -> int:
         write_runtime_inputs(runtime_inputs_path, server_path, server_sha256, model)
         server_process = json.loads(server_process_path.read_text(encoding="utf-8"))
         server_process["executable_inode"] += 1
-        server_process_path.write_text(
-            json.dumps(server_process) + "\n", encoding="utf-8"
-        )
+        server_process_path.write_text(json.dumps(server_process) + "\n", encoding="utf-8")
         expect_resealed_refusal(
             summarizer,
             session_status_path,
@@ -265,9 +259,7 @@ def main() -> int:
         )
 
         write_session_status(session_status_path)
-        state_line, *policy_lines = session_status_path.read_text(
-            encoding="utf-8"
-        ).splitlines()
+        state_line, *policy_lines = session_status_path.read_text(encoding="utf-8").splitlines()
         state_line = " ".join(
             field for field in state_line.split() if not field.startswith("server_pid=")
         )
@@ -290,9 +282,7 @@ def main() -> int:
         # session, a partial set refuses, and an exposed session refuses.
         def write_lan_status(exposure: str, open_flag: str, partial: bool) -> None:
             write_session_status(session_status_path)
-            state_line, *policy_lines = session_status_path.read_text(
-                encoding="utf-8"
-            ).splitlines()
+            state_line, *policy_lines = session_status_path.read_text(encoding="utf-8").splitlines()
             lan_fields = (
                 f"lan_exposure={exposure} lan_address=- lan_name=- "
                 f"lan_open={open_flag} lan_boundary=lan-authenticated"
@@ -479,9 +469,7 @@ def main() -> int:
         )
 
         write_session_status(session_status_path)
-        state_line, *policy_lines = session_status_path.read_text(
-            encoding="utf-8"
-        ).splitlines()
+        state_line, *policy_lines = session_status_path.read_text(encoding="utf-8").splitlines()
         session_status_path.write_text(
             "\n".join((f"{state_line} unbound=value", *policy_lines)) + "\n",
             encoding="utf-8",

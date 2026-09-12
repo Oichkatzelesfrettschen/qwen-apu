@@ -56,6 +56,7 @@ the page the build produced.
 from __future__ import annotations
 
 import hashlib
+import json
 import mimetypes
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -65,10 +66,13 @@ from urllib.parse import urlencode
 from qwen_apu.engines.llama import LlamaClient, UpstreamAnswer, UpstreamRefused
 from qwen_apu.web.app import RequestRefused, StaticDirectory
 from qwen_apu.web.http import Request, Response, Route, StreamingResponse
+from qwen_apu.web.tool_gate import ToolGate, ToolRefused
 
 PAIRING_PAGE_DIRECTORY = "llama-ui"
 PAIRING_PAGE_NAME = "index.html"
 PAGE_PATHS = ("/", "/index.html")
+# The tool listing and the tool call, admitted through the approval gate alone.
+TOOLS_PATH = "/tools"
 
 # `tools/server/server.cpp` registers each of these with `ctx_http.get`. The
 # router build adds `/models/sse`, which is the picker's own event stream.
@@ -215,6 +219,10 @@ ASSET_CONTENT_TYPES = {
 }
 
 
+def _unserved(request: Request) -> str:
+    return f"the router serves no {request.method} {request.path} through this listener"
+
+
 def asset_content_type(name: str) -> str:
     suffix = Path(name).suffix.lower()
     if suffix in ASSET_CONTENT_TYPES:
@@ -293,6 +301,9 @@ class LlamaUiSettings:
     # The one origin admitted to frame this page: the shell on the chat page's
     # port. `'none'` is the standalone listener.
     frame_ancestors: str = "'none'"
+    # The approval gate every `POST /tools` passes. None keeps both `/tools`
+    # methods off the listener, which is the launch that arms no approvals.
+    tool_gate: ToolGate | None = None
 
     @property
     def policy(self) -> str:
@@ -375,11 +386,49 @@ class LlamaUiProxy:
         served = self.asset(request)
         if served is not None:
             return served
+        if request.path == TOOLS_PATH:
+            # `/tools` is asset-shaped, so it is decided here ahead of the
+            # asset rule: the gate admits it, and a listener without one
+            # offers the model no tool it cannot run.
+            if self.settings.tool_gate is None:
+                raise RequestRefused(404, _unserved(request))
+            return self._tools(request)
         if not path_is_admitted(request.method, request.path):
-            raise RequestRefused(
-                404, f"the router serves no {request.method} {request.path} through this listener"
-            )
-        answer = self._exchange(request)
+            raise RequestRefused(404, _unserved(request))
+        return self._answer(self._exchange(request))
+
+    def _tools(self, request: Request) -> Response | StreamingResponse:
+        """The tool listing passes through; a tool call passes the approval gate.
+
+        A refusal answers 200 with the `/tools` error shape, which the page
+        places in the tool message, so the model reads why the call did not
+        run rather than the page reading a transport failure.
+        """
+        gate = self.settings.tool_gate
+        assert gate is not None
+        if request.method == "GET":
+            return self._answer(self._exchange(request))
+        try:
+            body = json.loads(request.body or b"")
+        except ValueError:
+            return Response.json({"error": "the tool call body is not JSON"})
+        if not isinstance(body, dict):
+            return Response.json({"error": "the tool call body is not an object"})
+        try:
+            admitted = gate.admit(body, request.client_address)
+        except ToolRefused as refusal:
+            return Response.json({"error": str(refusal)})
+        forwarded = Request(
+            method=request.method,
+            path=request.path,
+            query=request.query,
+            headers=request.headers,
+            body=json.dumps(admitted).encode("utf-8"),
+            client_address=request.client_address,
+        )
+        return self._answer(self._exchange(forwarded))
+
+    def _answer(self, answer: UpstreamAnswer) -> Response | StreamingResponse:
         headers = {
             **dict(answer.headers),
             "content-security-policy": self.settings.policy,

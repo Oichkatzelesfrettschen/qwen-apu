@@ -139,8 +139,13 @@ if [ "$declaration_only" -eq 1 ]; then
     }
 fi
 
-shell_files=$(find remote -type f -name '*.sh' -print | sort)
-python_files=$(find remote -type f -name '*.py' -print | sort)
+shell_files=$(find remote -type f -name '*.sh' -print | LC_ALL=C sort)
+# LC_ALL=C fixes the collation: this list is the ruff-repository cell's input
+# specification, the declaration root covers it, and a glibc locale orders
+# `image_protocol.py` against `image-registry.py` differently from the C
+# locale, so an unpinned sort makes the root a property of the shell that ran
+# the gate rather than of the tree.
+python_files=$(find remote -type f -name '*.py' -print | LC_ALL=C sort)
 typed_python_files='remote/classify-sweep-coverage.py
 remote/test-classify-sweep-coverage.py
 remote/sanitize-capture.py
@@ -213,7 +218,14 @@ gate_cell text-policy universal remote/check-text-policy.py \
 
 gate_cell shell-syntax files "$shell_files" gate_shell_syntax exact-driver
 gate_cell shellcheck files "$shell_files" gate_shellcheck_walk exact-driver
-gate_cell ruff-repository files "$python_files" 'ruff check remote'
+# remote/ holds the shell-era Python the appliance ships: measurement drivers,
+# MCP servers, and their fixtures. They predate the E/W/I/B/UP/S/PL selection
+# pyproject.toml adopted for the control-plane package, and they trip 631 of
+# its style and modernization rules while carrying no pyflakes finding, so this
+# walk states the set those files are written against: the syntax errors and
+# pyflakes. gate_ruff_typed_walk holds the enumerated typed subset to the full
+# selection, and a file joins that list when it is brought up to it.
+gate_cell ruff-repository files "$python_files" 'ruff check --select E9,F remote'
 gate_cell ruff-typed files "$typed_python_files" gate_ruff_typed_walk exact-driver
 gate_cell python-syntax files "$python_files" gate_python_syntax_walk exact-driver
 

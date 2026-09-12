@@ -44,15 +44,11 @@ def verify_identity(path: Path, descriptor: int) -> os.stat_result:
     # One inode reachable by one name: a same-owner private hard link would
     # otherwise make an unrelated file the synchronization object.
     if descriptor_status.st_nlink != 1:
-        raise LockDescriptorError(
-            f"lock leaf has {descriptor_status.st_nlink} hard links: {path}"
-        )
+        raise LockDescriptorError(f"lock leaf has {descriptor_status.st_nlink} hard links: {path}")
     try:
         path_status = path.lstat()
     except OSError as error:
-        raise LockDescriptorError(
-            f"lock path is unreadable: {path}: {error}"
-        ) from error
+        raise LockDescriptorError(f"lock path is unreadable: {path}: {error}") from error
     if not stat.S_ISREG(path_status.st_mode):
         raise LockDescriptorError(f"lock path is not a regular leaf: {path}")
     if not same_file(path_status, descriptor_status):
@@ -66,14 +62,11 @@ def verify_status(path: Path, descriptor: int) -> None:
     descriptor_mode = stat.S_IMODE(descriptor_status.st_mode)
     if descriptor_mode & 0o077:
         raise LockDescriptorError(
-            f"lock descriptor mode {descriptor_mode:#05o} grants group or other "
-            f"access: {path}"
+            f"lock descriptor mode {descriptor_mode:#05o} grants group or other access: {path}"
         )
 
 
-def normalize_legacy_mode(
-    path: Path, descriptor: int, descriptor_status: os.stat_result
-) -> None:
+def normalize_legacy_mode(path: Path, descriptor: int, descriptor_status: os.stat_result) -> None:
     """Tighten an unlocked owner-writable legacy mode through its descriptor."""
     descriptor_mode = stat.S_IMODE(descriptor_status.st_mode)
     if not descriptor_mode & 0o077:
@@ -104,9 +97,7 @@ def normalize_legacy_mode(
     verify_status(path, descriptor)
 
 
-def open_lock(
-    path: Path, descriptor_number: int, normalize_admitted_legacy_mode: bool
-) -> None:
+def open_lock(path: Path, descriptor_number: int, normalize_admitted_legacy_mode: bool) -> None:
     """Open a lock leaf without following links or truncating retained bytes."""
     flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
     opened_descriptor = os.open(path, flags, PRIVATE_LOCK_MODE)

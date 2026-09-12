@@ -27,7 +27,7 @@ from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.tools import approvals, calculator, documents, files, images, matrix
 from qwen_apu.tools import web as web_tools
 from qwen_apu.tools.ledger import Ledger
-from qwen_apu.web import artifacts, chat, conversations, llama_ui, status
+from qwen_apu.web import artifacts, chat, conversations, llama_ui, status, tool_gate
 from qwen_apu.web.app import LOOPBACK_HOSTS, Gateway, GatewayConfig, RequestRefused
 from qwen_apu.web.auth import SessionGate
 from qwen_apu.web.http import Request, Route
@@ -297,7 +297,11 @@ def upstream_client(paths: RuntimePaths, request: GatewayRequest) -> LlamaClient
 
 
 def assemble_llama_ui(
-    paths: RuntimePaths, request: GatewayRequest, *, session: SessionGate
+    paths: RuntimePaths,
+    request: GatewayRequest,
+    *,
+    session: SessionGate,
+    gate: tool_gate.ToolGate | None = None,
 ) -> Gateway | None:
     """The second listener, sharing this launch's session gate and Host set.
 
@@ -334,6 +338,9 @@ def assemble_llama_ui(
         # The shell on the chat page's port frames this page, so that origin
         # is the one `frame-ancestors` admits.
         frame_ancestors=page_origin(request),
+        # The same gate the chat page's rail decides on, so a call parked from
+        # llama.cpp's page is the call the operator sees there.
+        tool_gate=gate,
     )
     return Gateway(config, (llama_ui.LlamaUiProxy(settings),))
 
@@ -389,6 +396,9 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         exposure=lan_exposure(request.bind_host),
     )
     approval_service = approvals.ApprovalService(approval_settings, session_check)
+    # One gate signs the grants for tool calls llama.cpp's own page makes,
+    # through the same settings and key the grant routes above sign with.
+    approval_gate = tool_gate.ToolGate(approval_settings)
     # The per-launch secret every grant post presents is minted here, at the
     # one place this launch's service exists, and its file is what the
     # teardown proves absent; a service left unarmed compares every presented
@@ -410,6 +420,7 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
             client=client,
             approval_settings=approval_settings,
             approval_service=approval_service,
+            approval_gate=approval_gate,
         )
     except BaseException:
         approval_service.disarm_session_secret()
@@ -428,6 +439,7 @@ def _assemble_armed(
     client: Callable[[], LlamaClient],
     approval_settings: approvals.ApprovalSettings,
     approval_service: approvals.ApprovalService,
+    approval_gate: tool_gate.ToolGate,
 ) -> tuple[Gateway, SessionGate]:
     """Mount every provider on one gateway, with the session secret already armed.
 
@@ -539,6 +551,7 @@ def _assemble_armed(
             llama_ui_origin=llama_ui_origin(request),
         ),
         _Providers(approvals.routes(approval_service)),
+        _Providers(approval_gate.routes()),
         _Providers(
             matrix.routes(
                 matrix.MatrixSettings(
@@ -566,18 +579,19 @@ def _assemble_armed(
         ),
         _Providers(images.routes(image_settings)),
     )
-    return (
-        Gateway(
-            config,
-            providers,
-            session_authority=session,
-            on_shutdown=(
-                conversation_settings.temporary.shutdown,
-                approval_service.disarm_session_secret,
-            ),
+    gateway = Gateway(
+        config,
+        providers,
+        session_authority=session,
+        on_shutdown=(
+            conversation_settings.temporary.shutdown,
+            approval_service.disarm_session_secret,
         ),
-        session,
     )
+    # The second listener is assembled from this gateway's gate, so the calls
+    # its proxy parks are the ones this gateway's pending route lists.
+    gateway.tool_gate = approval_gate
+    return gateway, session
 
 
 def run(paths: RuntimePaths, request: GatewayRequest) -> int:

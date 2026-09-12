@@ -65,9 +65,7 @@ def read_header_field(path: Path, name: str) -> str:
 def read_stage_rows(path: Path) -> list[StageRow]:
     rows: list[StageRow] = []
     seen: set[str] = set()
-    for number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line or line.startswith("#"):
             continue
         fields = line.split("\t")
@@ -131,9 +129,7 @@ def summarize_stages(path: Path, require_terminated: bool) -> int:
 
 def read_switch_first_token(path: Path) -> list[int]:
     samples: list[int] = []
-    for number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line or line.startswith("#"):
             continue
         fields = line.split("\t")
@@ -151,18 +147,14 @@ def summarize_switches(path: Path) -> int:
         print(f"model_switch=absent file={path}")
         return 1
     ordered = sorted(samples)
-    print(
-        f"model_switch n={len(ordered)} method=nearest-rank "
-        f"continuity=asserted-none file={path}"
-    )
+    print(f"model_switch n={len(ordered)} method=nearest-rank continuity=asserted-none file={path}")
     for label, percent in (("p50", 50.0), ("p95", 95.0), ("p99", 99.0)):
         print(
             f"model_switch_quantile {label} "
             f"first_token_s={format_seconds(nearest_rank(ordered, percent))}"
         )
     print(
-        f"model_switch_range min_s={format_seconds(ordered[0])} "
-        f"max_s={format_seconds(ordered[-1])}"
+        f"model_switch_range min_s={format_seconds(ordered[0])} max_s={format_seconds(ordered[-1])}"
     )
     return 0
 
@@ -179,9 +171,7 @@ def main() -> int:
 
     try:
         if arguments.command == "stages":
-            return summarize_stages(
-                Path(arguments.stage_tsv), bool(arguments.require_terminated)
-            )
+            return summarize_stages(Path(arguments.stage_tsv), bool(arguments.require_terminated))
         return summarize_switches(Path(arguments.switch_tsv))
     except (OSError, ValueError) as failure:
         print(f"summarize-stage-timing: {failure}", file=sys.stderr)

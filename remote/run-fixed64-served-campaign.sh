@@ -793,9 +793,9 @@ PY
     record_before "model:$resolved_id" "$resolved_path"
 }
 
-resolve_model qwen35-08b compact-text 20 8192 128 32 q8_0 q4_0 on
-resolve_model qwen38-2b-distill fast-text 10 24576 128 32 q8_0 q4_0 on
-resolve_model qwen38-4b-distill balanced-text 5.25 24576 128 32 q8_0 q4_0 on
+resolve_model qwen35-08b compact-text 20 32768 128 32 q8_0 q4_0 on
+resolve_model qwen38-2b-distill fast-text 10 32768 128 32 q8_0 q4_0 on
+resolve_model qwen38-4b-distill balanced-text 5.25 32768 128 32 q8_0 q4_0 on
 
 campaign_inputs=$output_directory/campaign-inputs.tsv
 printf 'key\tvalue\n' >"$campaign_inputs"
