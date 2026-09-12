@@ -852,3 +852,21 @@ def test_the_assembly_reads_the_bundles_script_blocks(tmp_path: Path) -> None:
     root.joinpath("index.html").write_bytes(b"<!doctype html><script>" + block + b"</script>")
     assert llama_ui.bundle_script_sources(root) == (hash_source(block),)
     assert llama_ui.bundle_script_sources(tmp_path / "absent") == ()
+
+
+def test_the_service_worker_is_refused_even_where_the_bundle_holds_one(
+    served: Fixture,
+) -> None:
+    """A registered worker replays the headers it stored, so the page it
+    precached keeps refusing to be framed after the directive names the shell.
+
+    The bundle fixture carries `sw.js`, so this asserts the refusal comes from
+    the path rule rather than from an absent file, and that the page itself
+    still serves.
+    """
+    cookie = _pair(served)
+    response, body = _request(served.proxy, "GET", "/sw.js", headers={"Cookie": cookie})
+    assert response.status == 404
+    assert b"through this listener" in body
+    page, _ = _request(served.proxy, "GET", "/", headers={"Cookie": cookie})
+    assert page.status == 200
