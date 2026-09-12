@@ -211,6 +211,17 @@ def build_parser() -> argparse.ArgumentParser:
             "reads opt/llama-ui/dist under the runtime root where it holds index.html"
         ),
     )
+    appliance_serve.add_argument(
+        "--image-ui-port",
+        type=int,
+        nargs="?",
+        const=gateway_assembly.DEFAULT_IMAGE_UI_PORT,
+        default=0,
+        help=(
+            "serve the image surface on its own port, which the landing page "
+            "links to; zero binds none and the landing page says so"
+        ),
+    )
     appliance_serve.add_argument("--file-root", type=Path, action="append", default=[])
     appliance_serve.add_argument(
         "--image-service",
@@ -601,6 +612,7 @@ def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
                 searxng_armed=lane_children.searxng_armed,
                 llama_ui_port=args.llama_ui_port,
                 llama_ui_static=args.llama_ui_static,
+                image_ui_port=args.image_ui_port,
             ),
             image_service=lane_children.image,
             searxng=lane_children.searxng,

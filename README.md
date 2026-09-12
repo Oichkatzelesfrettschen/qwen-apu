@@ -69,7 +69,8 @@ instead and may repeat. A derivation that finds no interface ends the launch
 rather than guessing at a boundary.
 
 ```sh
-qwen-apu appliance serve --router --both --lan-open --bind-host <lan address> ...
+qwen-apu appliance serve --router --both --lan-open --bind-host <lan address> \
+    --llama-ui-port --image-ui-port ...
 ```
 
 That is the operator's explicit decision, and it gives up exactly one thing:
@@ -92,13 +93,15 @@ field, and this appliance needs nothing in it: the router listens on loopback
 without a key and the gateway carries the credential as that cookie. A page
 that asks for a key is a page whose session is absent, which pairing answers.
 
-- `42069` is the shell: a rail with **Chat** and **Image**. Chat frames
-  llama.cpp's own page, with its model picker, attachments, reasoning display,
-  and saved conversations. Image drives the appliance's own generator over one
-  approval per job and shows what the artifact store holds. The previous
-  single-page client stays at `/legacy/`.
-- `42072` is llama.cpp's own page alone, for a browser that wants the plain
-  surface with nothing around it.
+- `42069` is the landing page: two choices, Chat and Image, each linking to
+  its own address. It holds nothing else, and it shows any tool call waiting
+  for an approval.
+- `42072` is Chat, llama.cpp's own page, with its model picker, attachments,
+  reasoning display, and saved conversations.
+- `42073` is Image, this appliance's generator, which mounts the same routes
+  the landing page does so its grant and its artifact reads stay same-origin.
+
+The previous single-page client stays at `42069/legacy/`.
 
 Readiness reports missing runtime inputs before anything listens: the weights
 digest, the signing key, and the activated deployment bundle each refuse a

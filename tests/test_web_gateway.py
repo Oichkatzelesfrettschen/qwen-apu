@@ -15,6 +15,7 @@ which carries IPv4 alone, so the fake upstream binds 127.0.0.1 explicitly.
 
 from __future__ import annotations
 
+import dataclasses
 import ipaddress
 import json
 import os
@@ -1534,3 +1535,85 @@ def test_a_derivation_that_finds_no_interface_refuses_the_launch() -> None:
     assert cli.resolve_open_networks([""], "127.0.0.1") == ("127.0.0.0/8",)
     with pytest.raises(SystemExit, match="--lan-open derives the network"):
         cli.resolve_open_networks([""], "203.0.113.7")
+
+
+# ---------------------------------------------------------------------------
+# The image surface's own listener
+# ---------------------------------------------------------------------------
+
+
+def test_the_image_surface_takes_a_port_of_its_own() -> None:
+    request = gateway_assembly.GatewayRequest(
+        port=42069, llama_ui_port=42072, image_ui_port=42073, bind_host="10.0.0.170"
+    )
+    assert gateway_assembly.image_ui_origins(request) == ("http://10.0.0.170:42073",)
+    both = dataclasses.replace(request, exposure_mode="both")
+    assert gateway_assembly.image_ui_origins(both) == (
+        "http://10.0.0.170:42073",
+        "http://127.0.0.1:42073",
+    )
+    assert gateway_assembly.image_ui_origins(dataclasses.replace(request, image_ui_port=0)) == ()
+
+
+def test_the_image_surface_refuses_a_port_another_listener_holds(tmp_path: Path) -> None:
+    """Three surfaces, three ports: a collision would serve one page where the
+    launch named another."""
+    static_root = tmp_path / "static"
+    (static_root / "image").mkdir(parents=True)
+    (static_root / "image" / "index.html").write_text("<p>image</p>", encoding="utf-8")
+    for clash in (42069, 42072):
+        request = gateway_assembly.GatewayRequest(
+            port=42069, llama_ui_port=42072, image_ui_port=clash, bind_host="10.0.0.170"
+        )
+        with pytest.raises(ValueError, match="port of its own"):
+            gateway_assembly.image_ui_gateway(request, static_root, (), SessionGate(tmp_path))
+
+
+def test_the_image_surface_refuses_a_static_root_holding_no_page(tmp_path: Path) -> None:
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    request = gateway_assembly.GatewayRequest(
+        port=42069, image_ui_port=42073, bind_host="10.0.0.170"
+    )
+    with pytest.raises(ValueError, match="no index.html"):
+        gateway_assembly.image_ui_gateway(request, static_root, (), SessionGate(tmp_path))
+
+
+def test_the_image_surface_mounts_the_same_routes_as_the_landing_page(tmp_path: Path) -> None:
+    """Its calls are same-origin there, so the grant it mints and the artifact
+    store it reads back need no cross-origin post."""
+    static_root = tmp_path / "static"
+    (static_root / "image").mkdir(parents=True)
+    (static_root / "image" / "index.html").write_text("<p>image</p>", encoding="utf-8")
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+    request = gateway_assembly.GatewayRequest(port=42069, image_ui_port=port, bind_host="127.0.0.1")
+    gate = SessionGate(tmp_path, loopback_open=True)
+    gate.start()
+    provided = _Provided((Route.make("GET", "/api/probe", lambda _: Response.json({"ok": True})),))
+    gateway = gateway_assembly.image_ui_gateway(request, static_root, (provided,), gate)
+    assert gateway is not None
+    thread = threading.Thread(target=gateway.serve_forever)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", gateway.port, timeout=5)
+        connection.request("GET", "/api/probe", headers={"Host": f"127.0.0.1:{gateway.port}"})
+        answer = connection.getresponse()
+        assert json.loads(answer.read()) == {"ok": True}
+        connection = HTTPConnection("127.0.0.1", gateway.port, timeout=5)
+        connection.request("GET", "/", headers={"Host": f"127.0.0.1:{gateway.port}"})
+        page = connection.getresponse()
+        assert page.status == 200
+        assert b"image" in page.read()
+    finally:
+        gateway.shutdown()
+        thread.join(timeout=5)
+
+
+class _Provided:
+    def __init__(self, routes: tuple[Route, ...]) -> None:
+        self._routes = routes
+
+    def routes(self) -> tuple[Route, ...]:
+        return self._routes

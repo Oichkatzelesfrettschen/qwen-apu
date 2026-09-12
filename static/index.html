@@ -5,107 +5,43 @@
 <title>qwen-apu</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <!--
-  The shell is a rail and two panes. The rail selects a domain, Chat or Image,
-  and each pane is a wrapper over a native surface rather than a surface of its
-  own: Chat frames llama.cpp's built-in page from the gateway's second listener,
-  which carries attachments, reasoning, and the router's model picker itself,
-  and Image drives the gateway's own generation routes over one grant per job.
+  The landing page chooses a surface and holds nothing else. Each choice is a
+  whole page at its own address: Chat is llama.cpp's own built page on the
+  second listener, and Image is this appliance's generator on the third, so a
+  reader lands on the surface itself rather than on a frame of it.
 
-  One pairing admits both. `POST /api/pair` on this origin mints the HttpOnly
-  SameSite=Strict cookie `src/qwen_apu/web/auth.py` scopes to the host, so the
-  framed listener on the sibling port reads the same session, and this page
-  holds no bearer and no secret in script.
-
-  `GET /api/status` names the second listener's origin as
-  `gateway.llama_ui_origin` and the approval identity as `gateway.approvals`;
-  the shell reads both once a session exists and derives nothing from its own
-  port. The previous single-page client stays served under `legacy/` for the
-  acceptance driver and as the recovery surface.
+  `GET /api/status` names both addresses, as `gateway.llama_ui_origin` and
+  `gateway.image_ui_origin`, so the ports come from the launch rather than
+  from arithmetic on this page's own port. A launch that binds neither leaves
+  its card stating so, which is the honest answer where a dead link would be
+  a wrong one.
 -->
-<link rel="stylesheet" href="shell.css">
+<link rel="stylesheet" href="launcher.css">
 </head>
 <body>
-<nav class="rail" aria-label="domains">
-  <div class="brand">
-    <span class="mark" aria-hidden="true"></span>
-    <span class="name">qwen-apu</span>
-  </div>
-  <div class="nav-list" role="tablist" aria-label="domain">
-    <button id="nav-chat" class="nav" role="tab" aria-selected="true" aria-controls="view-chat">
-      <span class="glyph" aria-hidden="true">&#9679;</span><span>Chat</span>
-    </button>
-    <button id="nav-image" class="nav" role="tab" aria-selected="false" aria-controls="view-image">
-      <span class="glyph" aria-hidden="true">&#9635;</span><span>Image</span>
-    </button>
-  </div>
-  <section id="approvals" class="approvals" aria-label="pending tool approvals" aria-live="polite"></section>
-  <div class="rail-foot">
-    <div id="rail-status" class="status" data-state="reading">
-      <span id="status-dot" class="dot" aria-hidden="true"></span>
-      <span id="status-text">reading status</span>
-    </div>
-    <a id="plain-ui-link" class="foot-link" href="/" target="_blank" rel="noopener" hidden>plain llama.cpp UI</a>
-    <a class="foot-link" href="legacy/">legacy page</a>
-  </div>
-</nav>
-
 <main>
-  <section id="view-pair" class="pane pair" hidden aria-label="pairing">
-    <form id="pair-form" class="card">
-      <h1>Pair this browser</h1>
-      <p>The appliance mints one pairing code per start and <code>qwen-apu status</code>
-        prints it on the laptop. The code is spent by the first browser that presents it;
-        a restart mints another.</p>
-      <label for="pair-code">pairing code</label>
-      <input id="pair-code" name="code" autocomplete="off" spellcheck="false" required>
-      <button id="pair-submit" type="submit" class="primary">Pair</button>
-      <p id="pair-note" class="note" hidden></p>
-    </form>
-  </section>
-
-  <section id="view-chat" class="pane chat" role="tabpanel" aria-labelledby="nav-chat">
-    <iframe id="chat-frame" title="llama.cpp chat" allow="clipboard-write"></iframe>
-    <div id="chat-absent" class="empty" hidden>
-      <h2>Chat runs on llama.cpp's own page</h2>
-      <p>This launch binds no second listener, so there is nothing to frame here.
-        Start the appliance with <code>--llama-ui-port</code> and the chat pane frames
-        that listener behind this pairing.</p>
-    </div>
-  </section>
-
-  <section id="view-image" class="pane image" role="tabpanel" aria-labelledby="nav-image" hidden>
-    <div class="studio">
-      <form id="image-form" class="composer">
-        <h1>Image</h1>
-        <p id="image-profile" class="hint">reading the image profile</p>
-        <label for="image-prompt">prompt</label>
-        <textarea id="image-prompt" rows="3" placeholder="what the image shows" required></textarea>
-        <label for="image-negative">negative prompt</label>
-        <textarea id="image-negative" rows="2" placeholder="what it leaves out"></textarea>
-        <div class="row">
-          <label>steps
-            <input id="image-steps" type="number" min="1" step="1" value="1">
-          </label>
-          <label>seed
-            <input id="image-seed" type="number" min="0" step="1" inputmode="numeric">
-          </label>
-          <button id="image-reseed" type="button" class="quiet" title="draw a new seed">new seed</button>
-          <span id="image-size" class="chip">size unknown</span>
-        </div>
-        <div class="row actions">
-          <button id="image-generate" type="submit" class="primary" disabled>Generate</button>
-          <button id="image-cancel" type="button" class="quiet" hidden>Cancel</button>
-          <span id="image-state" class="state" role="status" aria-live="polite"></span>
-        </div>
-        <p id="image-note" class="note" hidden></p>
-      </form>
-      <section id="image-gallery" class="gallery" aria-label="generated images">
-        <p id="gallery-empty" class="hint">No images yet. Every image here was generated on this
-          appliance and is read back from its artifact store.</p>
-      </section>
-    </div>
-  </section>
+  <h1>qwen-apu</h1>
+  <p class="tagline">Local inference on the appliance.</p>
+  <nav class="choices">
+    <a id="choice-chat" class="choice" href="#" aria-describedby="chat-note">
+      <span class="glyph" aria-hidden="true">&#9993;</span>
+      <span class="label">Chat</span>
+      <span id="chat-note" class="note">Text, vision, documents, web search</span>
+      <span class="where" id="chat-where"></span>
+    </a>
+    <a id="choice-image" class="choice" href="#" aria-describedby="image-note">
+      <span class="glyph" aria-hidden="true">&#9635;</span>
+      <span class="label">Image</span>
+      <span id="image-note" class="note">Generate and keep pictures</span>
+      <span class="where" id="image-where"></span>
+    </a>
+  </nav>
+  <section id="approvals" class="approvals" aria-label="pending tool approvals" aria-live="polite"></section>
+  <footer>
+    <span id="landing-status" class="status" data-state="reading">reading status</span>
+    <a class="quiet-link" href="legacy/">legacy page</a>
+  </footer>
 </main>
-<script type="module" src="js/shell.js"></script>
+<script type="module" src="js/launcher.js"></script>
 </body>
 </html>

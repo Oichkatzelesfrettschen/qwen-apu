@@ -1,4 +1,31 @@
-# The gateway shell: two native surfaces behind one rail
+# The gateway: a landing page and two surfaces, each at its own address
+
+The page at `/` chooses and holds nothing else. Chat is llama.cpp's own built
+page on the second listener; Image is this appliance's generator on the third.
+A choice is a whole page at its own address rather than a frame, so the
+framing directives, the service worker's cached headers, and the
+cross-document session questions that a frame raised all fall away with it.
+
+`GET /api/status` names each address as `gateway.llama_ui_origin` and
+`gateway.image_ui_origin`, so the landing page's links carry the ports the
+launch chose rather than arithmetic on its own port; a surface the launch
+bound none of leaves its card disabled and saying so.
+
+The image surface's listener mounts the same providers as the landing page's,
+so the tool matrix it reads its bounds from, the grant it mints per job, the
+generation that spends it, and the artifact store it reads back are all
+same-origin there. It is a second view of one gateway rather than a service of
+its own, sharing the session gate and mounting no route the landing page
+lacks.
+
+llama.cpp's page runs its own tool loop and has no place for an approval
+panel, so the landing page and the image surface both carry one: they poll
+`GET /api/tools/pending` and post the decision, which is the one human
+approval every network-reaching and device-reaching call takes. A call nobody
+decides ends as a refusal at the gate's own deadline, so a reader with no
+surface open answers the model rather than hanging it.
+
+## The shell this replaced
 
 The page the gateway serves at `/` is a shell. A rail on the left selects a
 domain, Chat or Image, and each pane wraps a surface that exists on its own
