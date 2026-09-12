@@ -1,0 +1,19 @@
+# The clock authority the appliance holds while it serves, handed to the group
+# that already owns the device nodes.
+#
+# power_dpm_force_performance_level, pp_dpm_sclk, and pp_dpm_mclk arrive owned
+# by root at mode 0644, so the operating point can be stated only through a
+# privileged write. The appliance states it at every launch, and a launch that
+# had to reach for sudo would either prompt inside a process that has already
+# forked or serve at whatever the governor chose. That is how a 2B checkpoint
+# came to decode at 4.16 tok/s against the 9.46 recorded for it: the governor
+# reads a decode as a low-use workload and selected 400 MHz of an 1100 MHz
+# engine table.
+#
+# The rule gives the video group write access to those three attributes and to
+# nothing else. Membership in video already carries the render node, so a
+# process that can submit work to the part may now also state the states it
+# runs that work at, which is the authority it was exercising through the
+# governor already.
+ACTION=="add|change", SUBSYSTEM=="pci", DRIVER=="amdgpu", \
+  RUN+="/bin/sh -c 'for attribute in power_dpm_force_performance_level pp_dpm_sclk pp_dpm_mclk; do chgrp video /sys%p/$$attribute && chmod g+w /sys%p/$$attribute; done'"
