@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>qwen-apu: llama.cpp UI</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  This listener serves llama.cpp's own page and nothing of its own. A request
+  that carries no session reaches this card instead, because the gateway mints
+  a session on one route of one origin: `POST /api/pair` on the chat page's
+  port, against the code `qwen-apu status` prints. The session cookie is scoped
+  to the host rather than to the port, so the pairing that admits the chat page
+  admits this listener in the same browser.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; display: grid;
+         min-height: 100vh; place-items: center; }
+  main { max-width: 34rem; padding: 2rem; }
+  h1 { font-size: 1.2rem; }
+  code { font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<main>
+  <h1>This listener serves llama.cpp's own Web UI</h1>
+  <p>The page is the plain built-in surface of the router, forwarded from the
+    loopback server this appliance supervises. It answers to a paired browser
+    alone.</p>
+  <p>Pair once on the qwen-apu chat page, with the code <code>qwen-apu
+    status</code> prints, then reload this address.</p>
+</main>
+</body>
+</html>

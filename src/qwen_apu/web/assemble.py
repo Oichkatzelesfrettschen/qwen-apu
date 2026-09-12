@@ -27,7 +27,7 @@ from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.tools import approvals, calculator, documents, files, images, matrix
 from qwen_apu.tools import web as web_tools
 from qwen_apu.tools.ledger import Ledger
-from qwen_apu.web import artifacts, chat, conversations, status
+from qwen_apu.web import artifacts, chat, conversations, llama_ui, status
 from qwen_apu.web.app import LOOPBACK_HOSTS, Gateway, GatewayConfig, RequestRefused
 from qwen_apu.web.auth import SessionGate
 from qwen_apu.web.http import Request, Route
@@ -35,6 +35,16 @@ from qwen_apu.web.http import Request, Route
 DEFAULT_GATEWAY_PORT = 8090
 DEFAULT_UPSTREAM_PORT = 8080
 DEFAULT_WEB_PROFILE = "web-open"
+# The second listener's own port. It stands clear of the router's 8080 and of
+# the legacy shell lane's 42069 to 42071, which `remote/qwen-lan-launch.sh`
+# gives the router, the broker, and the artifact listener, so a Python launch
+# and a legacy launch bind disjoint sets on one machine.
+DEFAULT_LLAMA_UI_PORT = 42072
+# The built `tools/ui` bundle under the runtime root, laid down by
+# `remote/build-llama-ui.sh`. The deployed server is configured
+# `-DLLAMA_BUILD_UI=OFF`, so it embeds no asset table and the listener serves
+# these files itself.
+LLAMA_UI_ASSET_DIRECTORY = ("llama-ui", "dist")
 
 
 @dataclass(frozen=True)
@@ -63,6 +73,13 @@ class GatewayRequest:
     # web rows `temporarily_unavailable` rather than letting an approved query
     # spend its single-use grant at a provider nothing is listening for.
     searxng_armed: bool = True
+    # The second listener that serves llama.cpp's own page through the loopback
+    # proxy. Zero starts one listener, which is the ordinary launch.
+    llama_ui_port: int = 0
+    # The built bundle the second listener serves. None reads the runtime
+    # root's own directory where it holds an `index.html`, and leaves the
+    # listener proxying every path where it does not.
+    llama_ui_static: Path | None = None
 
 
 def review_model_for(request: GatewayRequest) -> str:
@@ -239,6 +256,80 @@ def lan_exposure(bind_host: str) -> str:
     return "" if bind_host in LOOPBACK_HOSTS else bind_host
 
 
+def llama_ui_origin(request: GatewayRequest) -> str:
+    """The second listener's origin, or the empty string where a launch starts none."""
+    if request.llama_ui_port <= 0:
+        return ""
+    return f"http://{request.bind_host}:{request.llama_ui_port}"
+
+
+def llama_ui_assets(paths: RuntimePaths, request: GatewayRequest) -> Path | None:
+    """The bundle directory this listener serves from disk, or None.
+
+    An explicit directory is taken as named and refused where it holds no
+    `index.html`, since a launch that names a bundle and serves none would
+    proxy to a server that has no page either. The default is the runtime
+    root's own `opt/llama-ui/dist`, which answers None while no build has run.
+    """
+    named = request.llama_ui_static
+    if named is not None:
+        if not (named / "index.html").is_file():
+            raise ValueError(f"the named Web UI bundle carries no index.html: {named}")
+        return named
+    derived = paths["qwen_home_opt"].joinpath(*LLAMA_UI_ASSET_DIRECTORY)
+    return derived if (derived / "index.html").is_file() else None
+
+
+def upstream_client(paths: RuntimePaths, request: GatewayRequest) -> LlamaClient:
+    """One client over the server the supervisor published, or the fallback port.
+
+    Both listeners read the same binding, so the proxied page and the chat lane
+    answer from one process identity rather than from two views of a port.
+    """
+    return LlamaClient(
+        binding_from_runtime(paths["qwen_home_runtime_state"], fallback_port=request.upstream_port)
+    )
+
+
+def assemble_llama_ui(
+    paths: RuntimePaths, request: GatewayRequest, *, session: SessionGate
+) -> Gateway | None:
+    """The second listener, sharing this launch's session gate and Host set.
+
+    The proxy holds every route of this gateway, so no request reaches the
+    gateway's own static branch; the proxy reads the bundle itself, which is
+    what keeps the session gate ahead of every file it serves. `SessionGate.guards` names `/api/`,
+    which no router path matches, so the proxy calls `require_session` itself
+    and this gateway names no session authority.
+    """
+    if request.llama_ui_port <= 0:
+        return None
+    if request.llama_ui_port == request.port:
+        raise ValueError(
+            "the built-in page takes a listener of its own, so its port differs "
+            f"from the gateway's: {request.port}"
+        )
+    origin = llama_ui_origin(request)
+    static_root = request.static_root or paths.tree / "static"
+    card_directory = static_root / llama_ui.PAIRING_PAGE_DIRECTORY
+    assets = llama_ui_assets(paths, request)
+    config = GatewayConfig(
+        static_root=assets or card_directory,
+        port=request.llama_ui_port,
+        bind_host=request.bind_host,
+        origins=(origin,),
+        exposure=lan_exposure(request.bind_host),
+    )
+    settings = llama_ui.LlamaUiSettings(
+        client_factory=lambda: upstream_client(paths, request),
+        require_session=session.require_session,
+        pairing_page=card_directory / llama_ui.PAIRING_PAGE_NAME,
+        origin=origin,
+        assets=assets,
+    )
+    return Gateway(config, (llama_ui.LlamaUiProxy(settings),))
+
+
 def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, SessionGate]:
     for line in preflight_gateway(paths, request):
         print(line, flush=True)
@@ -258,7 +349,11 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         origins=(origin,),
         exposure=lan_exposure(request.bind_host),
     )
-    session = SessionGate(state, secure_cookie=not config.binds_loopback)
+    # The gateway serves plain HTTP on every bind, and a Secure cookie travels
+    # over HTTPS alone, so a Secure attribute would make the pairing cookie one
+    # the browser never returns; the attribute follows a TLS front when one
+    # exists rather than the bind address.
+    session = SessionGate(state, secure_cookie=False)
 
     def session_check(incoming: Request) -> approvals.SessionOrRefusal:
         try:
@@ -271,11 +366,7 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         return session_check(incoming).admitted
 
     def client() -> LlamaClient:
-        return LlamaClient(
-            binding_from_runtime(
-                paths["qwen_home_runtime_state"], fallback_port=request.upstream_port
-            )
-        )
+        return upstream_client(paths, request)
 
     approval_settings = approvals.build_settings(
         state,
@@ -434,6 +525,7 @@ def _assemble_armed(
             runtime_record=paths["qwen_home_runtime_state"],
             session_gate=session,
             approval_identity=identity,
+            llama_ui_origin=llama_ui_origin(request),
         ),
         _Providers(approvals.routes(approval_service)),
         _Providers(

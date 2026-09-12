@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import urllib.error
 import urllib.request
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from http.client import HTTPResponse
 from pathlib import Path
@@ -139,8 +139,17 @@ class LlamaClient:
         body: bytes | None = None,
         headers: Mapping[str, str] | None = None,
         stream: bool = False,
+        response_headers: Sequence[str] = FORWARDED_RESPONSE_HEADERS,
     ) -> UpstreamAnswer:
-        """One bracketed exchange against the bound server."""
+        """One bracketed exchange against the bound server.
+
+        `response_headers` is the caller's own filter over what the answer
+        carries back. The chat lane reads a JSON or SSE body and needs the
+        content type alone; a caller serving llama.cpp's own page reads
+        compressed assets and cache validators, which are headers that decide
+        whether the bytes decode at all, so the set belongs to the caller
+        rather than to this client.
+        """
         before = self.observe_listener()
         url = f"{self.binding.base_url()}{path}"
         upstream = urllib.request.Request(  # noqa: S310 -- the URL is composed from
@@ -163,7 +172,7 @@ class LlamaClient:
             raise UpstreamRefused(f"the upstream refused the request: {error}") from error
         answer_headers = {
             name: response.headers.get(name, "")
-            for name in FORWARDED_RESPONSE_HEADERS
+            for name in response_headers
             if response.headers.get(name)
         }
         return UpstreamAnswer(

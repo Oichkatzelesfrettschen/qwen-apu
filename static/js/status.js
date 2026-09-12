@@ -75,6 +75,10 @@ export function selectTab(name) {
      notice naming the launch that serves the other page, and the page this
      notice belongs to keeps the surfaces the other one has none of. */
   const chatSelected = name !== 'llama';
+  // The address is read when the panel opens rather than at boot: the route
+  // passes the session gate, and a page that never opens this tab sends no
+  // request for an origin it does not display.
+  if (!chatSelected) void initLlamaUiLink();
   $('#workspace').hidden = !chatSelected;
   $('#llama-ui-panel').hidden = chatSelected;
   $('#tab-chat').setAttribute('aria-selected', String(chatSelected));
@@ -84,15 +88,37 @@ export function selectTab(name) {
 export function initTabs() {
   $('#tab-chat').onclick = () => selectTab('chat');
   $('#tab-llama').onclick = () => selectTab('llama');
+}
+
+export async function initLlamaUiLink() {
+  /* Point the tab at the listener that serves llama.cpp's own page.
+
+     `GET /api/status` reports `gateway.llama_ui_origin`, which the assembly
+     derives from the bind host and `--llama-ui-port`; a launch that binds no
+     second listener reports the empty string. The route passes the session
+     gate, so an unpaired page reads nothing and the markup's own relative root
+     stays until a pairing admits the read. */
+  const link = $('#llama-ui-link');
+  const hint = $('#llama-ui-origin');
   try {
-    // The link names the listener this page came from, which is the address
-    // the ordinary router launch answers the llama.cpp UI on.
-    const pageOrigin = window.location.origin;
-    if (pageOrigin) {
-      $('#llama-ui-link').href = `${pageOrigin}/`;
-      $('#llama-ui-origin').textContent = ` -- ${pageOrigin}`;
+    const response = await fetch('/api/status');
+    if (!response.ok) {
+      hint.textContent = response.status === 401 ? ' -- pair to read the address' : '';
+      return '';
     }
-  } catch { /* a page without a location keeps the relative root the markup names */ }
+    const report = await response.json();
+    const origin = (report && report.gateway && report.gateway.llama_ui_origin) || '';
+    if (origin) {
+      link.href = `${origin}/`;
+      hint.textContent = ` -- ${origin}`;
+    } else {
+      hint.textContent = ' -- this launch binds no second listener';
+    }
+    return origin;
+  } catch (error) {
+    hint.textContent = ` -- the address is unread: ${error.message || error}`;
+    return '';
+  }
 }
 
 export async function probeHealth() {

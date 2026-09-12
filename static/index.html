@@ -78,18 +78,16 @@
   gateway both write their reason into them -- so the line wraps rather than
   truncating.
 
-  Two tabs name two launches of one binary rather than two routes of one
-  listener. `server_http_context::init` mounts a `--path` directory at
-  `api_prefix + "/"` when `public_path` carries a value (tools/server/
-  server-http.cpp:333-335) and registers the compiled-in SvelteKit assets under
-  the same `api_prefix` in its else branch (:339-427, routes at :403-404 and
-  :416-424), and `--api-prefix` supplies one value to whichever branch runs
-  (common/arg.cpp:3352-3356). Router mode changes nothing here:
-  `ctx_http.init(params)` runs ahead of the router branch (tools/server/
-  server.cpp:173 against :188-232) and `server-models.cpp` registers no UI route
-  at all. So the llama.cpp UI and this page are two launches of one binary
-  rather than two routes of one listener, and this tab states that rather than
-  linking to an address nothing answers.
+  Two tabs name two listeners of one gateway. `server_http_context::init`
+  mounts a `--path` directory at `api_prefix + "/"` where `public_path` carries
+  a value (tools/server/server-http.cpp:333-335) and registers the compiled-in
+  SvelteKit assets under the same prefix in its else branch (:339-427, routes
+  at :403-404 and :416-424), so one server serves one of the two pages and the
+  gateway's own listener serves this one. `web/llama_ui.py` binds the second
+  listener and forwards each request to that server on loopback, so the
+  llama.cpp UI answers at the port `--llama-ui-port` names. The tab reads that
+  origin from `GET /api/status`, which answers it to a paired browser alone, and
+  keeps the relative root until the answer arrives.
 -->
 <header id="topbar">
   <nav class="tabs" id="tab-bar" role="tablist" aria-label="Page">
@@ -189,14 +187,18 @@
 </div>
 
 <section class="notice" id="llama-ui-panel" hidden role="tabpanel" aria-labelledby="tab-llama">
-  <h2>The llama.cpp UI is served by the ordinary router launch</h2>
+  <h2>The llama.cpp UI answers on a second listener of this gateway</h2>
   <p>The qwen-apu gateway passes chat through <code>/api/chat</code> and serves
-    this page from its own static root, and the llama.cpp UI answers at the
-    router's own address and port instead. The approved web search, the approved
-    image generation with its artifact cards and vision review, and the feature
-    roster exist on this page alone.</p>
+    this page from its own static root. A launch started with
+    <code>--llama-ui-port</code> binds a second listener that forwards every
+    request to the same router on loopback and serves llama.cpp's own page
+    there, plain and uncustomized, behind the same pairing and the same Host set: the
+    session cookie is scoped to the host rather than to the port, so the
+    pairing that admitted this page admits that one. The approved web search,
+    the approved image generation with its artifact cards and vision review,
+    and the feature roster exist on this page alone.</p>
   <p>
-    <a id="llama-ui-link" href="/">open the root of this listener</a>
+    <a id="llama-ui-link" href="/">open the llama.cpp UI</a>
     <span class="hint" id="llama-ui-origin"></span>
   </p>
 </section>

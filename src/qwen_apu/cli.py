@@ -162,6 +162,26 @@ def build_parser() -> argparse.ArgumentParser:
     appliance_serve.add_argument("--web-profile", default=gateway_assembly.DEFAULT_WEB_PROFILE)
     appliance_serve.add_argument("--image-profile", default="")
     appliance_serve.add_argument("--static", type=Path, default=None)
+    appliance_serve.add_argument(
+        "--llama-ui-port",
+        type=int,
+        nargs="?",
+        const=gateway_assembly.DEFAULT_LLAMA_UI_PORT,
+        default=0,
+        help=(
+            "serve llama.cpp's own page on a second listener, behind the same "
+            f"pairing (default port {gateway_assembly.DEFAULT_LLAMA_UI_PORT})"
+        ),
+    )
+    appliance_serve.add_argument(
+        "--llama-ui-static",
+        type=Path,
+        default=None,
+        help=(
+            "the built tools/ui bundle the second listener serves; the default "
+            "reads opt/llama-ui/dist under the runtime root where it holds index.html"
+        ),
+    )
     appliance_serve.add_argument("--file-root", type=Path, action="append", default=[])
     appliance_serve.add_argument(
         "--image-service",
@@ -507,6 +527,9 @@ def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
                 model_id=args.model,
                 profile=args.profile,
                 port=args.port,
+                # The second listener proxies the router's own page, so the
+                # router argv carries `--ui` exactly where that listener runs.
+                ui=args.llama_ui_port > 0,
             ),
             gateway=gateway_assembly.GatewayRequest(
                 port=args.gateway_port,
@@ -517,6 +540,8 @@ def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
                 static_root=args.static,
                 file_roots=tuple(args.file_root),
                 searxng_armed=lane_children.searxng_armed,
+                llama_ui_port=args.llama_ui_port,
+                llama_ui_static=args.llama_ui_static,
             ),
             image_service=lane_children.image,
             searxng=lane_children.searxng,

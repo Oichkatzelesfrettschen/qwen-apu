@@ -218,3 +218,105 @@ document retrieves the source again rather than reading a stored copy; the Exa
 provider, so `searxng` is the one provider this executor reads; and the audit
 trail, which `Ledger.record` still serves for the approval routes while the
 executor writes no row of its own.
+
+## The second listener: llama.cpp's own Web UI
+
+The gateway serves the custom page on its own port and, where
+`appliance serve --llama-ui-port N` names one, a second listener on
+`bind_host:N` serving llama.cpp's own page plain. The default is 42072, which
+stands clear of the router's 8080 and of the legacy shell lane's 42069 to
+42071, so a Python launch and a legacy launch bind disjoint sets on one
+machine.
+
+The router argv states which page the server holds.
+`tools/server/server-http.cpp:333` mounts `params.public_path` at the server
+root where `--path` names a directory and registers the embedded asset table in
+the `else` branch that an empty `public_path` selects, so the staged page and
+the built-in page are exclusive. `ServeRequest.ui` adds `--ui` and names no
+`--path`, which is the branch that serves the built-in surface; a launch that
+stages a page keeps `--path ... --ui` and the default keeps `--no-ui`.
+
+`web/llama_ui.py` forwards each request to the router on loopback through the
+same `LlamaClient` the chat lane uses, so every exchange is bracketed by the
+listener identity bound to the supervisor's server pid and inode, and the body
+crosses in both directions unrewritten.
+
+Four rules carry the listener.
+
+The session is one. `SessionGate.guards` names `/api/` alone and every path
+here is a router path, so the proxy calls `require_session` itself and the
+second gateway names no session authority. One `SessionGate` backs both
+listeners and a cookie is scoped to a host rather than to a port, so the
+pairing that admits the chat page admits this one; an unpaired GET of the page
+root answers the card at `static/llama-ui/index.html`, and every other unpaired
+request is the gate's own 401.
+
+The admitted set is two, mirroring the route table `tools/server/server.cpp`
+registers. The inference and reading routes cross: `GET /health`, `/v1/health`,
+`/metrics`, `/props`, `/models`, `/v1/models`, `/models/sse`, `/slots`,
+`/lora-adapters`, and the POST completion, responses, messages, tokenize,
+detokenize, apply-template, infill, embedding, and rerank families. A GET whose
+segments are asset-shaped reaches the server's own asset table, which answers
+404 for a name it does not hold. Recorded scope cut: `POST /props`,
+`POST /slots/:id_slot`, `POST /lora-adapters`, and the router's `/models`,
+`/models/load`, and `/models/unload` stay behind, because a page reached
+through one pairing would otherwise load and unload checkpoints on a device the
+capacity policy alone places. A catch-all route per method is what keeps an
+unmatched path out of the gateway's static branch, which would serve the custom
+page's own files on this origin.
+
+The headers are three. `handle_gzip_header` answers 415 where `Accept-Encoding`
+omits gzip and returns `Content-Encoding: gzip` with the bytes, so both headers
+travel or the browser reads compressed bytes labeled as JavaScript; `ETag` and
+`If-None-Match` travel because the asset routes answer 304 from them. The
+cookie stays behind, as it does on the chat lane.
+
+The policy is four. The page's inline blocks are unread here -- this checkout
+carries no source for the SvelteKit build and no built asset directory -- so
+the served policy is `default-src 'none'; script-src 'self' 'unsafe-inline';
+style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'
+data:; connect-src 'self'; worker-src 'self'; manifest-src 'self';
+form-action 'none'; base-uri 'none'; frame-ancestors 'none'`. The two keywords
+are the conjecture and the falsifier is direct: read the inline blocks of the
+served `index.html` once a build embeds its asset table and replace them with
+`hash_source` digests, the way `web/app.py` does for the custom page.
+`worker-src` and `manifest-src` are source-backed, since `tools/ui/embed.cpp`
+requires `sw.js`, `workbox[hash].js`, and `manifest.webmanifest` among the
+assets it embeds.
+
+`state/appliance.json` names both listeners: `gateway_port` and
+`gateway_origin` beside `llama_ui_port` and `llama_ui_origin`, both on the one
+supervisor process that runs each on a thread. `GET /api/status` reports
+`gateway.llama_ui_origin`, and the page's llama.cpp UI tab reads it when the
+panel opens.
+
+The bundle is five. `remote/build-llama-vulkan.sh` configures
+`-DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF`, so `LLAMA_UI_HAS_ASSETS`
+stays undefined and the embedded-asset branch registers no route: `--ui` alone
+leaves the deployed server with the API routes and no page. The listener
+therefore serves the page itself. `remote/build-llama-ui.sh` builds `tools/ui`
+with Node where Node already is, and the appliance keeps the output under the
+runtime root at `opt/llama-ui/dist`; `appliance serve --llama-ui-static DIR`
+names another directory and a named directory carrying no `index.html` refuses
+the launch, while the default answers none until a build lands there and every
+path then proxies.
+
+A GET whose path resolves to a regular file inside the bundle is served from
+disk after the session gate, with the headers `serve_asset_cached` sends:
+`no-cache` on `index.html`, `sw.js`, `manifest.webmanifest`, `version.json`,
+and `build.json`, the immutable year on every hashed name, the
+`Cross-Origin-Embedder-Policy: require-corp` and
+`Cross-Origin-Opener-Policy: same-origin` pair on the page alone, an ETag the
+bytes decide, and a 304 to a request whose `If-None-Match` matches it. The
+content type comes from the extension, with `.js`, `.mjs`, `.webmanifest`,
+`.wasm`, and `.map` named explicitly, since a module served as anything but a
+JavaScript type is refused by the browser and a manifest served as JSON is
+ignored by the installer. `StaticDirectory.resolve` unquotes before the
+containment check, so `%2e%2e%2f` meets it rather than passing as an opaque
+segment; a path outside the bundle resolves to nothing and falls to the proxy,
+which the router answers 404 for. Every other path proxies as before, so the
+bundle takes precedence and the API routes stay on the router.
+
+The router still runs `--ui` with no `--path`. It registers no route in this
+build, and it states which page the server would hold in a build that embeds
+its asset table.

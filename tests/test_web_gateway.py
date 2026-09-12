@@ -747,6 +747,45 @@ def test_status_carries_the_runtime_record_and_no_bearer(gateway: Fixture) -> No
     assert b"env" not in body
 
 
+def test_status_names_the_second_listener_the_page_tab_opens(gateway: Fixture) -> None:
+    """The tab reads `gateway.llama_ui_origin`, and an unset launch reports it empty."""
+    service = StatusService(
+        lambda: LlamaClient(binding_from_runtime(gateway.state / "runtime.json", fallback_port=1)),
+        runtime_record=gateway.state / "runtime.json",
+        session_gate=gateway.gate,
+        llama_ui_origin="http://127.0.0.1:42072",
+    )
+    report = json.loads(service.status(_probe_request("127.0.0.1")).body)
+    assert report["gateway"]["llama_ui_origin"] == "http://127.0.0.1:42072"
+
+    paired, _ = _pair(gateway, gateway.code)
+    cookie = _session_cookie(paired)
+    response, body = _exchange(gateway, "GET", "/api/status", headers={"Cookie": cookie})
+    assert response.status == 200
+    assert json.loads(body)["gateway"]["llama_ui_origin"] == ""
+
+
+def test_the_second_listener_is_assembled_only_where_a_port_names_it(tmp_path: Path) -> None:
+    """Zero starts one listener, and the two ports differ where both run."""
+    paths = _assembly_root(tmp_path)
+    _write_key(paths, b"c0ffee\n")
+    gate = SessionGate(tmp_path / "session")
+    assert (
+        gateway_assembly.assemble_llama_ui(
+            paths, gateway_assembly.GatewayRequest(port=8090), session=gate
+        )
+        is None
+    )
+    with pytest.raises(ValueError, match="listener of its own"):
+        gateway_assembly.assemble_llama_ui(
+            paths,
+            gateway_assembly.GatewayRequest(port=8090, llama_ui_port=8090),
+            session=gate,
+        )
+    request = gateway_assembly.GatewayRequest(port=8090, llama_ui_port=42072)
+    assert gateway_assembly.llama_ui_origin(request) == "http://127.0.0.1:42072"
+
+
 def test_health_from_a_routable_peer_presents_a_session(gateway: Fixture) -> None:
     """Every field here is a process identity, so a LAN peer pairs first."""
     service = StatusService(
@@ -1224,3 +1263,24 @@ def test_the_approval_settings_admit_the_lan_bind_host(tmp_path: Path) -> None:
     )
     assert "10.0.0.170" in settings.admitted_hosts
     assert "127.0.0.1" in settings.admitted_hosts
+
+
+def test_a_lan_bound_pairing_cookie_travels_over_plain_http(tmp_path: Path) -> None:
+    """The gateway serves HTTP, so the cookie carries no Secure attribute on any bind."""
+    paths = _assembly_root(tmp_path)
+    _write_key(paths, b"c0ffee\n")
+    gate = SessionGate(paths["qwen_home_state"], secure_cookie=False)
+    code = gate.start()
+    request = Request(
+        method="POST",
+        path="/api/pair",
+        query={},
+        headers={"host": "10.0.0.170:42069", "content-type": "application/json"},
+        body=json.dumps({"code": code}).encode("utf-8"),
+        client_address="10.0.0.9",
+    )
+    response = gate.pair(request)
+    assert response.status == 200
+    cookie = response.headers.get("set-cookie") or response.headers.get("Set-Cookie", "")
+    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
+    assert "Secure" not in cookie

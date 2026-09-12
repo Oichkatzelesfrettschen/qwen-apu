@@ -98,6 +98,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from qwen_apu.config.models import validate_cache_type, validate_q4k_variant
 from qwen_apu.runtime.paths import RuntimePaths
@@ -1809,6 +1810,7 @@ def build_launch_plan(  # noqa: C901, PLR0917
     static_path: str = "",
     api_key_file: str = "",
     *,
+    ui: bool = False,
     script_directory: Path | None = None,
     environ: Mapping[str, str] | None = None,
     qwen_router: str = "0",
@@ -2437,8 +2439,17 @@ def build_launch_plan(  # noqa: C901, PLR0917
             qwen_cors_origins,
         ]
 
+    # `--path` mounts a directory at the server root and `--ui` alone serves the
+    # asset table `tools/ui/embed.cpp` compiles into the binary, so the staged
+    # page and the built-in page are the two exclusive surfaces of one flag
+    # pair: `server-http.cpp` registers the embedded routes in the `else` branch
+    # that an empty `public_path` selects. A launch that stages a page keeps it,
+    # `ui` alone asks for the built-in surface, and neither leaves the server
+    # reading llama.cpp's default `--path` value.
     if static_path:
         argv += ["--path", static_path, "--ui"]
+    elif ui:
+        argv.append("--ui")
     else:
         argv.append("--no-ui")
     if api_key_file:
@@ -2926,7 +2937,10 @@ def plan_from_environment(
     """
     if not 3 <= len(arguments) <= 6:
         raise PolicyError(USAGE)
-    keywords = {
+    # Every expanded keyword is one environment string, and `ui` is a bool the
+    # Python lane sets rather than an environment name this table carries, so
+    # the mapping is annotated where it is built rather than at the call.
+    keywords: dict[str, Any] = {
         keyword: environ.get(name) or fallback for name, keyword, fallback in _ENVIRONMENT_KEYWORDS
     }
     return build_launch_plan(

@@ -332,3 +332,50 @@ def test_a_terminated_child_leaves_before_the_grace_expires(root: RuntimePaths) 
     # SIGTERM alone ends the child, so the stop returns inside the grace rather
     # than spending it and escalating to SIGKILL.
     assert elapsed < appliance.TERMINATION_GRACE_SECONDS * 2
+
+
+def test_the_record_names_both_listeners_of_one_gateway_process(root: RuntimePaths) -> None:
+    """Both listeners run on threads of this process, so both fields name it.
+
+    The gateway serves the custom page and the second listener proxies
+    llama.cpp's own, and a reader that signals the appliance reads one pid for
+    both; the ports separate them.
+    """
+    record = appliance.ApplianceRecord(path=appliance.record_path(root))
+    record.write(
+        appliance.ApplianceState(
+            state="ready",
+            gateway_pid=4242,
+            gateway_port=8090,
+            gateway_origin="http://127.0.0.1:8090",
+            llama_ui_port=42072,
+            llama_ui_origin="http://127.0.0.1:42072",
+            children=(
+                appliance.ChildRecord(
+                    name=appliance.ROUTER_CHILD, pid=11, pgid=11, start_time=7, argv0="python3"
+                ),
+            ),
+        )
+    )
+    read = appliance.ApplianceRecord(path=appliance.record_path(root)).read()
+    assert read is not None
+    assert read.gateway_port == 8090
+    assert read.llama_ui_port == 42072
+    assert read.llama_ui_origin == "http://127.0.0.1:42072"
+    assert "llama_ui=http://127.0.0.1:42072\n" in appliance.render(read)
+
+
+def test_a_record_written_before_the_second_listener_reads_it_absent(
+    root: RuntimePaths,
+) -> None:
+    """`from_json` filters by field name, so an older record loads with the default."""
+    payload = {
+        "schema": appliance.SCHEMA,
+        "state": "ready",
+        "gateway_port": 8090,
+        "gateway_origin": "http://127.0.0.1:8090",
+    }
+    read = appliance.ApplianceState.from_json(payload)
+    assert read.llama_ui_port == 0
+    assert read.llama_ui_origin == "-"
+    assert "llama_ui=-\n" in appliance.render(read)
