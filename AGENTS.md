@@ -30,10 +30,15 @@ doctor, the migration, and the receipt fields.
 present or absent, into `$QWEN_HOME/manifest.tsv`; `make doctor` reports
 predecessor paths outside the root, foreign entries under it, and transient
 system state without touching any of them; `make purge-legacy` removes
-exactly the enumerated predecessor paths under an explicit opt-in. The one
-persistent root-owned object is `/etc/sudoers.d/90-qwen-agent`, installed
-from `runtime/sudoers/90-qwen-agent` and required to hash to it. Every other
-privileged write is transactional. `remote/check-appliance-paths.py` fails the
+exactly the enumerated predecessor paths under an explicit opt-in. The
+persistent root-owned objects are two. `/etc/sudoers.d/90-qwen-agent` is
+installed from `runtime/sudoers/90-qwen-agent` and required to hash to it, and
+`/etc/udev/rules.d/90-qwen-amdgpu-clocks.rules` is installed once from
+`runtime/udev/` by `remote/install-amdgpu-clock-access.sh`, handing the three
+amdgpu clock attributes to the `video` group so the appliance states its own
+operating point at every launch with no privilege and a reboot re-applies that
+access before anything serves. Every other privileged write is transactional.
+`remote/check-appliance-paths.py` fails the
 repository gate where a production script names owned storage under
 `/usr/local`, `/opt`, `/etc`, `$HOME`, or `~`, with the system facts the
 appliance reads allowlisted by prefix in

@@ -45,7 +45,7 @@ from types import FrameType
 from typing import Any
 
 from qwen_apu.config import models as config_models
-from qwen_apu.runtime import lanes
+from qwen_apu.runtime import graphics_state, lanes
 from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime import state as runtime_state
 from qwen_apu.runtime.paths import RuntimePaths
@@ -336,6 +336,11 @@ class Appliance:
             print(line, flush=True)
         for line in gateway_assembly.preflight_gateway(self.paths, self.request.gateway):
             print(line, flush=True)
+        # The part reads a decode as a low-use workload and clocks down for it,
+        # so the operating point is stated here rather than left to the
+        # governor, and a launch that cannot state it says what it is serving
+        # at instead of serving quietly at the bottom of the table.
+        print(graphics_state.pin().as_line(), flush=True)
 
         self.record.transition(
             "starting",

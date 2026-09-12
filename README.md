@@ -103,6 +103,21 @@ that asks for a key is a page whose session is absent, which pairing answers.
 
 The previous single-page client stays at `42069/legacy/`.
 
+The appliance states its own graphics operating point at every launch and
+prints what the part delivered, because the firmware reads a decode as a
+low-use workload and clocks down for it. One privileged action enables that
+once per machine:
+
+```sh
+sudo -v && remote/install-amdgpu-clock-access.sh install
+```
+
+It installs a udev rule handing the three amdgpu clock attributes to the
+`video` group, so every later launch pins its states with no privilege and a
+reboot re-applies the access before anything serves. Without it the appliance
+still serves and its `graphics_state=` line says it is running at whatever the
+governor chose.
+
 Readiness reports missing runtime inputs before anything listens: the weights
 digest, the signing key, and the activated deployment bundle each refuse a
 launch on their own. An existing installation needs no rebuild per session.
