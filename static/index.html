@@ -5,250 +5,106 @@
 <title>qwen-apu</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <!--
-  One origin carries the page and every route it calls. The gateway serves this
-  directory, mints the session the browser presents, proxies chat, signs the
-  approval grants, and reads the artifacts, so the page derives no sibling
-  origin and holds no bearer: `src/qwen_apu/web/auth.py` mints an HttpOnly
-  SameSite=Strict cookie at `POST /api/pair` and script never reads it.
+  The shell is a rail and two panes. The rail selects a domain, Chat or Image,
+  and each pane is a wrapper over a native surface rather than a surface of its
+  own: Chat frames llama.cpp's built-in page from the gateway's second listener,
+  which carries attachments, reasoning, and the router's model picker itself,
+  and Image drives the gateway's own generation routes over one grant per job.
 
-  The two LAN bound tags below describe the ceiling a launch applies.
-  `remote/stage-webui-page.sh` writes the served values into the copy it
-  stages, and an empty value here leaves the page unbounded: the launch states
-  the bound and the server enforces it.
+  One pairing admits both. `POST /api/pair` on this origin mints the HttpOnly
+  SameSite=Strict cookie `src/qwen_apu/web/auth.py` scopes to the host, so the
+  framed listener on the sibling port reads the same session, and this page
+  holds no bearer and no secret in script.
+
+  `GET /api/status` names the second listener's origin as
+  `gateway.llama_ui_origin` and the approval identity as `gateway.approvals`;
+  the shell reads both once a session exists and derives nothing from its own
+  port. The previous single-page client stays served under `legacy/` for the
+  acceptance driver and as the recovery surface.
 -->
-<meta name="qwen-lan-max-prompt-tokens" content="">
-<meta name="qwen-lan-max-output-tokens" content="">
-<!--
-  Three regions carry the page: the conversation rail, the main column, and the
-  composer docked at the foot of that column. The rail lists what the
-  conversation store holds, the `#/c/<id>` route names one of them, and the log
-  renders the record the route selects, so a reload returns to the transcript
-  the reader left. An empty log centers the greeting and the composer, which is
-  the state a reader opens a new conversation into.
-
-  Reasoning is shown, folded, beside the answer. A model can spend a whole small
-  token budget reasoning and return empty answer content. The separate display
-  distinguishes that result from a dead server.
-
-  A text file is tokenized by the gateway before it is attached. The count comes
-  from the loaded Qwen tokenizer rather than a prose character ratio. There is
-  no file API: the browser reads the bytes and places them in the prompt, and
-  the server refuses a prompt that exceeds the active context.
-
-  Server timings are preferred when the stream supplies them. Browser-derived
-  rates remain interactive diagnostics rather than admitted benchmark results.
-  The native Vulkan backend uses LOW-priority bounded submissions so desktop
-  graphics can preempt inference work.
--->
-<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="shell.css">
 </head>
-
 <body>
-
-<!--
-  The rail holds one conversation per row and the four actions that create and
-  dispose of them. A Temporary conversation is the exception the banner names:
-  it lives in a memory store for the life of the tab, so the rail lists it
-  nowhere and the reload that returns to a durable transcript returns to none of
-  it.
--->
-<aside id="conversation-panel">
-  <div id="rail-brand">qwen-apu</div>
-  <div id="conversation-actions">
-    <button class="rail-action" id="conversation-new">New conversation</button>
-    <button class="rail-action" id="conversation-temporary">Temporary</button>
+<nav class="rail" aria-label="domains">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <span class="name">qwen-apu</span>
   </div>
-  <p class="rail-heading">Recent conversations</p>
-  <div id="conversation-list"></div>
-  <div id="rail-footer">
-    <p class="meta" id="conversation-storage-status"></p>
-    <div class="rail-footer-actions">
-      <button class="act small" id="conversation-export">Export</button>
-      <button class="act small" id="conversation-delete-all">Delete all</button>
+  <div class="nav-list" role="tablist" aria-label="domain">
+    <button id="nav-chat" class="nav" role="tab" aria-selected="true" aria-controls="view-chat">
+      <span class="glyph" aria-hidden="true">&#9679;</span><span>Chat</span>
+    </button>
+    <button id="nav-image" class="nav" role="tab" aria-selected="false" aria-controls="view-image">
+      <span class="glyph" aria-hidden="true">&#9635;</span><span>Image</span>
+    </button>
+  </div>
+  <div class="rail-foot">
+    <div id="rail-status" class="status" data-state="reading">
+      <span id="status-dot" class="dot" aria-hidden="true"></span>
+      <span id="status-text">reading status</span>
     </div>
-    <p class="meta" id="conversation-export-status"></p>
+    <a id="plain-ui-link" class="foot-link" href="/" target="_blank" rel="noopener" hidden>plain llama.cpp UI</a>
+    <a class="foot-link" href="legacy/">legacy page</a>
   </div>
-</aside>
+</nav>
 
-<main id="main">
+<main>
+  <section id="view-pair" class="pane pair" hidden aria-label="pairing">
+    <form id="pair-form" class="card">
+      <h1>Pair this browser</h1>
+      <p>The appliance mints one pairing code per start and <code>qwen-apu status</code>
+        prints it on the laptop. The code is spent by the first browser that presents it;
+        a restart mints another.</p>
+      <label for="pair-code">pairing code</label>
+      <input id="pair-code" name="code" autocomplete="off" spellcheck="false" required>
+      <button id="pair-submit" type="submit" class="primary">Pair</button>
+      <p id="pair-note" class="note" hidden></p>
+    </form>
+  </section>
 
-<!--
-  One status line and one segmented control. `#health`, `#model`, and `#ctx`
-  are error channels as much as labels -- a refused pairing and an unreachable
-  gateway both write their reason into them -- so the line wraps rather than
-  truncating.
-
-  Two tabs name two listeners of one gateway. `server_http_context::init`
-  mounts a `--path` directory at `api_prefix + "/"` where `public_path` carries
-  a value (tools/server/server-http.cpp:333-335) and registers the compiled-in
-  SvelteKit assets under the same prefix in its else branch (:339-427, routes
-  at :403-404 and :416-424), so one server serves one of the two pages and the
-  gateway's own listener serves this one. `web/llama_ui.py` binds the second
-  listener and forwards each request to that server on loopback, so the
-  llama.cpp UI answers at the port `--llama-ui-port` names. The tab reads that
-  origin from `GET /api/status`, which answers it to a paired browser alone, and
-  keeps the relative root until the answer arrives.
--->
-<header id="topbar">
-  <nav class="tabs" id="tab-bar" role="tablist" aria-label="Page">
-    <button id="tab-chat" role="tab" aria-controls="workspace" aria-selected="true">Chat</button>
-    <button id="tab-llama" role="tab" aria-controls="llama-ui-panel" aria-selected="false">llama.cpp UI</button>
-  </nav>
-  <p class="status" id="status-line">
-    <span id="health">health pending</span>
-    <span id="model">connecting</span>
-    <span class="tier-badge" id="model-tier" hidden></span>
-    <span id="ctx">context pending</span>
-  </p>
-  <button class="act round" id="clear" aria-label="New conversation" title="New conversation">+</button>
-</header>
-
-<!--
-  The pairing card is the one surface a 401 from a guarded route reveals, and
-  `applySessionModeToUi` in js/api.js hides the card with the three controls
-  inside it, so a paired reader meets the chat alone.
--->
-<div id="pair-card" hidden>
-  <h2>Enter the pairing code</h2>
-  <p class="hint" id="pair-hint" hidden>The appliance prints the code in `qwen-apu status`; it is spent once for this browser's session.</p>
-  <div class="pair-row">
-    <label class="visually-hidden" for="pair-code">Pairing code</label>
-    <input class="key" type="password" id="pair-code" placeholder="pairing code" autocomplete="off" hidden>
-    <button class="act" id="pair" hidden>Pair</button>
-  </div>
-</div>
-
-<div id="workspace" role="tabpanel" aria-labelledby="tab-chat">
-  <div id="chat-column">
-    <div id="chat-band">
-      <p class="temporary-banner" id="temporary-banner" hidden>Temporary conversation: this transcript stays in memory for the life of this tab and reaches no browser store. Closing the tab ends it.</p>
-      <!--
-        The support matrix reports what remote/feature-claims.tsv claims for the
-        ids GET /api/models returned, so a reader sees the tier and the
-        per-feature status of the row the picker is about to route to. The
-        gateway serves this directory, and evidence/ is a repository surface, so
-        a cell names its evidence path for a reader to open in the tree.
-      -->
-      <details class="roster" id="roster-matrix" hidden>
-        <summary id="roster-summary">feature support</summary>
-        <div id="roster-matrix-body"></div>
-      </details>
-      <!--
-        What each tool answers for the selected model. The feature roster above
-        states a claim the ledgers retain; this panel states what a call would
-        meet right now, which the launch, the approval profile, and the worker
-        socket decide beside those ledgers. A refused row names its authority
-        here rather than at the call.
-      -->
-      <details class="roster" id="tool-matrix" hidden>
-        <summary id="tool-matrix-summary">tool support</summary>
-        <div id="tool-matrix-body"></div>
-      </details>
+  <section id="view-chat" class="pane chat" role="tabpanel" aria-labelledby="nav-chat">
+    <iframe id="chat-frame" title="llama.cpp chat" allow="clipboard-write"></iframe>
+    <div id="chat-absent" class="empty" hidden>
+      <h2>Chat runs on llama.cpp's own page</h2>
+      <p>This launch binds no second listener, so there is nothing to frame here.
+        Start the appliance with <code>--llama-ui-port</code> and the chat pane frames
+        that listener behind this pairing.</p>
     </div>
+  </section>
 
-    <div id="thread">
-      <div id="greeting"><h1>What should we work on?</h1></div>
-      <div id="log"></div>
-
-      <footer id="composer">
-        <div id="attached"></div>
-        <div class="composer-shell">
-          <label class="visually-hidden" for="input">Message</label>
-          <textarea id="input" rows="1" placeholder="Ask. Shift+Enter for a newline."></textarea>
-          <div class="composer-controls">
-            <!--
-              The plus menu is a `details` element, so it opens from the
-              keyboard and closes on a second activation with no script. The
-              file input sits inside it and the label opens the picker.
-            -->
-            <details class="plus-menu">
-              <summary aria-label="Add to this turn" title="Add to this turn">+</summary>
-              <div class="plus-sheet">
-                <label class="menu-item" for="file">Add files</label>
-                <input type="file" id="file" multiple accept="image/*,text/*,.md,.txt,.log,.csv,.json,.py,.c,.h,.rs,.sh">
-                <p class="menu-note">An image reaches the model where the selected checkpoint pairs with a projector; a text file is tokenized by the gateway before it is attached.</p>
-              </div>
-            </details>
-            <label class="toggle"><input type="checkbox" role="switch" id="reasoning"> reasoning</label>
-            <label class="toggle"><input type="checkbox" role="switch" id="web-tools"> web</label>
-            <label class="toggle"><input type="checkbox" role="switch" id="image-tools"> image</label>
-            <span class="composer-spacer"></span>
-            <select class="model-picker" id="model-picker" aria-label="Model" hidden></select>
-            <button class="send" id="send" aria-label="Send" title="Send">
-              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
-                <path d="M12 19V5M12 5l-6 6M12 5l6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
-              </svg>
-            </button>
-          </div>
+  <section id="view-image" class="pane image" role="tabpanel" aria-labelledby="nav-image" hidden>
+    <div class="studio">
+      <form id="image-form" class="composer">
+        <h1>Image</h1>
+        <p id="image-profile" class="hint">reading the image profile</p>
+        <label for="image-prompt">prompt</label>
+        <textarea id="image-prompt" rows="3" placeholder="what the image shows" required></textarea>
+        <label for="image-negative">negative prompt</label>
+        <textarea id="image-negative" rows="2" placeholder="what it leaves out"></textarea>
+        <div class="row">
+          <label>steps
+            <input id="image-steps" type="number" min="1" step="1" value="1">
+          </label>
+          <label>seed
+            <input id="image-seed" type="number" min="0" step="1" inputmode="numeric">
+          </label>
+          <button id="image-reseed" type="button" class="quiet" title="draw a new seed">new seed</button>
+          <span id="image-size" class="chip">size unknown</span>
         </div>
-      </footer>
+        <div class="row actions">
+          <button id="image-generate" type="submit" class="primary" disabled>Generate</button>
+          <button id="image-cancel" type="button" class="quiet" hidden>Cancel</button>
+          <span id="image-state" class="state" role="status" aria-live="polite"></span>
+        </div>
+        <p id="image-note" class="note" hidden></p>
+      </form>
+      <section id="image-gallery" class="gallery" aria-label="generated images">
+        <p id="gallery-empty" class="hint">No images yet. Every image here was generated on this
+          appliance and is read back from its artifact store.</p>
+      </section>
     </div>
-  </div>
-</div>
-
-<section class="notice" id="llama-ui-panel" hidden role="tabpanel" aria-labelledby="tab-llama">
-  <h2>The llama.cpp UI answers on a second listener of this gateway</h2>
-  <p>The qwen-apu gateway passes chat through <code>/api/chat</code> and serves
-    this page from its own static root. A launch started with
-    <code>--llama-ui-port</code> binds a second listener that forwards every
-    request to the same router on loopback and serves llama.cpp's own page
-    there, plain and uncustomized, behind the same pairing and the same Host set: the
-    session cookie is scoped to the host rather than to the port, so the
-    pairing that admitted this page admits that one. The approved web search,
-    the approved image generation with its artifact cards and vision review,
-    and the feature roster exist on this page alone.</p>
-  <p>
-    <a id="llama-ui-link" href="/">open the llama.cpp UI</a>
-    <span class="hint" id="llama-ui-origin"></span>
-  </p>
-</section>
-
+  </section>
 </main>
-
-<!--
-  The approval dialog is the boundary the web search tool is built around. The
-  model writes the query, and evidence/model-admission records tool-08 carrying
-  an injected city into a tool call in place of the authorized one in all six
-  measured arms, so a human reads the exact proposed arguments here and the
-  gateway signs a grant over those arguments alone. The dialog offers one
-  approval and a refusal: a standing grade would authorize a query nobody has
-  read, which is what the single-use grant exists to prevent.
--->
-<dialog class="approval" id="web-approval">
-  <h2>Authorize one web search</h2>
-  <p class="why">The model proposes these exact arguments. An approval signs a
-    grant over them and admits one search; the served path refuses any other
-    query, domain list, publication window, cached age, or larger result count.</p>
-  <p class="approval-note" id="approval-note" hidden></p>
-  <dl class="args" id="approval-args"></dl>
-  <div class="approval-actions">
-    <button class="act" id="approve-deny">deny</button>
-    <button class="act primary" id="approve-once">approve once</button>
-  </div>
-</dialog>
-
-<!--
-  A proposed generate_image call opens this dialog with the same exact-argument
-  discipline as the web search dialog: the gateway signs its
-  qwen-image-generate-v1 grant over the fields shown here, never over a value
-  the model wrote and nobody read. The one addition against the search dialog is
-  the seed -- when the model omits it this page generates one with
-  crypto.getRandomValues and the dialog names it as generated, because
-  randomness is never chosen after authorization.
--->
-<dialog class="approval" id="image-approval">
-  <h2>Authorize one image generation</h2>
-  <p class="why">The model proposes these exact arguments. An approval signs a
-    grant over them and admits one generation; the served path refuses any
-    other prompt, negative prompt, seed, size, step count, or profile.</p>
-  <p class="approval-note" id="image-approval-note" hidden></p>
-  <dl class="args" id="image-approval-args"></dl>
-  <div class="approval-actions">
-    <button class="act" id="image-approve-deny">deny</button>
-    <button class="act primary" id="image-approve-once">approve once</button>
-  </div>
-</dialog>
-
-<script type="module" src="js/status.js"></script>
+<script type="module" src="js/shell.js"></script>
 </body>
 </html>

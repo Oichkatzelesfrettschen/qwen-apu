@@ -64,7 +64,7 @@ test('a page load opens Chat and the tabs move one panel at a time', async () =>
 });
 
 test('the notice states what exists on this page alone', () => {
-  const markup = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
+  const markup = fs.readFileSync(new URL('../../static/legacy/index.html', import.meta.url), 'utf8');
   const notice = markup.slice(
     markup.indexOf('<section class="notice" id="llama-ui-panel"'),
     markup.indexOf('</section>')).replace(/\s+/g, ' ');
@@ -78,7 +78,7 @@ test('the bearer copy control leaves with the bearer', () => {
   // The page holds no API key: `POST /api/pair` mints an HttpOnly cookie
   // script cannot read, so there is nothing for a copy button to copy and the
   // llama.cpp UI reaches the router through the gateway's own proxy.
-  const markup = fs.readFileSync(new URL('../../static/index.html', import.meta.url), 'utf8');
+  const markup = fs.readFileSync(new URL('../../static/legacy/index.html', import.meta.url), 'utf8');
   for (const id of ['copy-api-key', 'api-key', 'set-key', 'key-hint', 'lan-key-hint']) {
     assert.ok(!markup.includes(`id="${id}"`), `the page still carries #${id}`);
   }

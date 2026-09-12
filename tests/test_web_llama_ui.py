@@ -185,7 +185,12 @@ def _write_runtime_record(state: Path, port: int) -> Path:
     return record_path
 
 
-def _build(tmp_path: Path, upstream: ThreadingHTTPServer, assets: Path | None) -> Fixture:
+def _build(
+    tmp_path: Path,
+    upstream: ThreadingHTTPServer,
+    assets: Path | None,
+    frame_ancestors: str = "'none'",
+) -> Fixture:
     """Both listeners over one session gate, with the proxy holding `assets` or none."""
     static_root = tmp_path / "static"
     (static_root / llama_ui.PAIRING_PAGE_DIRECTORY).mkdir(parents=True)
@@ -218,6 +223,7 @@ def _build(tmp_path: Path, upstream: ThreadingHTTPServer, assets: Path | None) -
                     require_session=gate.require_session,
                     pairing_page=card,
                     assets=assets,
+                    frame_ancestors=frame_ancestors,
                 )
             ),
         ),
@@ -566,3 +572,41 @@ def test_the_assembly_reads_the_runtime_roots_bundle_where_a_build_left_one(
             paths,
             assemble_module.GatewayRequest(port=8090, llama_ui_port=42072, llama_ui_static=empty),
         )
+
+
+# ---------------------------------------------------------------------------
+# The shell frames this listener
+# ---------------------------------------------------------------------------
+
+
+def test_the_standalone_listener_admits_no_framer() -> None:
+    settings = llama_ui.LlamaUiSettings(
+        client_factory=lambda: None,  # type: ignore[arg-type,return-value]
+        require_session=lambda request: None,
+        pairing_page=Path("card.html"),
+    )
+    assert "frame-ancestors 'none'" in settings.policy
+    assert llama_ui.CONTENT_SECURITY_POLICY == settings.policy
+
+
+def test_the_named_page_origin_is_the_one_framer(
+    tmp_path: Path, upstream: ThreadingHTTPServer, bundle: Path
+) -> None:
+    """Every answer of the listener names the shell's origin in `frame-ancestors`.
+
+    The shell on the chat page's port frames this page, and a browser reads
+    the directive on the framed document alone, so the bundle's page, an
+    asset, and a proxied router answer each carry the same origin.
+    """
+    shell_origin = "http://127.0.0.1:42069"
+    running = _build(tmp_path, upstream, bundle, frame_ancestors=shell_origin)
+    try:
+        cookie = _pair(running)
+        for path in ("/", "/assets/bundle.abc123.js", "/props"):
+            response, _ = _request(running.proxy, "GET", path, headers={"Cookie": cookie})
+            assert response.status == 200, path
+            policy = response.getheader("content-security-policy") or ""
+            assert f"frame-ancestors {shell_origin}" in policy, path
+            assert "'none'" not in policy.split("frame-ancestors", 1)[1], path
+    finally:
+        running.stop()

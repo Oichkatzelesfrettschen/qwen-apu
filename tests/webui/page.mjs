@@ -78,6 +78,13 @@ export class FakeElement {
     }
   }
 
+  prepend(...children) {
+    this.children.unshift(...children);
+    for (const child of children) {
+      if (child instanceof FakeElement) child.parentNode = this;
+    }
+  }
+
   insertBefore(node) {
     this.children.unshift(node);
     if (node instanceof FakeElement) node.parentNode = this;

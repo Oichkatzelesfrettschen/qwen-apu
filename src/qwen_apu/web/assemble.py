@@ -256,6 +256,11 @@ def lan_exposure(bind_host: str) -> str:
     return "" if bind_host in LOOPBACK_HOSTS else bind_host
 
 
+def page_origin(request: GatewayRequest) -> str:
+    """The origin of the chat page's own listener, as a browser spells it."""
+    return f"http://{request.bind_host}:{request.port}"
+
+
 def llama_ui_origin(request: GatewayRequest) -> str:
     """The second listener's origin, or the empty string where a launch starts none."""
     if request.llama_ui_port <= 0:
@@ -326,6 +331,9 @@ def assemble_llama_ui(
         pairing_page=card_directory / llama_ui.PAIRING_PAGE_NAME,
         origin=origin,
         assets=assets,
+        # The shell on the chat page's port frames this page, so that origin
+        # is the one `frame-ancestors` admits.
+        frame_ancestors=page_origin(request),
     )
     return Gateway(config, (llama_ui.LlamaUiProxy(settings),))
 
@@ -348,6 +356,9 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         bind_host=request.bind_host,
         origins=(origin,),
         exposure=lan_exposure(request.bind_host),
+        # The shell frames the second listener's page; a launch that binds
+        # none leaves the page framing nothing.
+        frame_sources=(llama_ui_origin(request),),
     )
     # The gateway serves plain HTTP on every bind, and a Secure cookie travels
     # over HTTPS alone, so a Secure attribute would make the pairing cookie one

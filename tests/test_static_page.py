@@ -24,8 +24,27 @@ from pathlib import Path
 import pytest
 
 STATIC_ROOT = Path(__file__).resolve().parents[1] / "static"
-INDEX = STATIC_ROOT / "index.html"
 SCRIPT_DIRECTORY = STATIC_ROOT / "js"
+
+# The two pages the static root serves: the shell at `/`, whose entry module
+# is `js/shell.js`, and the previous single-page client under `legacy/`, whose
+# asset references climb one directory. Each names one module and one
+# stylesheet, and the LAN bound tags belong to the page that carries a
+# composer, which is the legacy one.
+PAGES = {
+    "shell": {
+        "path": STATIC_ROOT / "index.html",
+        "script": "js/shell.js",
+        "stylesheet": "shell.css",
+        "lan_bounds": False,
+    },
+    "legacy": {
+        "path": STATIC_ROOT / "legacy" / "index.html",
+        "script": "../js/status.js",
+        "stylesheet": "../app.css",
+        "lan_bounds": True,
+    },
+}
 
 # The two tags the LAN launch writes its ceiling into.
 LAN_BOUND_TAGS = ("qwen-lan-max-prompt-tokens", "qwen-lan-max-output-tokens")
@@ -79,11 +98,13 @@ class PageReader(HTMLParser):
             self.inline_styles += 1
 
 
-@pytest.fixture(scope="module")
-def page() -> PageReader:
+@pytest.fixture(scope="module", params=sorted(PAGES))
+def page(request: pytest.FixtureRequest) -> PageReader:
+    facts = PAGES[request.param]
     reader = PageReader()
-    reader.feed(INDEX.read_text(encoding="utf-8"))
+    reader.feed(facts["path"].read_text(encoding="utf-8"))
     reader.close()
+    reader.facts = facts  # type: ignore[attr-defined]
     return reader
 
 
@@ -96,15 +117,17 @@ def test_the_page_references_one_module_script(page: PageReader) -> None:
     assert len(page.scripts) == 1, f"the page carries {len(page.scripts)} script elements"
     script = page.scripts[0]
     assert script.get("type") == "module", "the page's script is no ES module"
-    assert script.get("src") == "js/status.js", "the page names another entry point"
-    assert (SCRIPT_DIRECTORY / "status.js").is_file()
+    facts = page.facts  # type: ignore[attr-defined]
+    assert script.get("src") == facts["script"], "the page names another entry point"
+    assert (facts["path"].parent / facts["script"]).resolve().is_file()
 
 
 def test_the_page_references_one_stylesheet(page: PageReader) -> None:
     stylesheets = [link for link in page.links if link.get("rel") == "stylesheet"]
     assert len(stylesheets) == 1, f"the page carries {len(stylesheets)} stylesheet links"
-    assert stylesheets[0].get("href") == "app.css"
-    assert (STATIC_ROOT / "app.css").is_file()
+    facts = page.facts  # type: ignore[attr-defined]
+    assert stylesheets[0].get("href") == facts["stylesheet"]
+    assert (facts["path"].parent / facts["stylesheet"]).resolve().is_file()
 
 
 def test_the_page_derives_no_sibling_origin(page: PageReader) -> None:
@@ -115,6 +138,9 @@ def test_the_page_derives_no_sibling_origin(page: PageReader) -> None:
 
 def test_the_page_carries_both_lan_bound_tags(page: PageReader) -> None:
     named = {meta.get("name", "") for meta in page.metas}
+    if not page.facts["lan_bounds"]:  # type: ignore[attr-defined]
+        assert not (named & set(LAN_BOUND_TAGS)), "the shell states a bound it has no composer for"
+        return
     for bound in LAN_BOUND_TAGS:
         assert bound in named, f"the page carries no {bound} meta tag"
     # The launch writes the served value; an unstaged page states an empty one,

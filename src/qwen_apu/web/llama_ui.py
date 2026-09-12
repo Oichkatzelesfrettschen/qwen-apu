@@ -153,21 +153,33 @@ FORWARDED_RESPONSE_HEADERS: tuple[str, ...] = (
 # is source-backed: `tools/ui/embed.cpp` requires `sw.js`, `workbox[hash].js`,
 # and `manifest.webmanifest` among its assets, which is a service worker and a
 # web app manifest, and the page talks to the origin it loaded from.
-CONTENT_SECURITY_POLICY = "; ".join(
-    (
-        "default-src 'none'",
-        "script-src 'self' 'unsafe-inline'",
-        "style-src 'self' 'unsafe-inline'",
-        "img-src 'self' data: blob:",
-        "font-src 'self' data:",
-        "connect-src 'self'",
-        "worker-src 'self'",
-        "manifest-src 'self'",
-        "form-action 'none'",
-        "base-uri 'none'",
-        "frame-ancestors 'none'",
+
+
+def content_security_policy(frame_ancestors: str = "'none'") -> str:
+    """The listener's policy, with the one origin admitted to frame the page.
+
+    The shell on the chat page's port frames this listener, so the assembly
+    names that origin here; a listener assembled without one keeps
+    `frame-ancestors 'none'`, which is the standalone page.
+    """
+    return "; ".join(
+        (
+            "default-src 'none'",
+            "script-src 'self' 'unsafe-inline'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob:",
+            "font-src 'self' data:",
+            "connect-src 'self'",
+            "worker-src 'self'",
+            "manifest-src 'self'",
+            "form-action 'none'",
+            "base-uri 'none'",
+            f"frame-ancestors {frame_ancestors or chr(39) + 'none' + chr(39)}",
+        )
     )
-)
+
+
+CONTENT_SECURITY_POLICY = content_security_policy()
 
 RequireSession = Callable[[Request], None]
 
@@ -220,10 +232,12 @@ def asset_entity_tag(payload: bytes) -> str:
     return f'"{hashlib.sha256(payload).hexdigest()[:32]}"'
 
 
-def asset_headers(name: str, payload: bytes) -> dict[str, str]:
+def asset_headers(
+    name: str, payload: bytes, policy: str = CONTENT_SECURITY_POLICY
+) -> dict[str, str]:
     headers = {
         "content-type": asset_content_type(name),
-        "content-security-policy": CONTENT_SECURITY_POLICY,
+        "content-security-policy": policy,
         "etag": asset_entity_tag(payload),
         "cache-control": (
             REVALIDATE_CACHE_CONTROL if name in REVALIDATED_ASSET_NAMES else IMMUTABLE_CACHE_CONTROL
@@ -276,6 +290,13 @@ class LlamaUiSettings:
     # The built `tools/ui` output this listener serves from disk. None leaves
     # every path to the router, which is the launch that names no directory.
     assets: Path | None = None
+    # The one origin admitted to frame this page: the shell on the chat page's
+    # port. `'none'` is the standalone listener.
+    frame_ancestors: str = "'none'"
+
+    @property
+    def policy(self) -> str:
+        return content_security_policy(self.frame_ancestors)
 
 
 class LlamaUiProxy:
@@ -313,7 +334,7 @@ class LlamaUiProxy:
             body,
             {
                 "content-type": "text/html; charset=utf-8",
-                "content-security-policy": CONTENT_SECURITY_POLICY,
+                "content-security-policy": self.settings.policy,
                 "cache-control": "no-store",
             },
         )
@@ -338,7 +359,7 @@ class LlamaUiProxy:
         if target is None:
             return None
         payload = target.read_bytes()
-        headers = asset_headers(target.name, payload)
+        headers = asset_headers(target.name, payload, self.settings.policy)
         if request.header("if-none-match") == headers["etag"]:
             return Response(304, b"", headers)
         return Response(200, payload, headers)
@@ -361,7 +382,7 @@ class LlamaUiProxy:
         answer = self._exchange(request)
         headers = {
             **dict(answer.headers),
-            "content-security-policy": CONTENT_SECURITY_POLICY,
+            "content-security-policy": self.settings.policy,
         }
         if answer.streams:
             headers.update({"cache-control": "no-store", "x-accel-buffering": "no"})

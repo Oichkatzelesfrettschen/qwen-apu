@@ -36,33 +36,43 @@ and tool integration differ. Use Chat for the combined workflows in the guide.
 
 ## Use an installed laptop
 
-Open the address supplied by the operator in Firefox. On an authenticated
-installation, enter the appliance key when prompted. Keep that key private.
-If the service is already running, opening the page is sufficient.
-
-To start an installed appliance, run these commands in its checkout on the laptop:
-
-```sh
-make launch-readiness
-remote/qwen-lan-launch.sh lan-authenticated low-async
-```
-
-Keep any operator-configured environment settings for the address, port, and
-runtime root. Use the address printed by the launcher; installations can use
-different ports. Readiness reports missing runtime inputs before launch.
-An existing installation does not need its model weights or executable rebuilt
-for each session.
-
-To stop the appliance cleanly:
+The appliance is one Python supervisor, `qwen-apu appliance serve`, that owns
+the router, the approval gateway, the image service, and the search instance,
+records them in `state/appliance.json` under the runtime root, and ends them
+together with `qwen-apu appliance stop`. On the laptop, in its checkout:
 
 ```sh
-remote/qwen-teardown.sh
+qwen-apu appliance serve --router --port 8080 --gateway-port 42069 \
+    --llama-ui-port 42072 --bind-host <lan address> \
+    --image-profile image-sdxs-512-a --web-profile web-open
+qwen-apu appliance status
+qwen-apu appliance stop
 ```
 
-Teardown stops the owned services and restores their managed host settings.
-It preserves downloaded models, installed environments, generated artifacts,
-and saved browser conversations. **Uninstall and purge are separate removal
-operations, not everyday shutdown commands.**
+Open `http://<lan address>:42069/` in a browser. The page asks for a pairing
+code once: `qwen-apu status` on the laptop prints it, the first browser that
+presents it receives an HttpOnly session cookie, and the code is spent. There
+is no key to keep or paste after that; a restart mints a new code. One pairing
+admits both ports, because the cookie is scoped to the host.
+
+- `42069` is the shell: a rail with **Chat** and **Image**. Chat frames
+  llama.cpp's own page, with its model picker, attachments, reasoning display,
+  and saved conversations. Image drives the appliance's own generator over one
+  approval per job and shows what the artifact store holds. The previous
+  single-page client stays at `/legacy/`.
+- `42072` is llama.cpp's own page alone, for a browser that wants the plain
+  surface with nothing around it.
+
+Readiness reports missing runtime inputs before anything listens: the weights
+digest, the signing key, and the activated deployment bundle each refuse a
+launch on their own. An existing installation needs no rebuild per session.
+
+The shell-script launch chain, `remote/qwen-lan-launch.sh` and
+`remote/qwen-teardown.sh`, stays in the tree as the recovery path and is
+described in [WEBUI.md](WEBUI.md). Teardown preserves downloaded models,
+installed environments, generated artifacts, and saved conversations.
+**Uninstall and purge are separate removal operations, not everyday shutdown
+commands.**
 
 For a fresh installation, follow [Installation](docs/INSTALL.md). Bootstrap
 creates the directory layout; the install and build steps supply the actual
@@ -150,7 +160,8 @@ claim those changes have shipped.
 - [Evidence](evidence/): measurements, methods, and limitations.
 - [Agent guide](AGENTS.md): repository rules and hardware constraints.
 
-`webui/` contains the Chat page, `remote/` contains service and measurement code,
+`static/` contains the shell and the legacy page, `src/qwen_apu/` the appliance,
+`remote/` the shell-script services and measurement code,
 and `patches/` contains the pinned llama.cpp changes. Model weights and private
 runtime records stay outside Git. Use the existing staging and deployment path
 to update an appliance; editing the workstation checkout does not deploy it.
