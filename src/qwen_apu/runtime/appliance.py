@@ -671,12 +671,19 @@ def _derived_image_child(
         parameters=parameters,
         api_key_file=lanes.image_artifact_key(paths),
     )
+    env = lanes.image_service_env(
+        paths, profile_id=image_profile, web_profile=web_profile, parameters=parameters
+    )
+    # The gateway loads the same signed verifier in this process to bind a
+    # grant to a request before the job reaches the worker, and that module
+    # reads its four authorities from the environment at import; the worker
+    # child and this process therefore state the same four.
+    for name in lanes.IMAGE_AUTHORITY_NAMES:
+        os.environ[name] = env[name]
     return ChildSpec(
         name=IMAGE_CHILD,
         argv=argv,
-        env=lanes.image_service_env(
-            paths, profile_id=image_profile, web_profile=web_profile, parameters=parameters
-        ),
+        env=env,
         log_name="appliance-image-service",
         socket_path=str(lanes.image_control_socket(paths)),
         ready=READY_SOCKET,

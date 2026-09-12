@@ -44,6 +44,12 @@ from qwen_apu.runtime.paths import RuntimePaths
 IMAGE_DIRECTORY_NAME = "images"
 IMAGE_SERVICE_SCRIPT = "image-service.py"
 IMAGE_VERIFIER = "image_signed_verifier:verify"
+IMAGE_AUTHORITY_NAMES = (
+    "QWEN_IMAGE_PROFILES_JSON",
+    "QWEN_IMAGE_TOKEN_KEY_FILE",
+    "QWEN_IMAGE_PROFILE",
+    "QWEN_IMAGE_LANGUAGE_PROFILE",
+)
 SEARXNG_SCRIPT = "searxng-launch.sh"
 LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})
 # The Web UI bearer the worker's artifact listener compares against. The
