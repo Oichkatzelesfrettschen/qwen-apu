@@ -278,6 +278,7 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         config.origins,
         provider=request.provider,
         image_profile=request.image_profile,
+        exposure=lan_exposure(request.bind_host),
     )
     approval_service = approvals.ApprovalService(approval_settings, session_check)
 
