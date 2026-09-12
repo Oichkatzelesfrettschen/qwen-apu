@@ -205,7 +205,10 @@ class ImageToolSettings:
     # the way remote/image-mcp/server.py spends it; the default binds no
     # ledger and refuses, so an assembly that forgets the ledger cannot serve
     # a replayable grant.
-    spend_grant: Callable[[str, float], None] = field(default_factory=lambda: _ledger_absent)
+    # (grant_id, expiry, client_address): the ledger spends the grant once and
+    # the approval service releases the client's outstanding-grant reservation,
+    # so a completed generation frees the slot the next grant needs.
+    spend_grant: Callable[[str, float, str], None] = field(default_factory=lambda: _ledger_absent)
     # Status, cancel, and remove name a job or an artifact rather than
     # describing a generation, so the gateway session admits them where a
     # grant admits the other two.
@@ -216,7 +219,7 @@ def _router_absent(payload: Mapping[str, object]) -> object:
     raise ToolRefused(503, "the gateway names no router for the image reviewer")
 
 
-def _ledger_absent(grant_id: str, expiry: float) -> None:
+def _ledger_absent(grant_id: str, expiry: float, client: str = "") -> None:
     raise ToolRefused(503, "the gateway binds no ledger to spend the image grant")
 
 
@@ -288,7 +291,9 @@ def generate(settings: ImageToolSettings, request: Request) -> Response:
         # generation arguments directly: an absent key reaches it as a KeyError
         # rather than as the denial the boundary reports.
         _admit(settings, frame)
-        _spend(settings, _claim(settings, cast(str, frame["authorization"])))
+        _spend(
+            settings, _claim(settings, cast(str, frame["authorization"])), request.client_address
+        )
         reply = _run_generation(settings, frame)
     except ToolRefused as refusal:
         return _json(refusal.status, {"error": refusal.message})
@@ -417,13 +422,13 @@ def review(settings: ImageToolSettings, request: Request) -> Response:
     return _json(200, findings)
 
 
-def _spend(settings: ImageToolSettings, claim: Mapping[str, object]) -> None:
+def _spend(settings: ImageToolSettings, claim: Mapping[str, object], client: str) -> None:
     """Spend the grant once; a replay reaches the caller as a denial."""
     grant_id, expiry = claim.get("grant_id"), claim.get("expiry")
     if not isinstance(grant_id, str) or not isinstance(expiry, (int, float)):
         raise ToolRefused(403, "the grant carries no usable grant_id or expiry")
     try:
-        settings.spend_grant(grant_id, float(expiry))
+        settings.spend_grant(grant_id, float(expiry), client)
     except ToolRefused:
         raise
     except Exception as error:

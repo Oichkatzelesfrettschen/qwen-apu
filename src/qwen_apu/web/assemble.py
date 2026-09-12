@@ -290,11 +290,15 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
     def ledger() -> Ledger:
         return Ledger(state)
 
-    def spend_grant(grant_id: str, expiry: float) -> None:
+    def spend_grant(grant_id: str, expiry: float, client: str) -> None:
         with closing(ledger()) as open_ledger:
             open_ledger.consume_grant(
                 grant_id, approval_settings.profile, "image", expiry=expiry, now=time.time()
             )
+        # The reservation counted the grant until its expiry; the spend is
+        # the moment it stops being outstanding, so the client's slot frees
+        # for the review grant that follows a generation.
+        approval_service.outstanding_image_grants.release(client, expiry)
 
     web_settings = build_web_tool_settings(
         resolve_web_profile(request.web_profile),
@@ -303,7 +307,10 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         session_admits=session_admits,
         ledger=ledger,
     )
-    artifact_directory = state / "artifacts"
+    # The image worker publishes each verified pair and its publication
+    # marker under `images/artifacts/` of the state directory it is given, so
+    # the artifact routes read that directory rather than a sibling.
+    artifact_directory = state / "images" / "artifacts"
     image_socket = state / IMAGE_DIRECTORY_NAME / SOCKET_FILE_NAME
 
     def route_review(payload: Mapping[str, object]) -> object:
