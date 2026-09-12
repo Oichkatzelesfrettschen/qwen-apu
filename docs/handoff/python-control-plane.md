@@ -667,7 +667,13 @@ last admitted offset of that same document, where `run_read_url` returns an
 empty window and with it the 200 carrying `state: incomplete` that keeps a
 failed retrieval from reading as a turn that went quiet; a search that itself
 answers incomplete proves the same item and the report names the instance
-instead, leaving the grounded item skipped.
+instead, leaving the grounded item skipped. The pass requires a term from
+`RETRIEVAL_FAILURE_TERMS` rather than the state alone, because a profile whose
+`max_fetches` is 1 spends its whole allowance on the grounded read and answers
+the probe `budget_exhausted` at 429, which the item reports skipped naming the
+allowance. Every skip names the route that answered: the session read and the
+signing route both refuse with 403, so a refused Origin reads as a refused
+Origin rather than as a refused grant.
 
 The image lane generates, reads the PNG over the credentialed artifact route,
 reviews the artifact behind a second grant signed over the same prompt digest
