@@ -61,7 +61,12 @@ verdict against it, without executing purge:
 
 ```sh
 # 1. The plan identity the authorizations bind to. The whole-root report is
-#    read for plan_sha256; nothing in it is executed.
+#    read for plan_sha256; nothing in it is executed. This invocation exits
+#    1 on this root by design -- every directory under results/ reads
+#    unreviewed -- and the plan_sha256= line prints either way. Capture the
+#    value once and pass it unchanged to every verdict: re-deriving it after
+#    any change under the root yields a different identity, and every
+#    authorization already written against the first refuses as stale.
 remote/check-deletion-plan.sh plan purge
 
 # 2. Per directory: the payload manifest an intentional discard requires.

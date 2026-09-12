@@ -630,3 +630,15 @@ def test_withheld_fetch_script_refuses_at_its_top(script_name: str, tmp_path: Pa
     assert completed.returncode == 1
     assert "withheld by remote/quarantine.tsv" in completed.stderr
     assert not any(tmp_path.iterdir())
+
+
+def test_model_plan_refuses_a_withheld_row() -> None:
+    """The single-checkpoint entry a launch reaches through preflight.resolve_model."""
+    rows = {row.id: row for row in load_models()}
+    artifacts = {row.model_id: row for row in load_model_artifacts()}
+    models_dir = TREE / "nonexistent-models-dir"
+    with pytest.raises(ModelGroupError) as refusal:
+        install_models.model_plan(rows["qwen38-27b-q2kxl"], artifacts, models_dir)
+    assert "archive-capacity-experiment" in str(refusal.value)
+    served = install_models.model_plan(rows["qwen38-2b-distill"], artifacts, models_dir)
+    assert served.kind == "fetch"

@@ -290,14 +290,32 @@ def _model_plan(
 
 
 def model_plan(
-    row: ModelRow, artifacts: Mapping[str, ModelArtifact], models_dir: Path
+    row: ModelRow,
+    artifacts: Mapping[str, ModelArtifact],
+    models_dir: Path,
+    *,
+    quarantine: Sequence[QuarantineRow] | None = None,
 ) -> ArtifactPlan:
     """The install destination and pin one registry row resolves to.
 
     `resolve_group` answers for a group; a launch names one checkpoint and needs
     the same composition of publisher directory, filename, and artifact pin. One
     reader keeps a launch reading the leaf a fetch wrote.
+
+    A row a model-scope quarantine row names refuses here rather than resolving.
+    Its sole caller, `qwen_apu.runtime.preflight.resolve_model`, names one
+    checkpoint for a launch, so the refusal names the row and its reason where a
+    resolved plan would report the withheld weights as an uninstalled file.
+    `resolve_group` calls `_model_plan` instead and marks the plan, because
+    `verify` answers for a withheld row and a refusal there would leave it
+    unable to.
     """
+    withheld_row = withheld_subjects(quarantine).get(row.id)
+    if withheld_row is not None:
+        plan = _model_plan(row, dict(artifacts), models_dir)
+        raise ModelGroupError(
+            withheld_refusal(_withheld_plan(plan.artifact_id, plan.destination, withheld_row))
+        )
     return _model_plan(row, dict(artifacts), models_dir)
 
 
