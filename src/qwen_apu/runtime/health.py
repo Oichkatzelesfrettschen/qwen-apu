@@ -238,11 +238,13 @@ def _socket_inodes(pid: int) -> set[str]:
     return inodes
 
 
-def _listening_inodes(port: int) -> list[str]:
-    """Every loopback IPv4 listener inode on the port.
+def _listening_inodes(port: int, address: str | None = LOOPBACK_HEX_ADDRESS) -> list[str]:
+    """Every IPv4 listener inode on the port at one local address, or at any.
 
     `/proc/net/tcp` carries IPv4 alone, so a server bound to ::1 answers no
     match here; the appliance binds 127.0.0.1 and the refusal names the gap.
+    `address` is the hexadecimal form the table carries; `None` admits every
+    local address, which is how a LAN listener is found.
     """
     try:
         lines = Path("/proc/net/tcp").read_text(encoding="ascii").splitlines()[1:]
@@ -253,8 +255,8 @@ def _listening_inodes(port: int) -> list[str]:
         fields = line.split()
         if len(fields) < 10:
             continue
-        address, _, port_hexadecimal = fields[1].partition(":")
-        if address != LOOPBACK_HEX_ADDRESS or fields[3] != TCP_LISTEN_STATE:
+        local_address, _, port_hexadecimal = fields[1].partition(":")
+        if (address is not None and local_address != address) or fields[3] != TCP_LISTEN_STATE:
             continue
         try:
             if int(port_hexadecimal, 16) != port:

@@ -28,6 +28,7 @@ which is what makes `stop` able to signal exactly what this process started.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import signal
@@ -272,14 +273,28 @@ class Appliance:
         self.request = request
         self.record = ApplianceRecord(path=record_path(paths))
         self.runtime_record = paths["qwen_home_runtime_state"]
+        # The previous run's record survives its stop, so the first reads of
+        # this run land on it; the supervisor pid it names is passed over
+        # until this run's supervisor publishes its own.
+        previous = runtime_state.read(self.runtime_record)
+        self._superseded_pid = previous.supervisor_pid if previous is not None else 0
         self._children: list[tuple[ChildSpec, Owned]] = []
         self._stop = threading.Event()
 
     # -- the run ---------------------------------------------------------
 
+    def _serve_request(self) -> serving.ServeRequest:
+        """The router's serve request with the authorizer marker set.
+
+        This process owns the gateway whose approval routes and single-use
+        grants the web preset sections assume, so the marker the policy
+        requires for those sections is true here and nowhere else.
+        """
+        return dataclasses.replace(self.request.serve, web_authorizer_ready=True)
+
     def run(self) -> int:
         """Start every owned process, serve, and report residue in the exit status."""
-        for line in serving.run_preflights(self.paths, self.request.serve):
+        for line in serving.run_preflights(self.paths, self._serve_request()):
             print(line, flush=True)
         for line in gateway_assembly.preflight_gateway(self.paths, self.request.gateway):
             print(line, flush=True)
@@ -290,7 +305,7 @@ class Appliance:
             supervisor_start_time=read_start_time(os.getpid()) or 0,
             started_utc=utc_now(),
         )
-        plan = serving.build_plan(self.paths, self.request.serve)
+        plan = serving.build_plan(self.paths, self._serve_request())
         plan_path = self.paths["qwen_home_state"] / "launch-plan.json"
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         plan_path.write_text(
@@ -353,6 +368,17 @@ class Appliance:
         gateway, session = gateway_assembly.assemble(self.paths, self.request.gateway)
         return gateway, session, session.start()
 
+    def _router_record(self) -> runtime_state.RuntimeState | None:
+        """This run's router record; the previous run's is read as none."""
+        router = runtime_state.read(self.runtime_record)
+        if (
+            router is not None
+            and self._superseded_pid
+            and router.supervisor_pid == self._superseded_pid
+        ):
+            return None
+        return router
+
     def _watch(self) -> str | None:
         """Sample the owned children and republish readiness until something ends it."""
         deadline = time.monotonic() + self.request.readiness_deadline_s
@@ -362,7 +388,7 @@ class Appliance:
                 if owned.has_exited():
                     status = owned.exit_status()
                     return f"{spec.name}_exited status={'-' if status is None else status}"
-            router = runtime_state.read(self.runtime_record)
+            router = self._router_record()
             router_state = router.state if router is not None else "-"
             served = tuple(router.served_models) if router is not None else ()
             if router is not None and router.is_terminal:

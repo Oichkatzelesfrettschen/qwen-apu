@@ -48,6 +48,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import statistics
 import subprocess
 import time
@@ -93,6 +94,13 @@ class ArmCommands:
 
     start: tuple[str, ...] = ()
     stop: tuple[str, ...] = ()
+    # The origin this arm listens on and the bearer its routes require; an
+    # empty base falls to the request's base, and an absent bearer sends no
+    # Authorization header. The production LAN launch serves its address with
+    # a bearer while the Python serve stays on the loopback, and the two are
+    # still one server argv apart from the transport words.
+    base: str = ""
+    bearer_file: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +134,7 @@ class Configuration:
     pid: int = 0
     reason: str = ""
     preset_sha256: str = ""
+    executable_sha256: str = ""
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -136,21 +145,50 @@ class Configuration:
             "pid": self.pid,
             "reason": self.reason,
             "preset_sha256": self.preset_sha256,
+            "executable_sha256": self.executable_sha256,
+            "transport": self.transport(),
         }
 
     def comparable_argv(self) -> list[str]:
-        """The argv with the preset word replaced by the preset's content digest.
+        """The policy argv: the preset word by content digest, transport words out.
 
         The legacy launch snapshots the merged router preset to a per-launch
         path and the Python launch names the bundle's own file, so the two
         argvs differ by that one word while the bytes the server reads are
-        equal; the digest is what the arms must agree on.
+        equal; the digest is what the arms must agree on. The listening host
+        and port, the bearer file, and the CORS origins name where the server
+        answers rather than how it decodes, so they are recorded under
+        `transport` and left out of the comparison.
         """
-        words = list(self.argv)
-        for index, word in enumerate(words[:-1]):
-            if word == PRESET_FLAG and self.preset_sha256:
-                words[index + 1] = f"sha256:{self.preset_sha256}"
+        words: list[str] = []
+        skip = False
+        for index, word in enumerate(self.argv):
+            if skip:
+                skip = False
+                continue
+            if index == 0 and self.executable_sha256:
+                words.append(f"sha256:{self.executable_sha256}")
+                continue
+            if word in PRESENTATION_FLAGS:
+                continue
+            if word in TRANSPORT_FLAGS and index + 1 < len(self.argv):
+                skip = True
+                continue
+            if word == PRESET_FLAG and self.preset_sha256 and index + 1 < len(self.argv):
+                words.append(word)
+                words.append(f"sha256:{self.preset_sha256}")
+                skip = True
+                continue
+            words.append(word)
         return words
+
+    def transport(self) -> dict[str, str]:
+        """The transport words the comparison leaves out, for the record."""
+        pairs: dict[str, str] = {}
+        for index, word in enumerate(self.argv[:-1]):
+            if word in TRANSPORT_FLAGS:
+                pairs[word] = self.argv[index + 1]
+        return pairs
 
     def comparable(self) -> dict[str, object]:
         """The fields two arms must agree on, with the pid left out.
@@ -164,7 +202,10 @@ class Configuration:
             "argv": self.comparable_argv(),
             "cpu_affinity": list(self.cpu_affinity),
             "niceness": self.niceness,
-            **{f"sysfs.{name}": value for name, value in sorted(self.sysfs.items())},
+            **{
+                f"sysfs.{name}": comparable_sysfs_value(value)
+                for name, value in sorted(self.sysfs.items())
+            },
         }
 
 
@@ -250,7 +291,7 @@ def read_sysfs(named: Mapping[str, Path]) -> dict[str, str]:
 
 
 def listener_pid(port: int) -> int:
-    """The pid holding the listening socket on one loopback port.
+    """The pid holding the listening socket on one port at any local address.
 
     Neither arm cooperates with this read: the legacy launch publishes its pids
     in a session status file and the Python launch publishes `state/runtime.json`,
@@ -258,7 +299,7 @@ def listener_pid(port: int) -> int:
     the other through another. The socket inode is the one identity both arms
     carry, and `/proc/<pid>/fd` is where it resolves to a process.
     """
-    inodes = set(_listening_inodes(port))
+    inodes = set(_listening_inodes(port, address=None))
     if not inodes:
         return 0
     for entry in sorted(Path("/proc").iterdir()):  # appliance-path: named
@@ -277,19 +318,58 @@ def listener_pid(port: int) -> int:
 
 
 PRESET_FLAG = "--models-preset"
+LAUNCH_EXIT_GRACE_SECONDS = 60.0
+LAUNCH_SETTLE_SECONDS = 1.0
+TRANSPORT_FLAGS = frozenset({"--host", "--port", "--api-key-file", "--cors-origins", "--path"})
+# Flag words with no value that name how the server presents rather than decodes.
+PRESENTATION_FLAGS = frozenset({"--ui", "--no-ui"})
+_ABSOLUTE_PATH_TOKEN = re.compile(r"/[^\s\"']+")
+_DPM_MARKED_LINE = re.compile(r"^(\d+):\s.*\*\s*$")
 
 
 def preset_digest(argv: Sequence[str]) -> str:
-    """The SHA-256 of the file the argv names after `--models-preset`, read
-    while the process is alive because the legacy launch removes its snapshot
-    at teardown; empty when the argv names no preset or the file is unreadable."""
+    """The SHA-256 of the preset the argv names after `--models-preset`, with
+    every absolute path in it reduced to its basename first, read while the
+    process is alive because the legacy launch removes its snapshot at
+    teardown; empty when the argv names no preset or the file is unreadable.
+
+    The two arms name the same checkpoints and configurations under different
+    roots (the legacy launch's runtime root and per-launch snapshot directory
+    against the Python arm's), so the bytes differ by prefix alone while the
+    policy they carry is one; the basename keeps which file, the prefix goes.
+    """
     for index, word in enumerate(argv[:-1]):
         if word == PRESET_FLAG:
             try:
-                return hashlib.sha256(Path(argv[index + 1]).read_bytes()).hexdigest()
+                text = Path(argv[index + 1]).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 return ""
+            normalized = _ABSOLUTE_PATH_TOKEN.sub(
+                lambda match: "path:" + match.group(0).rsplit("/", 1)[-1], text
+            )
+            return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     return ""
+
+
+def executable_digest(argv: Sequence[str]) -> str:
+    """The SHA-256 of the executable the argv runs; empty when unreadable."""
+    if not argv:
+        return ""
+    try:
+        return hashlib.sha256(Path(argv[0]).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def comparable_sysfs_value(value: str) -> str:
+    """A `pp_dpm_*` marked line reduced to its level index; other values whole.
+
+    The marked line carries the level's live frequency beside its index, and
+    that frequency moves between reads of one arm; the index is the delivered
+    DPM state the arms must share.
+    """
+    match = _DPM_MARKED_LINE.match(value.strip())
+    return f"level {match.group(1)}" if match else value
 
 
 def read_argv(pid: int) -> tuple[str, ...]:
@@ -342,6 +422,7 @@ def snapshot(port: int, named_sysfs: Mapping[str, Path]) -> Configuration:
         sysfs=sysfs,
         pid=pid,
         preset_sha256=preset_digest(argv),
+        executable_sha256=executable_digest(argv),
     )
 
 
@@ -356,21 +437,36 @@ class Endpoint:
 
     host: str
     port: int
+    bearer: str = ""
 
     @classmethod
-    def parse(cls, base: str) -> Endpoint:
+    def parse(cls, base: str, bearer_file: Path | None = None) -> Endpoint:
         parts = urlsplit(base)
         if parts.scheme != "http" or not parts.hostname:
             raise CanaryRefused(
                 f"the canary base names {base!r}; it reads an http origin such as "
                 "http://127.0.0.1:8080"
             )
-        return cls(parts.hostname, parts.port or 80)
+        bearer = ""
+        if bearer_file is not None:
+            try:
+                bearer = bearer_file.read_text(encoding="utf-8").strip()
+            except OSError as error:
+                raise CanaryRefused(f"the bearer file is unreadable: {error}") from None
+            if not bearer:
+                raise CanaryRefused(f"the bearer file is empty: {bearer_file}")
+        return cls(parts.hostname, parts.port or 80, bearer)
+
+    def _headers(self, **extra: str) -> dict[str, str]:
+        headers = dict(extra)
+        if self.bearer:
+            headers["Authorization"] = f"Bearer {self.bearer}"
+        return headers
 
     def get(self, path: str, timeout_s: float) -> tuple[int, bytes]:
         connection = HTTPConnection(self.host, self.port, timeout=timeout_s)
         try:
-            connection.request("GET", path)
+            connection.request("GET", path, headers=self._headers())
             response = connection.getresponse()
             return response.status, response.read()
         finally:
@@ -383,7 +479,7 @@ class Endpoint:
                 "POST",
                 path,
                 body=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"},
+                headers=self._headers(**{"Content-Type": "application/json"}),
             )
             response = connection.getresponse()
             return response.status, response.read()
@@ -413,6 +509,52 @@ def wait_ready(endpoint: Endpoint, deadline_s: float) -> str:
                 last = f"/health answered {status}"
         time.sleep(READINESS_POLL_SECONDS)
     return f"the server did not report ready within {deadline_s:.0f} s: {last}"
+
+
+def wait_ready_or_exit(
+    endpoint: Endpoint, deadline_s: float, launch: subprocess.Popen[bytes]
+) -> str:
+    """Wait for ready while the launch runs; a launch that exits first names its status."""
+    deadline = time.monotonic() + deadline_s
+    last = "no answer"
+    while time.monotonic() < deadline:
+        code = launch.poll()
+        if code is not None and code != 0:
+            _, stderr = launch.communicate(timeout=5)
+            return f"the launch exited {code}: {stderr.decode('utf-8', 'replace')[:300]}"
+        try:
+            status, body = endpoint.get("/health", timeout_s=5.0)
+        except OSError as error:
+            last = str(error)
+        else:
+            if status == 200:
+                try:
+                    payload = json.loads(body.decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    payload = {}
+                if isinstance(payload, dict) and payload.get("status") == "ok":
+                    return _launch_settled(launch)
+                last = f"/health answered {payload}"
+            else:
+                last = f"/health answered {status}"
+        time.sleep(READINESS_POLL_SECONDS)
+    return f"the server did not report ready within {deadline_s:.0f} s: {last}"
+
+
+def _launch_settled(launch: subprocess.Popen[bytes]) -> str:
+    """Give a returning launch a moment to report; a non-zero status refuses the arm.
+
+    A server that already answers can precede the launch's own exit by a
+    tick, and the launch's status is the launch's verdict on what it started.
+    """
+    try:
+        launch.wait(timeout=LAUNCH_SETTLE_SECONDS)
+    except subprocess.TimeoutExpired:
+        return ""
+    if launch.returncode != 0:
+        _, stderr = launch.communicate(timeout=5)
+        return f"the launch exited {launch.returncode}: {stderr.decode('utf-8', 'replace')[:300]}"
+    return ""
 
 
 def read_timings(payload: object) -> dict[str, float]:
@@ -453,17 +595,16 @@ def run_arm(
             Configuration(reason="the arm names no start and stop argv"),
             failure=f"the {arm} arm names no start and stop argv",
         )
-    started = subprocess.run(list(commands.start), capture_output=True, check=False)  # noqa: S603
-    if started.returncode != 0:
-        return ArmResult(
-            arm,
-            ordinal,
-            Configuration(reason="the launch exited non-zero"),
-            failure=f"the {arm} launch exited {started.returncode}: "
-            f"{started.stderr.decode('utf-8', 'replace')[:300]}",
-        )
+    # A launch either returns once its server is up (the shell chain) or holds
+    # the foreground for the server's life (the appliance), so the start runs
+    # as a child the readiness wait watches: an exit before ready is the
+    # launch's own refusal, and a child still running at ready is left to the
+    # stop argv, which ends it the way it ends the server.
+    started = subprocess.Popen(  # noqa: S603
+        list(commands.start), stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
     try:
-        waited = wait_ready(endpoint, request.readiness_deadline_s)
+        waited = wait_ready_or_exit(endpoint, request.readiness_deadline_s, started)
         if waited:
             return ArmResult(arm, ordinal, Configuration(reason=waited), failure=waited)
         configuration = snapshot(endpoint.port, request.sysfs)
@@ -497,6 +638,16 @@ def run_arm(
         return ArmResult(arm, ordinal, configuration, timings=timings, failure=failure)
     finally:
         subprocess.run(list(commands.stop), capture_output=True, check=False)  # noqa: S603
+        _end_launch(started)
+
+
+def _end_launch(launch: subprocess.Popen[bytes]) -> None:
+    """Let a foreground launch leave after its server stopped; end one that lingers."""
+    try:
+        launch.communicate(timeout=LAUNCH_EXIT_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        launch.kill()
+        launch.communicate(timeout=5)
 
 
 # ---------------------------------------------------------------------------
@@ -692,11 +843,16 @@ def run(paths: RuntimePaths, request: CanaryRequest) -> int:
     destination = require_inside_root(paths, request.report)
     if request.repeats < 1:
         raise CanaryRefused(f"the canary runs at least one alternation; {request.repeats} is none")
-    endpoint = Endpoint.parse(request.base)
+    legacy_endpoint = Endpoint.parse(
+        request.legacy.base or request.base, request.legacy.bearer_file
+    )
+    python_endpoint = Endpoint.parse(
+        request.python.base or request.base, request.python.bearer_file
+    )
     results: list[ArmResult] = []
     for ordinal in range(1, request.repeats + 1):
-        results.append(run_arm(LEGACY_ARM, ordinal, request.legacy, request, endpoint))
-        results.append(run_arm(PYTHON_ARM, ordinal, request.python, request, endpoint))
+        results.append(run_arm(LEGACY_ARM, ordinal, request.legacy, request, legacy_endpoint))
+        results.append(run_arm(PYTHON_ARM, ordinal, request.python, request, python_endpoint))
     overall, reason, rows = verdict(request, results)
     document = report_document(request, results, overall, reason, rows)
     destination.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")

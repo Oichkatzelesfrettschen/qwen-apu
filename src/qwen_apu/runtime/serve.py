@@ -58,6 +58,10 @@ class ServeRequest:
     niceness: int | None = INFERENCE_NICENESS
     require_radv_icd: bool = True
     ownership_deadline_s: float = OWNERSHIP_DEADLINE_SECONDS
+    # A web preset section is admitted only where the approval dialog and the
+    # single-use grant run; the appliance sets this when it owns the gateway
+    # that serves them, and the bare serve leaves it off.
+    web_authorizer_ready: bool = False
 
 
 def _router_inputs(
@@ -135,6 +139,7 @@ def build_plan(
             qwen_router="1",
             qwen_router_presets=str(router.presets),
             qwen_router_max=str(request.router_max),
+            qwen_web_authorizer_ready="1" if request.web_authorizer_ready else "0",
             qwen_bundle_q4k_policy=router.q4k_policy,
             qwen_model_root=str(model_root),
             qwen_ctx_checkpoint_ledger=str(router.active.ledger),
