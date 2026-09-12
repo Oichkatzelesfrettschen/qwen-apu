@@ -23,7 +23,7 @@ MODEL_CONTRACT = {
     "qwen35-08b": {
         "role": "compact-text",
         "model_file": "Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf",
-        "context": "8192",
+        "context": "32768",
         "batch": "128",
         "ubatch": "32",
         "cache_k": "q8_0",
@@ -36,7 +36,7 @@ MODEL_CONTRACT = {
     "qwen38-2b-distill": {
         "role": "fast-text",
         "model_file": "Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf",
-        "context": "24576",
+        "context": "32768",
         "batch": "128",
         "ubatch": "32",
         "cache_k": "q8_0",
@@ -49,7 +49,7 @@ MODEL_CONTRACT = {
     "qwen38-4b-distill": {
         "role": "balanced-text",
         "model_file": "Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf",
-        "context": "24576",
+        "context": "32768",
         "batch": "128",
         "ubatch": "32",
         "cache_k": "q8_0",
