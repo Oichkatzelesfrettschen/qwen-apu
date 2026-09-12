@@ -29,6 +29,7 @@ which is what makes `stop` able to signal exactly what this process started.
 from __future__ import annotations
 
 import dataclasses
+import http.client
 import json
 import os
 import signal
@@ -42,6 +43,8 @@ from pathlib import Path
 from types import FrameType
 from typing import Any
 
+from qwen_apu.config import models as config_models
+from qwen_apu.runtime import lanes
 from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime import state as runtime_state
 from qwen_apu.runtime.paths import RuntimePaths
@@ -56,6 +59,10 @@ RECORD_NAME = "appliance.json"
 ROUTER_CHILD = "router"
 IMAGE_CHILD = "image-service"
 SEARXNG_CHILD = "searxng"
+
+READY_SOCKET = "socket"
+READY_HEALTHZ = "healthz"
+HEALTHZ_PATH = "/healthz"
 
 SAMPLE_INTERVAL_SECONDS = 0.5
 READINESS_DEADLINE_SECONDS = 240.0
@@ -81,6 +88,15 @@ class ChildSpec:
     log_name: str
     port: int | None = None
     socket_path: str = "-"
+    # What proves this child reached its listener before the appliance reports
+    # ready. `socket` waits for `socket_path` to be a bound Unix socket, the
+    # observable `qwen-webui-session.sh` reads off the worker's own `socket`
+    # line; `healthz` waits for `GET /healthz` on `port`, the route
+    # `remote/searxng-launch.sh start` waits on. `-` starts the child and
+    # watches it for exit alone, which is what the router supervisor needs
+    # since it publishes its readiness through `state/runtime.json`.
+    ready: str = "-"
+    ready_deadline_s: float = 120.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,10 +333,9 @@ class Appliance:
         thread: threading.Thread | None = None
         try:
             self._start(router_child_spec(self.paths, plan_path))
-            if self.request.image_service is not None:
-                self._start(self.request.image_service)
-            if self.request.searxng is not None:
-                self._start(self.request.searxng)
+            for lane in (self.request.image_service, self.request.searxng):
+                if lane is not None:
+                    self._await_ready(lane, self._start(lane))
             gateway, _session_gate, code = self._start_gateway()
             thread = threading.Thread(target=gateway.serve_forever, name="qwen-apu-gateway")
             thread.start()
@@ -363,6 +378,47 @@ class Appliance:
         )
         self._children.append((spec, owned))
         return owned
+
+    def _await_ready(self, spec: ChildSpec, owned: Owned) -> None:
+        """Prove one lane child's listener before the gateway mounts its routes.
+
+        The router's own 240-second deadline would otherwise absorb a worker
+        that never binds and report `router_not_ready`, naming the wrong child.
+        This wait names the child, its deadline, and its listener identity.
+        """
+        if spec.ready == "-":
+            return
+        deadline = time.monotonic() + spec.ready_deadline_s
+        while time.monotonic() < deadline:
+            if owned.has_exited():
+                status = owned.exit_status()
+                raise ApplianceRefused(
+                    f"{spec.name} exited status={'-' if status is None else status} before its "
+                    f"listener appeared; its log is {spec.log_name}.log under the runtime root"
+                )
+            if self._listening(spec):
+                return
+            time.sleep(self.request.sample_interval_s)
+        raise ApplianceRefused(
+            f"{spec.name} bound no listener inside {spec.ready_deadline_s:g} s "
+            f"({spec.ready}: {spec.socket_path if spec.ready == READY_SOCKET else spec.port})"
+        )
+
+    @staticmethod
+    def _listening(spec: ChildSpec) -> bool:
+        """The one observable the child's readiness state names."""
+        if spec.ready == READY_SOCKET:
+            return Path(spec.socket_path).is_socket()
+        if spec.ready == READY_HEALTHZ and spec.port:
+            connection = http.client.HTTPConnection("127.0.0.1", spec.port, timeout=2.0)
+            try:
+                connection.request("GET", HEALTHZ_PATH)
+                return connection.getresponse().status < 500
+            except (OSError, http.client.HTTPException):
+                return False
+            finally:
+                connection.close()
+        return False
 
     def _start_gateway(self) -> tuple[Any, Any, str]:
         gateway, session = gateway_assembly.assemble(self.paths, self.request.gateway)
@@ -533,35 +589,115 @@ def serve(paths: RuntimePaths, request: ApplianceRequest) -> int:
 
 
 def child_specs_from_request(
-    paths: RuntimePaths, *, image_service: Sequence[str] = (), searxng: Sequence[str] = ()
+    paths: RuntimePaths,
+    *,
+    image_service: Sequence[str] = (),
+    searxng: Sequence[str] = (),
+    image_profile: str = "",
+    web_profile: str = "",
+    origin: str = "",
+    bind_host: str = "127.0.0.1",
 ) -> tuple[ChildSpec | None, ChildSpec | None]:
-    """The two lane children, declared from the argv a caller supplies.
+    """The two lane children, derived from the profile ledgers or from a whole argv.
 
-    The shell session builds each argv out of the preset it resolved, and that
-    resolution belongs to the launch rather than to process ownership, so the
-    argv arrives here already composed.
+    A caller supplying `image_service` or `searxng` states the command itself
+    and this function owns the process identity alone, which is the override an
+    operator serving a bundle assembled before the derivation existed needs.
+    Every other launch names a profile id: `qwen_apu.runtime.lanes` reads
+    remote/image-profiles.tsv, remote/image-models.tsv, remote/image-artifacts.tsv,
+    and remote/web-profiles.tsv against the runtime root and composes the argv
+    `qwen-webui-session.sh` composes from the same rows.
+
+    An image profile whose `execution_policy` reads `refused` arms no worker:
+    the row admits a shape and spends no device time, and
+    `qwen_apu.tools.matrix` answers `policy_refused` for it whether or not a
+    process exists. A web profile naming no loopback SearXNG -- provider `exa`
+    or `fake` -- starts no instance the same way.
     """
-    state = paths["qwen_home_state"]
-    image = (
-        ChildSpec(
+    if image_service:
+        image: ChildSpec | None = ChildSpec(
             name=IMAGE_CHILD,
             argv=tuple(image_service),
             env=dict(os.environ),
             log_name="appliance-image-service",
-            socket_path=str(state / "image-service.sock"),
+            socket_path=str(lanes.image_control_socket(paths)),
+            ready=READY_SOCKET,
         )
-        if image_service
-        else None
-    )
-    search = (
-        ChildSpec(
+    else:
+        image = _derived_image_child(
+            paths,
+            image_profile=image_profile,
+            web_profile=web_profile,
+            origin=origin,
+            bind_host=bind_host,
+        )
+    if searxng:
+        search: ChildSpec | None = ChildSpec(
             name=SEARXNG_CHILD,
             argv=tuple(searxng),
             env=dict(os.environ),
             log_name="appliance-searxng",
             port=int(os.environ.get("QWEN_SEARXNG_PORT", "8888")),
+            ready=READY_HEALTHZ,
         )
-        if searxng
-        else None
-    )
+    else:
+        search = _derived_searxng_child(paths, web_profile)
     return image, search
+
+
+def _derived_image_child(
+    paths: RuntimePaths,
+    *,
+    image_profile: str,
+    web_profile: str,
+    origin: str,
+    bind_host: str,
+) -> ChildSpec | None:
+    """The image worker this launch's own image profile declares."""
+    if not image_profile:
+        return None
+    row = config_models.image_profile(image_profile)
+    if row.execution_policy != "validator-gated":
+        return None
+    parameters = lanes.write_image_parameters(paths, image_profile)
+    argv = lanes.image_service_argv(
+        paths,
+        origin=origin,
+        bind_host=bind_host,
+        parameters=parameters,
+        api_key_file=lanes.image_artifact_key(paths),
+    )
+    return ChildSpec(
+        name=IMAGE_CHILD,
+        argv=argv,
+        env=lanes.image_service_env(
+            paths, profile_id=image_profile, web_profile=web_profile, parameters=parameters
+        ),
+        log_name="appliance-image-service",
+        socket_path=str(lanes.image_control_socket(paths)),
+        ready=READY_SOCKET,
+    )
+
+
+def _derived_searxng_child(paths: RuntimePaths, web_profile: str) -> ChildSpec | None:
+    """The instance the web profile's own `searxng_url` names, where it names one."""
+    if not web_profile:
+        return None
+    row = next(
+        (entry for entry in config_models.load_web_profiles() if entry.profile_id == web_profile),
+        None,
+    )
+    if row is None:
+        return None
+    endpoint = lanes.searxng_endpoint(row)
+    if endpoint is None:
+        return None
+    host, port = endpoint
+    return ChildSpec(
+        name=SEARXNG_CHILD,
+        argv=lanes.searxng_argv(paths),
+        env=lanes.searxng_env(host=host, port=port),
+        log_name="appliance-searxng",
+        port=port,
+        ready=READY_HEALTHZ,
+    )

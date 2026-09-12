@@ -37,7 +37,7 @@ the digest that verify a fetch -- exactly as wide as every other row.
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -50,6 +50,7 @@ from qwen_apu.runtime.paths import RuntimePaths
 
 GROUPS_PATH = tree_root() / "config" / "model-groups.toml"
 IMAGE_ARTIFACTS_PATH = tree_root() / "remote" / "image-artifacts.tsv"
+IMAGE_MODELS_PATH = tree_root() / "remote" / "image-models.tsv"
 
 IMAGE_ARTIFACT_FIELDS: tuple[str, ...] = (
     "artifact_id",
@@ -62,6 +63,29 @@ IMAGE_ARTIFACT_FIELDS: tuple[str, ...] = (
     "component_type",
     "fetch_script",
 )
+
+IMAGE_MODEL_FIELDS: tuple[str, ...] = (
+    "model_id",
+    "architecture",
+    "diffusion_artifact",
+    "vae_artifact",
+    "text_encoder_artifact",
+    "lora_artifact",
+    "native_width",
+    "native_height",
+    "default_steps",
+    "default_sampler",
+    "default_cfg",
+    "tier",
+)
+
+# The sentinels remote/image-models.tsv writes in a component slot: `packaged`
+# where the diffusion checkpoint already carries that component and `-` where
+# the bundle has none. Both resolve to no artifact of their own, so a reader
+# joining a slot against remote/image-artifacts.tsv skips them rather than
+# looking up a row that was never meant to exist.
+IMAGE_COMPONENT_SENTINELS: frozenset[str] = frozenset({"packaged", "-"})
+
 
 # A models.tsv row's projector_fetch_script names a download script rather
 # than a remote/model-artifacts.tsv model_id, so this table carries the
@@ -108,7 +132,32 @@ class ImageArtifactRow:
     filename: str
     sha256: str
     bytes: int
+    component_type: str
     fetch_script: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImageModelRow:
+    """One row of remote/image-models.tsv: a bundle of component artifacts.
+
+    A component slot carries an `image-artifacts.tsv` `artifact_id`, `packaged`
+    where the diffusion checkpoint already holds that component, or `-` where
+    the bundle has none, so a caller resolving a slot tests it against
+    `IMAGE_COMPONENT_SENTINELS` before joining.
+    """
+
+    model_id: str
+    architecture: str
+    diffusion_artifact: str
+    vae_artifact: str
+    text_encoder_artifact: str
+    lora_artifact: str
+    native_width: int
+    native_height: int
+    default_steps: int
+    default_sampler: str
+    default_cfg: float
+    tier: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,13 +228,66 @@ def load_image_artifacts(path: Path | None = None) -> tuple[ImageArtifactRow, ..
                 filename=fields[3],
                 sha256=fields[4],
                 bytes=int(bytes_raw),
+                component_type=fields[7],
                 fetch_script=fields[8],
             )
         )
     return tuple(rows)
 
 
-def _image_destination_directory(fetch_script: str) -> str:
+def load_image_models(path: Path | None = None) -> tuple[ImageModelRow, ...]:
+    """Every remote/image-models.tsv row, read the way the artifact ledger is."""
+    resolved = path or IMAGE_MODELS_PATH
+    table = read_ledger(resolved, key_index=0)
+    require_columns(table, IMAGE_MODEL_FIELDS)
+    rows: list[ImageModelRow] = []
+    for line_number, fields in table.rows:
+        row_key = f"image model ledger line {line_number}"
+        numeric = fields[6:9]
+        if not all(value.isdigit() for value in numeric):
+            raise ModelGroupError(f"{row_key} carries a non-numeric geometry: {numeric}")
+        try:
+            default_cfg = float(fields[10])
+        except ValueError:
+            raise ModelGroupError(
+                f"{row_key} carries a non-numeric default_cfg: {fields[10]}"
+            ) from None
+        rows.append(
+            ImageModelRow(
+                model_id=fields[0],
+                architecture=fields[1],
+                diffusion_artifact=fields[2],
+                vae_artifact=fields[3],
+                text_encoder_artifact=fields[4],
+                lora_artifact=fields[5],
+                native_width=int(fields[6]),
+                native_height=int(fields[7]),
+                default_steps=int(fields[8]),
+                default_sampler=fields[9],
+                default_cfg=default_cfg,
+                tier=fields[11],
+            )
+        )
+    return tuple(rows)
+
+
+def image_model(model_id: str, path: Path | None = None) -> ImageModelRow:
+    """One image model row, after the whole ledger reads."""
+    for row in load_image_models(path):
+        if row.model_id == model_id:
+            return row
+    raise ModelGroupError(f"no remote/image-models.tsv row carries model_id {model_id}")
+
+
+def image_artifact(artifact_id: str, rows: Sequence[ImageArtifactRow]) -> ImageArtifactRow:
+    """One image artifact row by id, refusing a slot that names no row."""
+    for row in rows:
+        if row.artifact_id == artifact_id:
+            return row
+    raise ModelGroupError(f"no remote/image-artifacts.tsv row carries artifact_id {artifact_id}")
+
+
+def image_destination_directory(fetch_script: str) -> str:
     """The `image/NAME` directory every remote/download-*.sh image script writes into.
 
     `NAME` is the script's own basename with the `download-` prefix and
@@ -286,7 +388,7 @@ def _projector_plan(
 
 
 def _image_plan(image_row: ImageArtifactRow, models_dir: Path) -> ArtifactPlan:
-    directory = _image_destination_directory(image_row.fetch_script)
+    directory = image_destination_directory(image_row.fetch_script)
     destination = models_dir / directory / image_row.filename
     url = _huggingface_url(image_row.repository, image_row.revision, image_row.filename)
     return ArtifactPlan(
