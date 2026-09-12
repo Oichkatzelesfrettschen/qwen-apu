@@ -160,12 +160,11 @@ input.key { flex: 1; }
 
 .turn { width: min(var(--column), 100%); margin: 0 auto; }
 .turn.me {
-  width: auto; max-width: min(var(--column), 100%); margin-left: auto; margin-right: auto;
-  align-self: center;
+  display: flex; flex-direction: column; align-items: flex-end;
 }
 .turn.me .body {
   background: var(--mine); padding: .6rem .9rem; border-radius: 1.1rem;
-  display: inline-block; max-width: 100%;
+  max-width: 100%;
 }
 .who { font-size: 12px; color: var(--dim); margin-bottom: .3rem; }
 .body { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -220,7 +219,7 @@ details.plus-menu > summary:hover { background: var(--raised-strong); color: var
 }
 .menu-item:hover { background: var(--raised-strong); }
 .menu-note { color: var(--dim); font-size: 12px; margin: .3rem .55rem 0; }
-input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+input[type=file] { display: none; }
 
 label.toggle {
   display: inline-flex; align-items: center; gap: .35rem; cursor: pointer;
@@ -349,7 +348,9 @@ section.notice h2 { font-size: 16px; margin: 0 0 .6rem; }
 section.notice p { max-width: 44rem; }
 section.notice code { background: var(--raised); border-radius: .3rem; padding: .05rem .3rem; }
 
+/* The rail narrows rather than leaving, because the conversation list, the
+   export, and the delete-all reach the page through it alone. */
 @media (max-width: 52rem) {
-  body { grid-template-columns: minmax(0, 1fr); }
-  aside#conversation-panel { display: none; }
+  body { grid-template-columns: 11rem minmax(0, 1fr); }
+  #composer, #log { padding-left: .6rem; padding-right: .6rem; }
 }

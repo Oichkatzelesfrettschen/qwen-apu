@@ -74,7 +74,9 @@ alone carries.
 
 Every input carries a label, visually hidden where the placeholder already
 names it. `:focus-visible` draws a 2 px ring on every control. The three
-toggles carry `role="switch"` on the checkbox itself: the modules read and
+tabs carry `role="tablist"` and `role="tab"` over the `aria-selected`
+`selectTab` already writes, with each tab naming the panel it opens, and the
+three toggles carry `role="switch"` on the checkbox itself: the modules read and
 write `.checked` on those three ids, so they stay checkboxes, and a switch
 checkbox reports its state as native `aria-checked` with no script. An
 `aria-pressed` attribute on the enclosing label would require `role="button"`
@@ -83,9 +85,9 @@ the switch role is what carries the pressed semantic instead.
 
 ## Contracts
 
-Every id the modules query and the tests read stays. Five ids are added:
-`#pair-card`, `#status-line`, `#greeting`, `#chat-band`, `#thread`, plus the
-rail's `#rail-brand` and `#rail-footer`. Two module edits carry the layout:
+Every id the modules query and the tests read stays. Seven ids are added:
+`#pair-card`, `#status-line`, `#greeting`, `#chat-band`, `#thread`,
+`#rail-brand`, and `#rail-footer`. Two module edits carry the layout:
 `applySessionModeToUi` hides `#pair-card` beside the three controls, guarded so
 a page without the card still pairs, and `probeHealth` names the 401.
 `test-ui-switch.mjs` reads the markup by byte, so `<section class="notice"

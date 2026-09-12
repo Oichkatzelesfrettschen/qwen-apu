@@ -92,9 +92,9 @@
   linking to an address nothing answers.
 -->
 <header id="topbar">
-  <nav class="tabs" id="tab-bar" aria-label="Page">
-    <button id="tab-chat" aria-selected="true">Chat</button>
-    <button id="tab-llama" aria-selected="false">llama.cpp UI</button>
+  <nav class="tabs" id="tab-bar" role="tablist" aria-label="Page">
+    <button id="tab-chat" role="tab" aria-controls="workspace" aria-selected="true">Chat</button>
+    <button id="tab-llama" role="tab" aria-controls="llama-ui-panel" aria-selected="false">llama.cpp UI</button>
   </nav>
   <p class="status" id="status-line">
     <span id="health">health pending</span>
@@ -120,7 +120,7 @@
   </div>
 </div>
 
-<div id="workspace">
+<div id="workspace" role="tabpanel" aria-labelledby="tab-chat">
   <div id="chat-column">
     <div id="chat-band">
       <p class="temporary-banner" id="temporary-banner" hidden>Temporary conversation: this transcript stays in memory for the life of this tab and reaches no browser store. Closing the tab ends it.</p>
@@ -188,7 +188,7 @@
   </div>
 </div>
 
-<section class="notice" id="llama-ui-panel" hidden>
+<section class="notice" id="llama-ui-panel" hidden role="tabpanel" aria-labelledby="tab-llama">
   <h2>The llama.cpp UI is served by the ordinary router launch</h2>
   <p>The qwen-apu gateway passes chat through <code>/api/chat</code> and serves
     this page from its own static root, and the llama.cpp UI answers at the
