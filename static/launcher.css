@@ -1,0 +1,95 @@
+/* The landing page: a field, two choices, nothing else at rest.
+
+   The look is fixed rather than theme-aware. This page is a threshold the
+   reader crosses in a second, and a login screen carries its own light the
+   way the reference one does; the surfaces behind it follow the viewer's
+   scheme. */
+:root {
+  --name: #ffffff;
+  --ring: rgba(255, 255, 255, 0.55);
+  --glass: rgba(255, 255, 255, 0.22);
+  --glass-edge: rgba(255, 255, 255, 0.5);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; min-height: 100vh; color: var(--name);
+  display: grid; place-items: center;
+  background:
+    radial-gradient(120% 85% at 12% 8%, #79c6f2 0%, rgba(121, 198, 242, 0) 52%),
+    radial-gradient(120% 90% at 92% 12%, #4f9fdc 0%, rgba(79, 159, 220, 0) 48%),
+    radial-gradient(150% 130% at 78% 96%, #d8471f 0%, rgba(216, 71, 31, 0) 58%),
+    linear-gradient(157deg, #f3ab3e 0%, #ec7a2b 44%, #d64f27 100%);
+  background-attachment: fixed;
+}
+.chooser { display: grid; place-items: center; padding: 2rem; }
+.choices { display: flex; gap: 4.5rem; align-items: flex-start; justify-content: center; }
+.choice {
+  display: grid; justify-items: center; gap: 0.9rem;
+  text-decoration: none; color: var(--name); width: 11rem;
+  border-radius: 20px; padding: 0.5rem 0.25rem 1rem;
+}
+.avatar {
+  width: 8.5rem; height: 8.5rem; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--glass);
+  border: 1px solid var(--glass-edge);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+.avatar svg { width: 4.4rem; height: 4.4rem; }
+.stroke { fill: none; stroke: var(--name); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.fill { fill: var(--name); }
+.name {
+  font-size: 1.12rem; font-weight: 500; letter-spacing: 0.01em;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.28);
+}
+.choice:hover .avatar, .choice:focus-visible .avatar {
+  transform: translateY(-4px) scale(1.03);
+  background: rgba(255, 255, 255, 0.32);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.24);
+}
+.choice:focus-visible { outline: none; }
+.choice:focus-visible .avatar { box-shadow: 0 0 0 4px var(--ring), 0 16px 38px rgba(0, 0, 0, 0.24); }
+/* The address stays out of the resting page and answers only where a launch
+   bound no listener for that choice. */
+.where { display: none; font-size: 0.82rem; opacity: 0.85; text-align: center; }
+.choice[aria-disabled="true"] { pointer-events: none; }
+.choice[aria-disabled="true"] .avatar { opacity: 0.45; }
+.choice[aria-disabled="true"] .name { opacity: 0.7; }
+.choice[aria-disabled="true"] .where { display: block; }
+
+/* -- a parked tool call, and nothing when none is parked ---------------- */
+.approvals:empty { display: none; }
+.approvals {
+  position: fixed; left: 50%; bottom: 1.75rem; transform: translateX(-50%);
+  width: min(34rem, calc(100% - 2rem)); display: grid; gap: 0.6rem;
+}
+.approval {
+  background: rgba(28, 26, 24, 0.72); border: 1px solid rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(16px); border-radius: 14px; padding: 0.75rem 0.9rem;
+  display: grid; gap: 0.35rem; font-size: 0.88rem; color: var(--name);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.28);
+}
+.approval .kind { font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.75; }
+.approval .detail { word-break: break-word; }
+.approval .meta { font-size: 0.78rem; opacity: 0.7; }
+.approval .choices { display: flex; gap: 0.5rem; }
+.approval .choices button {
+  flex: 1; padding: 0.4rem 0.6rem; border-radius: 9px; font: inherit;
+  font-size: 0.85rem; cursor: pointer; color: var(--name);
+}
+.approval .approve { background: rgba(255, 255, 255, 0.9); color: #1c1a18; border: 0; font-weight: 600; }
+.approval .deny { background: transparent; border: 1px solid rgba(255, 255, 255, 0.4); }
+
+.landing-status {
+  position: fixed; left: 50%; bottom: 0.75rem; transform: translateX(-50%);
+  margin: 0; font-size: 0.8rem; opacity: 0.8;
+}
+@media (max-width: 34rem) {
+  .choices { gap: 2.5rem; }
+  .avatar { width: 7rem; height: 7rem; }
+  .avatar svg { width: 3.6rem; height: 3.6rem; }
+}

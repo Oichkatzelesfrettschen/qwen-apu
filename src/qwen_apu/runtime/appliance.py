@@ -149,6 +149,8 @@ class ApplianceState:
     # fields name this process, since the listener runs on a thread of it.
     llama_ui_port: int = 0
     llama_ui_origin: str = "-"
+    image_ui_port: int = 0
+    image_ui_origin: str = "-"
     deployment: str = "-"
     deployment_directory: str = "-"
     router_state: str = "-"
@@ -314,6 +316,7 @@ class Appliance:
         self._superseded_pid = previous.supervisor_pid if previous is not None else 0
         self._children: list[tuple[ChildSpec, Owned]] = []
         self._llama_ui: Any = None
+        self._image_ui: Any = None
         self._stop = threading.Event()
 
     # -- the run ---------------------------------------------------------
@@ -359,12 +362,15 @@ class Appliance:
             gateway, _session_gate, code = self._start_gateway()
             thread = threading.Thread(target=gateway.serve_forever, name="qwen-apu-gateway")
             thread.start()
-            if self._llama_ui is not None:
-                llama_ui_thread = threading.Thread(
-                    target=self._llama_ui.serve_forever, name="qwen-apu-llama-ui"
-                )
-                llama_ui_thread.start()
-                threads.append(llama_ui_thread)
+            for listener, name in (
+                (self._llama_ui, "qwen-apu-llama-ui"),
+                (self._image_ui, "qwen-apu-image-ui"),
+            ):
+                if listener is None:
+                    continue
+                listener_thread = threading.Thread(target=listener.serve_forever, name=name)
+                listener_thread.start()
+                threads.append(listener_thread)
             self.record.transition(
                 "starting",
                 gateway_pid=os.getpid(),
@@ -373,6 +379,10 @@ class Appliance:
                 gateway_origin=f"http://{self.request.gateway.bind_host}:{gateway.port}",
                 llama_ui_port=self._llama_ui.port if self._llama_ui is not None else 0,
                 llama_ui_origin=gateway_assembly.llama_ui_origin(self.request.gateway) or "-",
+                image_ui_port=self._image_ui.port if self._image_ui is not None else 0,
+                image_ui_origin=(gateway_assembly.image_ui_origins(self.request.gateway) or ("-",))[
+                    0
+                ],
                 deployment=plan.deployment,
                 children=tuple(
                     child_record(spec.name, owned, spec) for spec, owned in self._children
@@ -390,8 +400,9 @@ class Appliance:
         finally:
             if gateway is not None:
                 gateway.shutdown()
-            if self._llama_ui is not None:
-                self._llama_ui.shutdown()
+            for listener in (self._llama_ui, self._image_ui):
+                if listener is not None:
+                    listener.shutdown()
             if thread is not None:
                 thread.join(timeout=10.0)
             for extra in threads:
@@ -466,6 +477,7 @@ class Appliance:
         """
         gateway, session = gateway_assembly.assemble(self.paths, self.request.gateway)
         try:
+            self._image_ui = getattr(gateway, "image_ui", None)
             self._llama_ui = gateway_assembly.assemble_llama_ui(
                 self.paths,
                 self.request.gateway,
@@ -474,9 +486,11 @@ class Appliance:
             )
             return gateway, session, session.start()
         except BaseException:
-            if self._llama_ui is not None:
-                self._llama_ui.shutdown()
-                self._llama_ui = None
+            for name in ("_llama_ui", "_image_ui"):
+                listener = getattr(self, name)
+                if listener is not None:
+                    listener.shutdown()
+                    setattr(self, name, None)
             gateway.shutdown()
             raise
 

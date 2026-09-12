@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>qwen-apu: image</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  The image surface, whole, on its own listener. That listener mounts the same
+  routes the landing page's does, so every call this page makes is
+  same-origin: the tool matrix it reads its bounds from, the grant it mints
+  per job, the generation it spends that grant on, and the artifact store it
+  reads back.
+
+  The human writes the prompt here, so the click on Generate is the approval
+  the grant records. `POST /api/tools/grant-image` binds the prompt digests,
+  the seed, the aspect, the dimension bound, and the step count; `POST
+  /api/tools/image/generate` spends it once.
+-->
+<link rel="stylesheet" href="../shell.css">
+</head>
+<body class="image-surface">
+<header class="bar">
+  <a class="home" href="/" title="every surface">&#8592; qwen-apu</a>
+  <span id="image-profile" class="hint">reading the image profile</span>
+  <span id="rail-status" class="status" data-state="reading" hidden>
+    <span id="status-dot" class="dot" aria-hidden="true"></span><span id="status-text"></span>
+  </span>
+</header>
+
+<section id="approvals" class="approvals" aria-label="pending tool approvals" aria-live="polite"></section>
+<section id="view-image" class="pane image">
+  <div class="studio">
+    <form id="image-form" class="composer">
+      <h1>Image</h1>
+      <label for="image-prompt">prompt</label>
+      <textarea id="image-prompt" rows="3" placeholder="what the image shows" required></textarea>
+      <label for="image-negative">negative prompt</label>
+      <textarea id="image-negative" rows="2" placeholder="what it leaves out"></textarea>
+      <div class="row">
+        <label>steps
+          <input id="image-steps" type="number" min="1" step="1" value="1">
+        </label>
+        <label>seed
+          <input id="image-seed" type="number" min="0" step="1" inputmode="numeric">
+        </label>
+        <button id="image-reseed" type="button" class="quiet" title="draw a new seed">new seed</button>
+        <span id="image-size" class="chip">size unknown</span>
+      </div>
+      <div class="row actions">
+        <button id="image-generate" type="submit" class="primary" disabled>Generate</button>
+        <button id="image-cancel" type="button" class="quiet" hidden>Cancel</button>
+        <span id="image-state" class="state" role="status" aria-live="polite"></span>
+      </div>
+      <p id="image-note" class="note" hidden></p>
+    </form>
+    <section id="image-gallery" class="gallery" aria-label="generated images">
+      <p id="gallery-empty" class="hint">No images yet. Every image here was generated on this
+        appliance and is read back from its artifact store.</p>
+    </section>
+  </div>
+</section>
+<script type="module" src="../js/image-page.js"></script>
+</body>
+</html>

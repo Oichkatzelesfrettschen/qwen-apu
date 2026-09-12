@@ -719,6 +719,9 @@ class Gateway:
         # The approval gate the assembly hands to the second listener; None
         # for a gateway assembled without approvals.
         self.tool_gate: object | None = None
+        # The image surface's listener, mounting these same providers on its
+        # own port; None for a launch that binds none.
+        self.image_ui: Gateway | None = None
         self.static = StaticDirectory(config.static_root)
         self.admitted_hosts = config.admitted_hosts()
         self.content_security_policy = content_security_policy(

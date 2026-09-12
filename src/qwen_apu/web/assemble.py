@@ -30,7 +30,7 @@ from qwen_apu.tools import approvals, calculator, documents, files, images, matr
 from qwen_apu.tools import web as web_tools
 from qwen_apu.tools.ledger import Ledger
 from qwen_apu.web import artifacts, chat, conversations, llama_ui, status, tool_gate
-from qwen_apu.web.app import LOOPBACK_HOSTS, Gateway, GatewayConfig, RequestRefused
+from qwen_apu.web.app import LOOPBACK_HOSTS, Gateway, GatewayConfig, RequestRefused, RouteProvider
 from qwen_apu.web.auth import SessionGate
 from qwen_apu.web.http import Request, Route
 
@@ -47,6 +47,10 @@ DEFAULT_LLAMA_UI_PORT = 42072
 # `-DLLAMA_BUILD_UI=OFF`, so it embeds no asset table and the listener serves
 # these files itself.
 LLAMA_UI_ASSET_DIRECTORY = ("llama-ui", "dist")
+# The image surface's page, under the served static root.
+IMAGE_PAGE_DIRECTORY = "image"
+# The image surface's own port, one past the built-in page's.
+DEFAULT_IMAGE_UI_PORT = 42073
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,9 @@ class GatewayRequest:
     # root's own directory where it holds an `index.html`, and leaves the
     # listener proxying every path where it does not.
     llama_ui_static: Path | None = None
+    # The image surface's own listener. Zero leaves the landing page naming no
+    # image address and the surface unbound.
+    image_ui_port: int = 0
 
 
 def review_model_for(request: GatewayRequest) -> str:
@@ -286,6 +293,16 @@ def page_origins(request: GatewayRequest) -> tuple[str, ...]:
     if loopback_alias(request):
         hosts.append(LOOPBACK_HOSTS[0])
     return tuple(f"http://{host}:{request.port}" for host in hosts)
+
+
+def image_ui_origins(request: GatewayRequest) -> tuple[str, ...]:
+    """Every origin the image surface is reachable at."""
+    if request.image_ui_port <= 0:
+        return ()
+    hosts = [request.bind_host]
+    if loopback_alias(request):
+        hosts.append(LOOPBACK_HOSTS[0])
+    return tuple(f"http://{host}:{request.image_ui_port}" for host in hosts)
 
 
 def llama_ui_origins(request: GatewayRequest) -> tuple[str, ...]:
@@ -611,6 +628,7 @@ def _assemble_armed(
             session_gate=session,
             approval_identity=identity,
             llama_ui_origin=llama_ui_origin(request),
+            image_ui_origin=(image_ui_origins(request) or ("",))[0],
         ),
         _Providers(approvals.routes(approval_service)),
         _Providers(approval_gate.routes()),
@@ -653,7 +671,46 @@ def _assemble_armed(
     # The second listener is assembled from this gateway's gate, so the calls
     # its proxy parks are the ones this gateway's pending route lists.
     gateway.tool_gate = approval_gate
+    # The image surface mounts the same providers on its own port, so every
+    # call it makes -- the matrix it reads bounds from, the grant it mints, the
+    # generation it spends that grant on, and the artifact store it reads back
+    # -- is same-origin there rather than a cross-origin post carrying a
+    # session secret. It is a second view of one gateway rather than a service
+    # of its own, so it shares the session gate and mounts no route the landing
+    # page lacks.
+    gateway.image_ui = image_ui_gateway(request, config.static_root, providers, session)
     return gateway, session
+
+
+def image_ui_gateway(
+    request: GatewayRequest,
+    static_root: Path,
+    providers: Sequence[RouteProvider],
+    session: SessionGate,
+) -> Gateway | None:
+    """The image surface's own listener, or None where a launch binds none."""
+    if request.image_ui_port <= 0:
+        return None
+    if request.image_ui_port in (request.port, request.llama_ui_port):
+        raise ValueError(
+            "the image surface takes a port of its own, so it differs from the "
+            "landing page's and from the built-in page's"
+        )
+    page_root = static_root / IMAGE_PAGE_DIRECTORY
+    if not (page_root / "index.html").is_file():
+        raise ValueError(f"the image surface carries no index.html: {page_root}")
+    return Gateway(
+        GatewayConfig(
+            static_root=page_root,
+            port=request.image_ui_port,
+            bind_host=request.bind_host,
+            origins=image_ui_origins(request),
+            exposure=lan_exposure(request.bind_host),
+            loopback_alias=loopback_alias(request),
+        ),
+        providers,
+        session_authority=session,
+    )
 
 
 def run(paths: RuntimePaths, request: GatewayRequest) -> int:

@@ -32,10 +32,16 @@ SCRIPT_DIRECTORY = STATIC_ROOT / "js"
 # stylesheet, and the LAN bound tags belong to the page that carries a
 # composer, which is the legacy one.
 PAGES = {
-    "shell": {
+    "landing": {
         "path": STATIC_ROOT / "index.html",
-        "script": "js/shell.js",
-        "stylesheet": "shell.css",
+        "script": "js/launcher.js",
+        "stylesheet": "launcher.css",
+        "lan_bounds": False,
+    },
+    "image": {
+        "path": STATIC_ROOT / "image" / "index.html",
+        "script": "../js/image-page.js",
+        "stylesheet": "../shell.css",
         "lan_bounds": False,
     },
     "legacy": {

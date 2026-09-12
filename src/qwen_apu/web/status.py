@@ -69,6 +69,7 @@ class StatusService:
         session_gate: SessionGate | None = None,
         approval_identity: Mapping[str, str] | None = None,
         llama_ui_origin: str = "",
+        image_ui_origin: str = "",
     ) -> None:
         self.client_factory = client_factory
         self.runtime_record = runtime_record
@@ -80,6 +81,7 @@ class StatusService:
         # A launch that starts no such listener reports the empty string and the
         # tab states that rather than linking to a port nothing binds.
         self.llama_ui_origin = llama_ui_origin
+        self.image_ui_origin = image_ui_origin
 
     def routes(self) -> tuple[Route, ...]:
         return (
@@ -150,6 +152,7 @@ class StatusService:
                     "pairing": pairing,
                     "approvals": self.approval_identity,
                     "llama_ui_origin": self.llama_ui_origin,
+                    "image_ui_origin": self.image_ui_origin,
                 },
                 "upstream": self.upstream_report(),
                 "runtime": reported,

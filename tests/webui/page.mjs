@@ -49,6 +49,10 @@ export class FakeElement {
     this.attributes.set(name, String(value));
   }
 
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  }
+
   get textContent() {
     // The DOM composes an element's text from its own and its descendants',
     // so a body written after its parent was appended still reads through the
