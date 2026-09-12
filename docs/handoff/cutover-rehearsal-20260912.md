@@ -12,7 +12,7 @@ acceptance again, and the stop; the window then relaunched legacy production.
 
 ```text
 2026-09-12T01:56:30Z 3 verify the Python application offline
-application_verify=/home/eirikr/worktrees/qwen-apu/cutover/.runtime/deployments/applications/cutover manifest_sha256=73f01212fa062a2139a45acc1c34d6afc2321c5f58c69d74039b4eb24198821f checked=17 result=verified
+application_verify=$QWEN_HOME/deployments/applications/cutover manifest_sha256=73f01212fa062a2139a45acc1c34d6afc2321c5f58c69d74039b4eb24198821f checked=17 result=verified
 2026-09-12T01:56:31Z 5 python on the production address
 2026-09-12T01:56:35Z 6-8 pair and run the acceptance
 2026-09-12T01:59:59Z 9 stop python
@@ -57,10 +57,10 @@ over the same root:
 | `image_remove` | pass | removed=True, status=200 |
 | `browser_history_import` | pass | conversation_id=1608c89de578409c8d6b093d83ecbc2d, read_back_status=200, skipped=[], warnings=["conversations[0]: the browser record carries no per-message timestamp; every message's created_utc is set to the conversation's own updated_utc (2023-11-14T22:13:20.000Z)"] |
 | `conversation_open` | pass | saved=9bd3a85e96fc40bc9710f4f1281cbbbd, temporary=2f0dbcb739be40a8ba0f23c877e8e0ee |
-| `history_survives_restart` | pass | conversation_id=34a75cbed2b44505aba351c3018aeaf0, listed=True, listing_status=200, previous_report=/home/eirikr/worktrees/qwen-apu/cutover/.runtime/results/acceptance-1.json, read_status=200 |
+| `history_survives_restart` | pass | conversation_id=34a75cbed2b44505aba351c3018aeaf0, listed=True, listing_status=200, previous_report=$QWEN_HOME/results/acceptance-1.json, read_status=200 |
 | `stop_command` | pass | exit_status=0, stdout=signalled=1700809,1700796,1700795,1700762
  |
-| `vulkan_lease_free` | pass | free=True, lease=/home/eirikr/worktrees/qwen-apu/cutover/.runtime/state/vulkan-workload.lock |
+| `vulkan_lease_free` | pass | free=True, lease=$QWEN_HOME/state/vulkan-workload.lock |
 | `teardown_leaves_no_residue` | pass | children=0, listening_ports=[], record_state=stopped |
 
 A skipped item names the route or the argument its claim needs; a 404 from a route this branch does not mount is a skip, and a 401 or 403 is a live gate answering and stays a failure.

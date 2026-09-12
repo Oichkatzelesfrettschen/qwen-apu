@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -23,6 +24,7 @@ import pytest
 from qwen_apu.runtime import appliance
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import read_start_time
+from qwen_apu.tools import approvals
 
 TREE = Path(__file__).resolve().parents[1]
 SH = shutil.which("sh")
@@ -206,6 +208,64 @@ def test_stop_on_an_empty_root_signals_nothing(root: RuntimePaths) -> None:
     assert appliance.status(root) is None
 
 
+def test_stop_unlinks_the_session_secret_an_abrupt_exit_left(root: RuntimePaths) -> None:
+    """The recovery path: bytes with no record and no live process behind them.
+
+    The gateway runs inside the supervisor and disarms `authorize-session.secret`
+    on its own shutdown, so a supervisor killed outright leaves the file whole.
+    A presented secret matching those bytes would authorize a grant post against
+    the launch that follows, and the teardown requires the file absent whether
+    or not a pid was recorded, so `stop` unlinks before it reads the record.
+    """
+    secret = root["qwen_home_state"] / approvals.SESSION_SECRET_FILE_NAME
+    secret.parent.mkdir(parents=True, exist_ok=True)
+    secret.write_text("stale\n", encoding="utf-8")
+
+    assert appliance.stop(root) == ()
+
+    assert not secret.exists()
+
+
+def test_stop_on_a_root_carrying_no_session_secret_is_quiet(root: RuntimePaths) -> None:
+    """An ordinary teardown after the gateway disarmed finds nothing to unlink."""
+    assert appliance.stop(root) == ()
+    assert not (root["qwen_home_state"] / approvals.SESSION_SECRET_FILE_NAME).exists()
+
+
+def test_a_stale_socket_node_reports_no_listener(tmp_path: Path) -> None:
+    """A node a killed worker left behind fails the readiness probe.
+
+    The node outlives the process, so `Path.is_socket` admits the predecessor's
+    socket and the gateway would mount its image routes before the replacement
+    worker bound. The closed listener answers ECONNREFUSED, which is what the
+    probe reads.
+    """
+    node = tmp_path / "image-service.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(node))
+    listener.listen(1)
+    listener.close()
+
+    assert node.is_socket()
+    assert not appliance._socket_answers(node)
+
+
+def test_a_bound_listener_reports_a_listener(tmp_path: Path) -> None:
+    """The worker's own bound socket queues the probe into its backlog."""
+    node = tmp_path / "image-service.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        listener.bind(str(node))
+        listener.listen(1)
+        assert appliance._socket_answers(node)
+    finally:
+        listener.close()
+
+
+def test_an_absent_socket_path_reports_no_listener(tmp_path: Path) -> None:
+    assert not appliance._socket_answers(tmp_path / "absent.sock")
+
+
 def test_render_states_every_child_and_the_readiness(root: RuntimePaths) -> None:
     child = appliance.ChildRecord(
         name=appliance.SEARXNG_CHILD, pid=7, pgid=7, start_time=11, argv0="x", port=8888
@@ -231,17 +291,19 @@ def test_a_child_spec_carries_an_argv_list_rather_than_a_command_string(
     root: RuntimePaths,
 ) -> None:
     """Every owned process is spawned from a list, so no shell parses it."""
-    image, searxng = appliance.child_specs_from_request(
+    derived = appliance.child_specs_from_request(
         root,
         image_service=["python3", "image-service.py", "--state-dir", str(root["qwen_home_state"])],
         searxng=["searxng-launch.sh", "serve", str(root["qwen_home_state"])],
     )
+    image, searxng = derived.image, derived.searxng
     assert image is not None and searxng is not None
     assert image.argv[0] == "python3"
     assert image.socket_path.endswith("image-service.sock")
     assert searxng.argv[1] == "serve"
     assert all(isinstance(word, str) for word in image.argv + searxng.argv)
-    absent_image, absent_searxng = appliance.child_specs_from_request(root)
+    absent = appliance.child_specs_from_request(root)
+    absent_image, absent_searxng = absent.image, absent.searxng
     assert absent_image is None
     assert absent_searxng is None
 

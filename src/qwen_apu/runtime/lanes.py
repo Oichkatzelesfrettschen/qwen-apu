@@ -51,6 +51,9 @@ IMAGE_AUTHORITY_NAMES = (
     "QWEN_IMAGE_LANGUAGE_PROFILE",
 )
 SEARXNG_SCRIPT = "searxng-launch.sh"
+# The one bind address `remote/searxng-launch.sh` admits: its own check reads
+# `QWEN_SEARXNG_BIND_ADDRESS` and exits 2 on any other value.
+SEARXNG_BIND_LITERAL = "127.0.0.1"
 LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})
 # The Web UI bearer the worker's artifact listener compares against. The
 # gateway serves artifacts from its own `/api/artifacts/` route, so nothing
@@ -167,13 +170,45 @@ def image_parameters(paths: RuntimePaths, profile_id: str) -> dict[str, object]:
     }
 
 
+def image_runtime_preflight(paths: RuntimePaths, profile: ImageProfile) -> None:
+    """Refuse a derivation whose runtime or model bundle this root does not hold.
+
+    `image-service.py` validates that the parameter document's paths are
+    absolute and binds its control socket regardless of what they resolve to, so
+    the appliance reported the lane ready and the matrix advertised
+    `image_generate`; the first approved generation then spent its single-use
+    grant before failing on the absent binary or bundle.
+    `remote/image-launch-lib.sh` refuses a `runtime_path` that is not executable
+    before it starts a worker, and this is the same refusal over the derived
+    values. Both paths are named in one sentence, so a refusal states which of
+    the two the root is missing.
+    """
+    runtime = paths["qwen_home_image_runtime"]
+    directory = image_model_directory(paths, profile)
+    missing = []
+    if not os.access(runtime, os.X_OK) or not runtime.is_file():
+        missing.append(f"the image runtime is absent or not executable: {runtime}")
+    if not directory.is_dir():
+        missing.append(f"the image model directory is absent: {directory}")
+    if missing:
+        raise LaneRefused(
+            f"image profile {profile.profile_id} names a runtime this root does not serve; "
+            + "; ".join(missing)
+        )
+
+
 def write_image_parameters(paths: RuntimePaths, profile_id: str) -> Path:
     """Publish the parameter document at the path the runtime root declares.
 
     `remote/image-launch-lib.sh` refuses a `QWEN_IMAGE_PROFILES_JSON` resolving
     outside the root, so writing at `qwen_home_image_parameters` keeps the
     shell launch and this one interchangeable over one file.
+
+    The runtime preflight runs before the first byte is written, so a root
+    holding no `sd-cli` and no installed bundle leaves no document behind and
+    arms no lane the matrix would advertise.
     """
+    image_runtime_preflight(paths, config_models.image_profile(profile_id))
     destination = paths["qwen_home_image_parameters"]
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
@@ -264,6 +299,15 @@ def searxng_endpoint(profile: WebProfile) -> tuple[str, int] | None:
     `config.models.load_web_profiles` already refuses a `searxng_url` outside
     loopback, so a row reaching here either names a loopback endpoint or names
     none at all under provider `exa` or `fake`.
+
+    `localhost` becomes `127.0.0.1`, because the host reaches
+    `remote/searxng-launch.sh` as `QWEN_SEARXNG_BIND_ADDRESS` and that script
+    accepts the literal alone, exiting 2 before it binds on any other spelling.
+    The two names resolve to the same interface, so the substitution changes
+    where the instance listens not at all and changes the derived child from one
+    that leaves at once to one that serves. `::1` stays verbatim: it names a
+    different address family, and mapping it to the IPv4 literal would move the
+    bind rather than respell it.
     """
     if profile.provider != "searxng" or not profile.searxng_url:
         return None
@@ -271,7 +315,7 @@ def searxng_endpoint(profile: WebProfile) -> tuple[str, int] | None:
     host = parsed.hostname or ""
     if host not in LOOPBACK_HOSTS:
         return None
-    return host, parsed.port or 8888
+    return (SEARXNG_BIND_LITERAL if host == "localhost" else host), parsed.port or 8888
 
 
 def searxng_argv(paths: RuntimePaths) -> tuple[str, ...]:

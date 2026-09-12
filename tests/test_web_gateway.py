@@ -1009,6 +1009,55 @@ def test_the_assembly_refuses_a_root_with_no_activated_bundle(tmp_path: Path) ->
         )
 
 
+def test_an_assembly_that_refuses_after_arming_leaves_no_session_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal past the arming disarms, because the teardown proves that file absent.
+
+    The occupied gateway port is the ordinary case that reaches here: the
+    session secret is minted at the one place this launch's approval service
+    exists, and every provider mount and the `Gateway` construction follow it.
+    `Gateway` is replaced with a constructor that raises, which reproduces that
+    ordering without binding a port.
+    """
+    paths = _assembly_root(tmp_path)
+    _write_key(paths, b"c0ffee\n")
+    secret = paths["qwen_home_state"] / approvals.SESSION_SECRET_FILE_NAME
+
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        assert secret.exists(), "the arming precedes the gateway construction"
+        raise OSError("the gateway port is occupied")
+
+    monkeypatch.setattr(gateway_assembly, "Gateway", refuse)
+    with pytest.raises(OSError, match="occupied"):
+        gateway_assembly.assemble(
+            paths, gateway_assembly.GatewayRequest(port=1, require_deployment=False)
+        )
+    assert not secret.exists()
+
+
+def test_a_pairing_code_that_refuses_still_disarms_the_session_secret(
+    tmp_path: Path, leased_port: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run` mints the pairing code inside the shutdown guard.
+
+    The gateway's `on_shutdown` carries the disarming, so a `SessionGate.start`
+    that raises reaches `gateway.shutdown()` rather than returning to a caller
+    that holds no gateway.
+    """
+    paths = _assembly_root(tmp_path)
+    _write_key(paths, b"c0ffee\n")
+    secret = paths["qwen_home_state"] / approvals.SESSION_SECRET_FILE_NAME
+    monkeypatch.setattr(
+        SessionGate, "start", lambda _self: (_ for _ in ()).throw(OSError("no pairing code"))
+    )
+    with pytest.raises(OSError, match="no pairing code"):
+        gateway_assembly.run(
+            paths, gateway_assembly.GatewayRequest(port=leased_port, require_deployment=False)
+        )
+    assert not secret.exists()
+
+
 def test_a_research_gateway_clears_the_deployment_requirement(tmp_path: Path) -> None:
     """A gateway against a server it did not supervise reads the upstream's roster."""
     paths = _assembly_root(tmp_path)
@@ -1069,6 +1118,49 @@ def test_one_origin_answers_the_matrix_on_get_and_the_executor_on_post(
     finally:
         gateway.shutdown()
         serving.join(timeout=EXCHANGE_DEADLINE_SECONDS)
+
+
+def test_an_unarmed_searxng_lane_leaves_both_web_rows_unavailable(
+    tmp_path: Path, leased_port: int
+) -> None:
+    """A root that armed no instance answers the lane rather than advertising it.
+
+    `build_web_tool_settings` mounts the executor from the profile's own
+    `searxng_url`, and every row of remote/web-profiles.tsv names
+    `http://127.0.0.1:8888`, so a root whose SearXNG components are absent
+    derived no child and still reported `web_search` available; the first
+    approved query then spent its single-use grant and failed at the provider.
+    `searxng_armed=False` leaves the profile unresolved, the executor unmounted,
+    and `matrix._web_gate` answering `temporarily_unavailable`.
+    """
+    paths = _assembly_root(tmp_path)
+    _write_key(paths, b"c0ffee\n")
+    gateway, _ = gateway_assembly.assemble(
+        paths,
+        gateway_assembly.GatewayRequest(
+            port=leased_port, require_deployment=False, searxng_armed=False
+        ),
+    )
+    try:
+        found = match(gateway.routes, "GET", matrix.MATRIX_PATH)
+        assert found is not None
+        answer = found[0].handler(
+            Request(
+                "GET",
+                matrix.MATRIX_PATH,
+                {"model": gateway_assembly.DEFAULT_WEB_PROFILE},
+                {"host": "127.0.0.1"},
+                b"",
+                "127.0.0.1",
+            )
+        )
+        assert isinstance(answer, Response)
+        rows = {row["tool_id"]: row for row in json.loads(answer.body.decode("utf-8"))["tools"]}
+        for tool_id in ("web_search", "read_url"):
+            assert rows[tool_id]["state"] == "temporarily_unavailable"
+            assert "definition" not in rows[tool_id]
+    finally:
+        gateway.shutdown()
 
 
 def test_a_lan_bind_admits_its_own_host_literal() -> None:

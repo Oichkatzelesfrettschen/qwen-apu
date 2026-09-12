@@ -611,6 +611,13 @@ class Gateway:
     `allow_reuse_address` lets a later bind succeed over it, so absence is
     proven by a refused connection rather than by a successful bind.
 
+    `shutdown` ends an accept loop that ran and closes a socket that never
+    served either. `socketserver.BaseServer.shutdown` waits on an event
+    `serve_forever` alone sets, so calling it against a gateway whose loop never
+    started would block forever; `_serving` records that the loop entered, which
+    makes the socket close and the hooks run on the path where an assembly
+    succeeds and the pairing code that follows it refuses.
+
     `on_shutdown` runs after the socket closes: a temporary conversation's
     registry holds a `tmp/conversations/<id>/` directory per live entry that
     reaches no SQLite row, so nothing but an explicit hook empties it when the
@@ -637,6 +644,7 @@ class Gateway:
         self._server = _GatewayServer((config.bind_host, config.port), _Handler, self)
         self._lock = threading.Lock()
         self._on_shutdown = tuple(on_shutdown)
+        self._serving = False
 
     @property
     def port(self) -> int:
@@ -645,11 +653,18 @@ class Gateway:
         return int(address[1])
 
     def serve_forever(self) -> None:
-        self._server.serve_forever(poll_interval=0.1)
+        with self._lock:
+            self._serving = True
+        try:
+            self._server.serve_forever(poll_interval=0.1)
+        finally:
+            with self._lock:
+                self._serving = False
 
     def shutdown(self) -> None:
         with self._lock:
-            self._server.shutdown()
+            if self._serving:
+                self._server.shutdown()
             self._server.server_close()
             for hook in self._on_shutdown:
                 hook()

@@ -33,6 +33,7 @@ import http.client
 import json
 import os
 import signal
+import socket
 import sys
 import tempfile
 import threading
@@ -50,6 +51,7 @@ from qwen_apu.runtime import state as runtime_state
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import Owned, read_start_time, spawn, terminate
 from qwen_apu.runtime.state import utc_now
+from qwen_apu.tools import approvals
 from qwen_apu.web import assemble as gateway_assembly
 
 SCHEMA = "qwen-apu-appliance-state-v1"
@@ -63,10 +65,19 @@ SEARXNG_CHILD = "searxng"
 READY_SOCKET = "socket"
 READY_HEALTHZ = "healthz"
 HEALTHZ_PATH = "/healthz"
+# `health_answers` in `remote/searxng-launch.sh` runs `curl -f`, which reports
+# failure on 400 and above, so the instance's own readiness contract admits a
+# 2xx or 3xx answer alone. A 4xx reads as an instance serving a route the
+# search executor cannot use, and admitting it would put the gateway in front
+# of a provider every approved query fails at after spending its grant.
+HEALTHZ_SUCCESS_CEILING = 400
 
 SAMPLE_INTERVAL_SECONDS = 0.5
 READINESS_DEADLINE_SECONDS = 240.0
 TERMINATION_GRACE_SECONDS = 2.0
+# The probe reaches a listener on the same machine, so a second is ample and
+# a wedged peer costs the readiness loop one sample rather than its deadline.
+SOCKET_PROBE_TIMEOUT_SECONDS = 1.0
 
 
 class ApplianceRefused(RuntimeError):
@@ -89,10 +100,12 @@ class ChildSpec:
     port: int | None = None
     socket_path: str = "-"
     # What proves this child reached its listener before the appliance reports
-    # ready. `socket` waits for `socket_path` to be a bound Unix socket, the
-    # observable `qwen-webui-session.sh` reads off the worker's own `socket`
-    # line; `healthz` waits for `GET /healthz` on `port`, the route
-    # `remote/searxng-launch.sh start` waits on. `-` starts the child and
+    # ready. `socket` waits for `socket_path` to accept a connection, which is
+    # the worker's own `socket` line turned into an observable this process can
+    # read and which a stale node left by a killed predecessor fails;
+    # `healthz` waits for a `GET /healthz` answer below 400 on `port`, the
+    # route and the `curl -f` verdict `remote/searxng-launch.sh start` waits
+    # on. `-` starts the child and
     # watches it for exit alone, which is what the router supervisor needs
     # since it publishes its readiness through `state/runtime.json`.
     ready: str = "-"
@@ -408,12 +421,12 @@ class Appliance:
     def _listening(spec: ChildSpec) -> bool:
         """The one observable the child's readiness state names."""
         if spec.ready == READY_SOCKET:
-            return Path(spec.socket_path).is_socket()
+            return _socket_answers(Path(spec.socket_path))
         if spec.ready == READY_HEALTHZ and spec.port:
             connection = http.client.HTTPConnection("127.0.0.1", spec.port, timeout=2.0)
             try:
                 connection.request("GET", HEALTHZ_PATH)
-                return connection.getresponse().status < 500
+                return connection.getresponse().status < HEALTHZ_SUCCESS_CEILING
             except (OSError, http.client.HTTPException):
                 return False
             finally:
@@ -421,8 +434,19 @@ class Appliance:
         return False
 
     def _start_gateway(self) -> tuple[Any, Any, str]:
+        """The assembled gateway and its pairing code, with the code minted under a guard.
+
+        `gateway.shutdown()` carries the approval service's disarming of
+        `authorize-session.secret`, so a `session.start()` that raises runs that
+        shutdown here rather than losing the gateway object to this frame and
+        leaving `Appliance.run`'s own guard nothing to shut down.
+        """
         gateway, session = gateway_assembly.assemble(self.paths, self.request.gateway)
-        return gateway, session, session.start()
+        try:
+            return gateway, session, session.start()
+        except BaseException:
+            gateway.shutdown()
+            raise
 
     def _router_record(self) -> runtime_state.RuntimeState | None:
         """This run's router record; the previous run's is read as none."""
@@ -525,7 +549,14 @@ def stop(paths: RuntimePaths, *, grace_s: float = TERMINATION_GRACE_SECONDS) -> 
     started, and a number alone would signal whatever now holds it. No name
     match, no `pkill`, and no tmux session is involved, so a second appliance on
     the same machine is untouched by this one's teardown.
+
+    The session secret is unlinked first and unconditionally. The gateway runs
+    inside the supervisor and disarms the file on its own shutdown, so an abrupt
+    supervisor exit leaves the bytes behind with no live process recorded, and a
+    teardown that returned on an absent record would leave a file that
+    authorizes a grant post against the next launch.
     """
+    _disarm_session_secret(paths)
     record = ApplianceRecord(path=record_path(paths))
     current = record.read()
     if current is None:
@@ -564,6 +595,42 @@ def stop(paths: RuntimePaths, *, grace_s: float = TERMINATION_GRACE_SECONDS) -> 
     return tuple(signalled)
 
 
+def _socket_answers(path: Path) -> bool:
+    """Whether a Unix socket at `path` accepts a connection.
+
+    `Path.is_socket` reads the filesystem node type alone, and a worker killed
+    before it unlinked `state/images/image-service.sock` leaves that node in
+    place, so a node test admits the predecessor's socket and the gateway mounts
+    its image routes against nothing. `connect` is what separates the two: the
+    stale node answers ECONNREFUSED, and a bound listener queues the connection
+    into its backlog. `image-service.py` runs the same probe in
+    `bind_control_socket` before it takes the path over.
+    """
+    if not path.is_socket():
+        return False
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(SOCKET_PROBE_TIMEOUT_SECONDS)
+    try:
+        probe.connect(str(path))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
+
+
+def _disarm_session_secret(paths: RuntimePaths) -> None:
+    """Remove `authorize-session.secret`, which the teardown proves absent.
+
+    `qwen_apu.tools.approvals.ApprovalService.disarm_session_secret` is the
+    ordinary owner and runs on the gateway's shutdown; this is the recovery path
+    for a supervisor that left without running it.
+    """
+    secret = paths["qwen_home_state"] / approvals.SESSION_SECRET_FILE_NAME
+    if secret.is_symlink() or secret.exists():
+        secret.unlink()
+
+
 def render(record: ApplianceState | None) -> str:
     """The record as `key=value` lines, one child per line."""
     if record is None:
@@ -588,6 +655,23 @@ def serve(paths: RuntimePaths, request: ApplianceRequest) -> int:
     return Appliance(paths, request).run()
 
 
+@dataclass(frozen=True, slots=True)
+class LaneChildren:
+    """The lane children one launch derives, beside what the gateway reads from them.
+
+    `searxng_armed` is false where the profile names a loopback instance and this
+    root derives no child for it, which is the state the gateway needs: the
+    matrix mounts its web rows from the profile's own `searxng_url`, so an
+    unarmed lane reading `available` would spend a single-use grant at a provider
+    nothing is listening for. Every other case is armed, including a profile
+    under provider `exa` or `fake`, whose rows carry no URL and refuse on that.
+    """
+
+    image: ChildSpec | None = None
+    searxng: ChildSpec | None = None
+    searxng_armed: bool = True
+
+
 def child_specs_from_request(
     paths: RuntimePaths,
     *,
@@ -597,7 +681,7 @@ def child_specs_from_request(
     web_profile: str = "",
     origin: str = "",
     bind_host: str = "127.0.0.1",
-) -> tuple[ChildSpec | None, ChildSpec | None]:
+) -> LaneChildren:
     """The two lane children, derived from the profile ledgers or from a whole argv.
 
     A caller supplying `image_service` or `searxng` states the command itself
@@ -637,16 +721,20 @@ def child_specs_from_request(
             bind_host=bind_host,
         )
     if searxng:
-        search: ChildSpec | None = ChildSpec(
-            name=SEARXNG_CHILD,
-            argv=tuple(searxng),
-            env=dict(os.environ),
-            log_name="appliance-searxng",
-            port=int(os.environ.get("QWEN_SEARXNG_PORT", "8888")),
+        # The caller composed this argv, so the instance it starts is the one it
+        # named and the lane is armed by that statement.
+        return LaneChildren(
+            image=image,
+            searxng=ChildSpec(
+                name=SEARXNG_CHILD,
+                argv=tuple(searxng),
+                env=dict(os.environ),
+                log_name="appliance-searxng",
+                port=int(os.environ.get("QWEN_SEARXNG_PORT", "8888")),
+            ),
         )
-    else:
-        search = _derived_searxng_child(paths, web_profile)
-    return image, search
+    search, armed = _derived_searxng_child(paths, web_profile)
+    return LaneChildren(image=image, searxng=search, searxng_armed=armed)
 
 
 def _derived_image_child(
@@ -690,29 +778,38 @@ def _derived_image_child(
     )
 
 
-def _derived_searxng_child(paths: RuntimePaths, web_profile: str) -> ChildSpec | None:
-    """The instance the web profile's own `searxng_url` names, where it names one."""
+def _derived_searxng_child(paths: RuntimePaths, web_profile: str) -> tuple[ChildSpec | None, bool]:
+    """The instance the web profile's own `searxng_url` names, beside the armed state.
+
+    The second element is false for one case alone: the row names a loopback
+    endpoint and this root carries no components to serve it from. A profile
+    naming no instance is armed, because its own rows refuse on the absent URL
+    rather than on a missing process.
+    """
     if not web_profile:
-        return None
+        return None, True
     row = next(
         (entry for entry in config_models.load_web_profiles() if entry.profile_id == web_profile),
         None,
     )
     if row is None:
-        return None
+        return None, True
     endpoint = lanes.searxng_endpoint(row)
     if endpoint is None:
-        return None
+        return None, True
     absent = lanes.searxng_components_present(paths)
     if absent:
         print(f"searxng_lane=unarmed profile={web_profile} reason={absent}", flush=True)
-        return None
+        return None, False
     host, port = endpoint
-    return ChildSpec(
-        name=SEARXNG_CHILD,
-        argv=lanes.searxng_argv(paths),
-        env=lanes.searxng_env(host=host, port=port),
-        log_name="appliance-searxng",
-        port=port,
-        ready=READY_HEALTHZ,
+    return (
+        ChildSpec(
+            name=SEARXNG_CHILD,
+            argv=lanes.searxng_argv(paths),
+            env=lanes.searxng_env(host=host, port=port),
+            log_name="appliance-searxng",
+            port=port,
+            ready=READY_HEALTHZ,
+        ),
+        True,
     )

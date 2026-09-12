@@ -9,10 +9,12 @@ that answers `GET /healthz` on a loopback port.
 
 from __future__ import annotations
 
+import http.server
 import json
 import shutil
 import socket
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -37,6 +39,22 @@ def root(tmp_path: Path) -> RuntimePaths:
     paths = RuntimePaths(tree=TREE, root=tmp_path / "runtime")
     paths.lay_out()
     return paths
+
+
+def _install_image_runtime(paths: RuntimePaths, profile_id: str = SERVED_PROFILE) -> None:
+    """Plant the executable and the bundle directory the image preflight requires.
+
+    `remote/image-launch-lib.sh` refuses a `runtime_path` that is not
+    executable, and the derivation applies the same rule, so a fixture deriving
+    an image child states that this root holds both.
+    """
+    runtime = paths["qwen_home_image_runtime"]
+    runtime.parent.mkdir(parents=True, exist_ok=True)
+    runtime.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    runtime.chmod(0o755)
+    lanes.image_model_directory(paths, config_models.image_profile(profile_id)).mkdir(
+        parents=True, exist_ok=True
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +113,7 @@ def test_a_split_placement_refuses_rather_than_guessing_a_backend(root: RuntimeP
 
 
 def test_the_parameters_publish_at_the_path_the_root_declares(root: RuntimePaths) -> None:
+    _install_image_runtime(root)
     written = lanes.write_image_parameters(root, SERVED_PROFILE)
     assert written == root["qwen_home_image_parameters"]
     assert written.stat().st_mode & 0o077 == 0
@@ -120,6 +139,7 @@ SESSION_IMAGE_FLAGS: tuple[str, ...] = (
 
 
 def test_the_image_argv_is_the_one_the_session_composes(root: RuntimePaths) -> None:
+    _install_image_runtime(root)
     parameters = lanes.write_image_parameters(root, SERVED_PROFILE)
     key = lanes.image_artifact_key(root)
     argv = lanes.image_service_argv(
@@ -188,6 +208,48 @@ def test_the_searxng_endpoint_comes_from_the_profile_url() -> None:
     assert lanes.searxng_endpoint(row) == ("127.0.0.1", 8888)
 
 
+def _searxng_profile(url: str) -> WebProfile:
+    return WebProfile(
+        profile_id="web-named-loopback",
+        model_id="qwen35-08b",
+        web_mode="search",
+        context=4096,
+        validated_filled_depth=None,
+        max_results=1,
+        max_fetches=1,
+        max_chars_per_fetch=1,
+        multi_source="no",
+        vision_allowed="no",
+        tool_selection="graded",
+        execution_policy="validator-gated",
+        provider="searxng",
+        primary_category="general",
+        fallback_category=None,
+        minimum_results=1,
+        searxng_url=url,
+    )
+
+
+def test_a_localhost_endpoint_normalizes_to_the_bind_literal() -> None:
+    """`remote/searxng-launch.sh` accepts `127.0.0.1` as its bind address alone.
+
+    The loader admits `localhost`, and passing that spelling through as
+    `QWEN_SEARXNG_BIND_ADDRESS` made the script exit 2 before it bound, so the
+    derived child left at once. The two names reach the same interface, which is
+    why respelling the host changes where the instance listens not at all.
+    """
+    endpoint = lanes.searxng_endpoint(_searxng_profile("http://localhost:8899"))
+    assert endpoint == (lanes.SEARXNG_BIND_LITERAL, 8899)
+    assert endpoint is not None
+    env = lanes.searxng_env(host=endpoint[0], port=endpoint[1])
+    assert env["QWEN_SEARXNG_BIND_ADDRESS"] == lanes.SEARXNG_BIND_LITERAL
+
+
+def test_an_ipv6_loopback_endpoint_keeps_its_own_literal() -> None:
+    """`::1` names a different address family, so the derivation respells nothing."""
+    assert lanes.searxng_endpoint(_searxng_profile("http://[::1]:8888")) == ("::1", 8888)
+
+
 def test_a_profile_naming_no_instance_derives_no_child(root: RuntimePaths) -> None:
     row = WebProfile(
         profile_id="web-fake",
@@ -220,7 +282,7 @@ def test_the_searxng_child_runs_the_launch_script_as_an_argv_list(
     root: RuntimePaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _components_present(monkeypatch)
-    _image, search = appliance.child_specs_from_request(root, web_profile=SEARXNG_PROFILE)
+    search = appliance.child_specs_from_request(root, web_profile=SEARXNG_PROFILE).searxng
     assert search is not None
     assert search.argv == (
         str(TREE / "remote" / "searxng-launch.sh"),
@@ -240,23 +302,63 @@ def test_the_searxng_child_runs_the_launch_script_as_an_argv_list(
 
 def test_a_shape_only_image_profile_arms_no_worker(root: RuntimePaths) -> None:
     """`refused` admits a shape and spends no device time, so no process exists."""
-    image, _search = appliance.child_specs_from_request(root, image_profile=SHAPE_ONLY_PROFILE)
-    assert image is None
+    derived = appliance.child_specs_from_request(root, image_profile=SHAPE_ONLY_PROFILE)
+    assert derived.image is None
 
 
 def test_the_served_image_profile_derives_the_whole_child(root: RuntimePaths) -> None:
-    image, _search = appliance.child_specs_from_request(
+    _install_image_runtime(root)
+    image = appliance.child_specs_from_request(
         root,
         image_profile=SERVED_PROFILE,
         web_profile="web-open",
         origin="http://127.0.0.1:8600",
-    )
+    ).image
     assert image is not None
     assert image.name == appliance.IMAGE_CHILD
     assert image.ready == appliance.READY_SOCKET
     assert image.socket_path == str(lanes.image_control_socket(root))
     assert image.env["QWEN_IMAGE_PROFILE"] == SERVED_PROFILE
     assert root["qwen_home_image_parameters"].is_file()
+
+
+def test_a_root_without_the_image_runtime_refuses_the_derivation(root: RuntimePaths) -> None:
+    """The refusal names the runtime and the bundle, and writes no parameter document.
+
+    `image-service.py` validates the parameter paths for absoluteness alone and
+    binds its control socket regardless, so an unpreflighted derivation armed a
+    lane the matrix advertised and the first approved generation spent its
+    single-use grant before failing on the absent binary.
+    `remote/image-launch-lib.sh` already refuses a non-executable
+    `runtime_path`; this is that refusal over the derived values.
+    """
+    with pytest.raises(lanes.LaneRefused) as refusal:
+        appliance.child_specs_from_request(
+            root, image_profile=SERVED_PROFILE, web_profile="web-open"
+        )
+    sentence = str(refusal.value)
+    assert "the image runtime is absent or not executable" in sentence
+    assert str(root["qwen_home_image_runtime"]) in sentence
+    assert "the image model directory is absent" in sentence
+    assert not root["qwen_home_image_parameters"].exists()
+
+
+def test_a_runtime_that_is_not_executable_refuses_by_name(root: RuntimePaths) -> None:
+    """A present file without the execute bit is the case the shell launch names."""
+    _install_image_runtime(root)
+    root["qwen_home_image_runtime"].chmod(0o644)
+
+    with pytest.raises(lanes.LaneRefused) as refusal:
+        lanes.write_image_parameters(root, SERVED_PROFILE)
+
+    sentence = str(refusal.value)
+    assert "the image runtime is absent or not executable" in sentence
+    assert "the image model directory is absent" not in sentence
+
+
+def test_a_root_holding_both_admits_the_derivation(root: RuntimePaths) -> None:
+    _install_image_runtime(root)
+    lanes.image_runtime_preflight(root, config_models.image_profile(SERVED_PROFILE))
 
 
 def test_an_unpopulated_searxng_root_arms_no_instance(
@@ -266,8 +368,12 @@ def test_an_unpopulated_searxng_root_arms_no_instance(
     monkeypatch.setattr(
         lanes, "searxng_components_present", lambda paths, **_: "searxng source is absent"
     )
-    _image, search = appliance.child_specs_from_request(root, web_profile=SEARXNG_PROFILE)
-    assert search is None
+    derived = appliance.child_specs_from_request(root, web_profile=SEARXNG_PROFILE)
+    assert derived.searxng is None
+    # The profile names a loopback instance this root serves none of, so the
+    # gateway leaves its web executor unmounted rather than advertising a lane
+    # whose first approved query would spend a grant at nothing.
+    assert derived.searxng_armed is False
     printed = capsys.readouterr().out
     assert "searxng_lane=unarmed" in printed
     assert "searxng source is absent" in printed
@@ -284,13 +390,17 @@ def test_the_component_check_runs_the_script_and_answers_a_sentence(root: Runtim
 
 
 def test_a_whole_argv_override_keeps_the_process_identity_alone(root: RuntimePaths) -> None:
-    image, search = appliance.child_specs_from_request(
+    derived = appliance.child_specs_from_request(
         root,
         image_service=["python3", "worker.py"],
         searxng=["searxng-launch.sh", "serve", "/state"],
         image_profile=SERVED_PROFILE,
         web_profile=SEARXNG_PROFILE,
     )
+    image, search = derived.image, derived.searxng
+    # The caller named the instance, so the lane is armed by that statement and
+    # the gateway mounts its executor.
+    assert derived.searxng_armed is True
     assert image is not None and search is not None
     assert image.argv == ("python3", "worker.py")
     assert search.argv == ("searxng-launch.sh", "serve", "/state")
@@ -391,6 +501,56 @@ def test_the_appliance_waits_for_healthz(root: RuntimePaths) -> None:
         run._await_ready(spec, owned)
     finally:
         run._shut_down(None)
+
+
+def _healthz_spec(port: int) -> appliance.ChildSpec:
+    return appliance.ChildSpec(
+        name=appliance.SEARXNG_CHILD,
+        argv=("true",),
+        env={},
+        log_name="fake-searxng",
+        port=port,
+        ready=appliance.READY_HEALTHZ,
+    )
+
+
+def _serve_one_status(status: int) -> tuple[http.server.HTTPServer, int]:
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 -- the handler name BaseHTTPRequestHandler calls
+            self.send_response(status)
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, int(server.server_address[1])
+
+
+def test_a_healthz_answering_400_reports_no_listener() -> None:
+    """The readiness contract is `curl -f`, which reports failure on 400 and above.
+
+    `health_answers` in `remote/searxng-launch.sh` runs that curl, so an
+    instance answering 4xx is one the search executor cannot use; admitting it
+    would put the gateway in front of a provider every approved query fails at
+    after spending its single-use grant.
+    """
+    server, port = _serve_one_status(400)
+    try:
+        assert not appliance.Appliance._listening(_healthz_spec(port))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_healthz_answering_200_reports_a_listener() -> None:
+    server, port = _serve_one_status(200)
+    try:
+        assert appliance.Appliance._listening(_healthz_spec(port))
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_the_record_carries_both_lane_children(root: RuntimePaths) -> None:
