@@ -151,3 +151,22 @@ GGUF weights stay outside Git because their sizes exceed the LFS per-file
 limit. Each download script pins a Hugging Face revision, a byte count, and a
 SHA-256, and verifies an existing file in place.
 
+
+A withheld checkpoint is absent from the appliance disk by decision, and its
+registry row is the placeholder that says so. Eight rows stand withheld: the two
+quarantined 3B candidates, the three rejected i1 ladder rungs, the archived 9B
+distill, and the two 27B capacity quants. Each carries a model-scope row in
+`remote/quarantine.tsv` naming a withholding class -- `rejected-low-bit-ladder`,
+`archive-decode-rate`, or `archive-capacity-experiment` -- beside the evidence
+that measured it and a reason record under `evidence/quarantine/`. The registry
+row stays because it is documentation: it holds the pin, the measured rate, the
+tier that rejected or archived the checkpoint, and the tuple a future arm would
+reproduce. What changes is that every entry refuses. The row's `fetch_script`
+reads the quarantine ledger and exits before it resolves a destination,
+`qwen-apu models install` refuses any group naming the id and reports
+`withheld` rather than `absent` under `models verify`,
+`remote/build-router-presets.sh` writes no preset section, and the picker roster
+reports the row as `quarantined`. Re-entry is the quarantine re-entry gate the
+reason record states: the row leaves `remote/quarantine.tsv` when a measurement
+contradicts the one that withheld it, and the pinned fetch follows from the
+tree that kept it.
