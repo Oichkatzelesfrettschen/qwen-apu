@@ -57,6 +57,22 @@ and governs both, so a digest list would refuse the page's own layout. The
 falsifier is direct: a build whose markup and bundle set no style attribute
 takes style digests the same way the script sources are taken.
 
+## The listener refuses the bundle's service worker
+
+A registered service worker precaches the page and replays the response it
+stored, headers included. The listener served `frame-ancestors 'none'` before
+the shell existed, so a browser that opened the plain page then holds a
+precached copy carrying that directive and refuses to be framed afterward,
+whatever the listener now sends. Firefox reports it as the embedding refusal
+it is.
+
+`REFUSED_ASSET_PATHS` answers `/sw.js` with 404, so no registration is made
+and a browser holding one drops it at its next update check. The appliance
+serves one LAN origin behind a pairing cookie and has no offline case, so the
+worker is refused rather than versioned. A browser that already registered
+one clears it by opening the listener directly and reloading, or through the
+site's stored data.
+
 ## The image studio
 
 The human types the prompt, so the click on Generate is the approval. The

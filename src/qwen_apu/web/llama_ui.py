@@ -73,6 +73,15 @@ PAIRING_PAGE_NAME = "index.html"
 PAGE_PATHS = ("/", "/index.html")
 # The tool listing and the tool call, admitted through the approval gate alone.
 TOOLS_PATH = "/tools"
+# The service worker this listener refuses. A registered worker precaches the
+# page and replays the response it stored, headers included, so a policy this
+# listener later changes never reaches a browser that registered one: a page
+# stored while `frame-ancestors` read `'none'` keeps refusing to be framed
+# after the directive names the shell. The appliance serves one LAN origin
+# behind a pairing cookie and has no offline case to answer, so the worker is
+# refused rather than versioned, and a browser holding a registration drops it
+# at its next update check against this 404.
+REFUSED_ASSET_PATHS = ("/sw.js",)
 
 # `tools/server/server.cpp` registers each of these with `ctx_http.get`. The
 # router build adds `/models/sse`, which is the picker's own event stream.
@@ -418,6 +427,8 @@ class LlamaUiProxy:
             if request.method == "GET" and request.path in PAGE_PATHS:
                 return self.pairing_card()
             self.settings.require_session(request)
+        if request.path in REFUSED_ASSET_PATHS:
+            raise RequestRefused(404, _unserved(request))
         served = self.asset(request)
         if served is not None:
             return served
