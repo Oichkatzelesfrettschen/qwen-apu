@@ -93,9 +93,9 @@ field, and this appliance needs nothing in it: the router listens on loopback
 without a key and the gateway carries the credential as that cookie. A page
 that asks for a key is a page whose session is absent, which pairing answers.
 
-- `42069` is the landing page: two choices, Chat and Image, each linking to
-  its own address. It holds nothing else, and it shows any tool call waiting
-  for an approval.
+- `42069` is the landing page: two choices, Chat and Image Generation, each
+  linking to its own address. It holds nothing else at rest, and a tool call
+  waiting for an approval appears on it until it is decided.
 - `42072` is Chat, llama.cpp's own page, with its model picker, attachments,
   reasoning display, and saved conversations.
 - `42073` is Image, this appliance's generator, which mounts the same routes

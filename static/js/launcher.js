@@ -24,9 +24,13 @@ function element(id) {
 }
 
 function setStatus(state, text) {
+  /* The resting page states nothing: a reader who can see two choices needs
+     no line telling them the gateway answered. A line appears only where the
+     read failed, which is the case a blank page would leave unexplained. */
   const line = element('landing-status');
   line.setAttribute('data-state', state);
   line.textContent = text;
+  line.hidden = state === 'ready';
 }
 
 export function applyStatus(report) {
@@ -48,11 +52,9 @@ export function applyStatus(report) {
       where.textContent = choice.absent;
     }
   }
-  const served = Array.isArray(runtime.served_models) ? runtime.served_models.length : 0;
   const routerState = typeof runtime.router_state === 'string' ? runtime.router_state : '';
-  if (routerState === 'ready') setStatus('ready', served ? `ready, ${served} models` : 'ready');
-  else if (routerState) setStatus(routerState, `router ${routerState}`);
-  else setStatus('ready', 'reachable');
+  if (routerState && routerState !== 'ready') setStatus(routerState, `the router is ${routerState}`);
+  else setStatus('ready', '');
 }
 
 export async function readStatus() {

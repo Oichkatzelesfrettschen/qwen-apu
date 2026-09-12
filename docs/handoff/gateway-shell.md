@@ -1,6 +1,11 @@
 # The gateway: a landing page and two surfaces, each at its own address
 
-The page at `/` chooses and holds nothing else. Chat is llama.cpp's own built
+The page at `/` chooses and holds nothing else. Two choices sit centered on a
+field the way a login screen presents its accounts: a circle, a name, and no
+third thing. The address of each surface stays off the resting page and
+appears under a name only where the launch bound no listener for it, and the
+status line appears only where the status read itself failed, so a reader who
+can see two choices is told nothing they can already see. Chat is llama.cpp's own built
 page on the second listener; Image is this appliance's generator on the third.
 A choice is a whole page at its own address rather than a frame, so the
 framing directives, the service worker's cached headers, and the

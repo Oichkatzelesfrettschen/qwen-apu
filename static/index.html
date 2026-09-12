@@ -5,43 +5,50 @@
 <title>qwen-apu</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <!--
-  The landing page chooses a surface and holds nothing else. Each choice is a
-  whole page at its own address: Chat is llama.cpp's own built page on the
-  second listener, and Image is this appliance's generator on the third, so a
-  reader lands on the surface itself rather than on a frame of it.
+  The landing page chooses a surface and holds nothing else. Two choices sit
+  centered on the field the way a login screen presents its accounts, and each
+  is a whole page at its own address: Chat is llama.cpp's own built page on the
+  second listener, and Image Generation is this appliance's own generator on
+  the third. Nothing else links them, and neither frames the other.
 
   `GET /api/status` names both addresses, as `gateway.llama_ui_origin` and
-  `gateway.image_ui_origin`, so the ports come from the launch rather than
-  from arithmetic on this page's own port. A launch that binds neither leaves
-  its card stating so, which is the honest answer where a dead link would be
-  a wrong one.
+  `gateway.image_ui_origin`, so a choice carries the port the launch chose
+  rather than arithmetic on this page's own port. A surface the launch bound
+  none of dims its choice and states that under the name, which is the only
+  text this page shows beyond the two names.
+
+  The approvals region stays empty until the gateway parks a tool call, so the
+  resting page is the two choices alone.
 -->
 <link rel="stylesheet" href="launcher.css">
 </head>
 <body>
-<main>
-  <h1>qwen-apu</h1>
-  <p class="tagline">Local inference on the appliance.</p>
-  <nav class="choices">
-    <a id="choice-chat" class="choice" href="#" aria-describedby="chat-note">
-      <span class="glyph" aria-hidden="true">&#9993;</span>
-      <span class="label">Chat</span>
-      <span id="chat-note" class="note">Text, vision, documents, web search</span>
-      <span class="where" id="chat-where"></span>
+<main class="chooser">
+  <div class="choices">
+    <a id="choice-chat" class="choice" href="#">
+      <span class="avatar" aria-hidden="true">
+        <svg viewBox="0 0 48 48" focusable="false">
+          <path class="stroke" d="M10 13h28a4 4 0 0 1 4 4v14a4 4 0 0 1-4 4H21l-9 7v-7h-2a4 4 0 0 1-4-4V17a4 4 0 0 1 4-4Z"/>
+        </svg>
+      </span>
+      <span class="name">Chat</span>
+      <span id="chat-where" class="where"></span>
     </a>
-    <a id="choice-image" class="choice" href="#" aria-describedby="image-note">
-      <span class="glyph" aria-hidden="true">&#9635;</span>
-      <span class="label">Image</span>
-      <span id="image-note" class="note">Generate and keep pictures</span>
-      <span class="where" id="image-where"></span>
+    <a id="choice-image" class="choice" href="#">
+      <span class="avatar" aria-hidden="true">
+        <svg viewBox="0 0 48 48" focusable="false">
+          <rect class="stroke" x="7" y="11" width="34" height="26" rx="4"/>
+          <circle class="fill" cx="17" cy="20" r="3.2"/>
+          <path class="stroke" d="M11 33l9-9 6 6 5-4 6 7"/>
+        </svg>
+      </span>
+      <span class="name">Image Generation</span>
+      <span id="image-where" class="where"></span>
     </a>
-  </nav>
-  <section id="approvals" class="approvals" aria-label="pending tool approvals" aria-live="polite"></section>
-  <footer>
-    <span id="landing-status" class="status" data-state="reading">reading status</span>
-    <a class="quiet-link" href="legacy/">legacy page</a>
-  </footer>
+  </div>
 </main>
+<section id="approvals" class="approvals" aria-label="pending tool approvals" aria-live="polite"></section>
+<p id="landing-status" class="landing-status" data-state="reading" hidden></p>
 <script type="module" src="js/launcher.js"></script>
 </body>
 </html>

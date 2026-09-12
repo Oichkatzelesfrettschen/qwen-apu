@@ -1,71 +1,95 @@
-/* The landing page: two choices, centered, and nothing that outlives the click. */
+/* The landing page: a field, two choices, nothing else at rest.
+
+   The look is fixed rather than theme-aware. This page is a threshold the
+   reader crosses in a second, and a login screen carries its own light the
+   way the reference one does; the surfaces behind it follow the viewer's
+   scheme. */
 :root {
-  color-scheme: light dark;
-  --bg: light-dark(#f4f4f6, #101114);
-  --ink: light-dark(#1c1d20, #ededf2);
-  --muted: light-dark(#6b6f76, #989ca4);
-  --card: light-dark(#ffffff, #1b1c21);
-  --line: light-dark(#dededf, #2a2c31);
-  --accent: light-dark(#0f766e, #3fbfae);
-  --ok: light-dark(#1a7f37, #3ddc84);
-  --warn: light-dark(#b26a00, #f5b04d);
-  --danger: light-dark(#b42318, #ff8a80);
+  --name: #ffffff;
+  --ring: rgba(255, 255, 255, 0.55);
+  --glass: rgba(255, 255, 255, 0.22);
+  --glass-edge: rgba(255, 255, 255, 0.5);
   font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {
-  margin: 0; background: var(--bg); color: var(--ink);
-  display: grid; place-items: center; padding: 2rem;
+  margin: 0; min-height: 100vh; color: var(--name);
+  display: grid; place-items: center;
+  background:
+    radial-gradient(120% 85% at 12% 8%, #79c6f2 0%, rgba(121, 198, 242, 0) 52%),
+    radial-gradient(120% 90% at 92% 12%, #4f9fdc 0%, rgba(79, 159, 220, 0) 48%),
+    radial-gradient(150% 130% at 78% 96%, #d8471f 0%, rgba(216, 71, 31, 0) 58%),
+    linear-gradient(157deg, #f3ab3e 0%, #ec7a2b 44%, #d64f27 100%);
+  background-attachment: fixed;
 }
-main { width: min(46rem, 100%); text-align: center; display: grid; gap: 0.4rem; }
-h1 { font-size: 1.6rem; margin: 0; letter-spacing: -0.01em; }
-.tagline { color: var(--muted); margin: 0 0 1.75rem; }
-.choices { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.25rem; }
+.chooser { display: grid; place-items: center; padding: 2rem; }
+.choices { display: flex; gap: 4.5rem; align-items: flex-start; justify-content: center; }
 .choice {
-  display: grid; gap: 0.35rem; justify-items: center; text-decoration: none;
-  color: inherit; background: var(--card); border: 1px solid var(--line);
-  border-radius: 18px; padding: 2.25rem 1.25rem 1.5rem;
-  transition: border-color 120ms, transform 120ms;
+  display: grid; justify-items: center; gap: 0.9rem;
+  text-decoration: none; color: var(--name); width: 11rem;
+  border-radius: 20px; padding: 0.5rem 0.25rem 1rem;
 }
-.choice:hover, .choice:focus-visible {
-  border-color: var(--accent); transform: translateY(-2px); outline: none;
+.avatar {
+  width: 8.5rem; height: 8.5rem; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--glass);
+  border: 1px solid var(--glass-edge);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
 }
-.choice[aria-disabled="true"] { opacity: 0.5; pointer-events: none; }
-.glyph {
-  font-size: 2.4rem; line-height: 1; color: var(--accent);
-  width: 4.5rem; height: 4.5rem; display: grid; place-items: center;
-  border-radius: 50%; background: light-dark(#eef6f5, #16302c); margin-bottom: 0.5rem;
+.avatar svg { width: 4.4rem; height: 4.4rem; }
+.stroke { fill: none; stroke: var(--name); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.fill { fill: var(--name); }
+.name {
+  font-size: 1.12rem; font-weight: 500; letter-spacing: 0.01em;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.28);
 }
-.label { font-size: 1.15rem; font-weight: 600; }
-.note { color: var(--muted); font-size: 0.9rem; }
-.where { color: var(--muted); font-size: 0.8rem; font-family: ui-monospace, monospace; }
-footer {
-  margin-top: 2rem; display: flex; gap: 1rem; justify-content: center;
-  align-items: center; color: var(--muted); font-size: 0.85rem;
+.choice:hover .avatar, .choice:focus-visible .avatar {
+  transform: translateY(-4px) scale(1.03);
+  background: rgba(255, 255, 255, 0.32);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.24);
 }
-.status::before {
-  content: ""; display: inline-block; width: 0.55rem; height: 0.55rem;
-  border-radius: 50%; background: var(--muted); margin-right: 0.45rem;
-  vertical-align: baseline;
-}
-.status[data-state="ready"]::before { background: var(--ok); }
-.status[data-state="loading"]::before, .status[data-state="starting"]::before { background: var(--warn); }
-.status[data-state="down"]::before { background: var(--danger); }
-.quiet-link { color: var(--muted); text-decoration: none; }
-.quiet-link:hover { color: var(--ink); text-decoration: underline; }
-@media (max-width: 34rem) { .choices { grid-template-columns: 1fr; } }
+.choice:focus-visible { outline: none; }
+.choice:focus-visible .avatar { box-shadow: 0 0 0 4px var(--ring), 0 16px 38px rgba(0, 0, 0, 0.24); }
+/* The address stays out of the resting page and answers only where a launch
+   bound no listener for that choice. */
+.where { display: none; font-size: 0.82rem; opacity: 0.85; text-align: center; }
+.choice[aria-disabled="true"] { pointer-events: none; }
+.choice[aria-disabled="true"] .avatar { opacity: 0.45; }
+.choice[aria-disabled="true"] .name { opacity: 0.7; }
+.choice[aria-disabled="true"] .where { display: block; }
 
-/* -- pending tool approvals ------------------------------------------- */
-.approvals { display: grid; gap: 0.5rem; margin-top: 1.5rem; text-align: left; }
-.approval {
-  background: var(--card); border: 1px solid var(--warn); border-radius: 12px;
-  padding: 0.7rem 0.85rem; display: grid; gap: 0.35rem; font-size: 0.88rem;
+/* -- a parked tool call, and nothing when none is parked ---------------- */
+.approvals:empty { display: none; }
+.approvals {
+  position: fixed; left: 50%; bottom: 1.75rem; transform: translateX(-50%);
+  width: min(34rem, calc(100% - 2rem)); display: grid; gap: 0.6rem;
 }
-.approval .kind { color: var(--warn); font-weight: 600; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; }
-.approval .detail { color: var(--ink); word-break: break-word; }
-.approval .meta { color: var(--muted); font-size: 0.78rem; }
+.approval {
+  background: rgba(28, 26, 24, 0.72); border: 1px solid rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(16px); border-radius: 14px; padding: 0.75rem 0.9rem;
+  display: grid; gap: 0.35rem; font-size: 0.88rem; color: var(--name);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.28);
+}
+.approval .kind { font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.75; }
+.approval .detail { word-break: break-word; }
+.approval .meta { font-size: 0.78rem; opacity: 0.7; }
 .approval .choices { display: flex; gap: 0.5rem; }
-.approval .choices button { flex: 1; padding: 0.4rem 0.6rem; border-radius: 8px; font: inherit; font-size: 0.85rem; cursor: pointer; }
-.approval .approve { background: var(--accent); color: light-dark(#fff, #0b1512); border: 0; }
-.approval .deny { background: transparent; border: 1px solid var(--line); color: inherit; }
+.approval .choices button {
+  flex: 1; padding: 0.4rem 0.6rem; border-radius: 9px; font: inherit;
+  font-size: 0.85rem; cursor: pointer; color: var(--name);
+}
+.approval .approve { background: rgba(255, 255, 255, 0.9); color: #1c1a18; border: 0; font-weight: 600; }
+.approval .deny { background: transparent; border: 1px solid rgba(255, 255, 255, 0.4); }
+
+.landing-status {
+  position: fixed; left: 50%; bottom: 0.75rem; transform: translateX(-50%);
+  margin: 0; font-size: 0.8rem; opacity: 0.8;
+}
+@media (max-width: 34rem) {
+  .choices { gap: 2.5rem; }
+  .avatar { width: 7rem; height: 7rem; }
+  .avatar svg { width: 3.6rem; height: 3.6rem; }
+}

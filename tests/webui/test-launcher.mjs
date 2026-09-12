@@ -45,7 +45,8 @@ test('each card carries the address the status route names', async () => {
   assert.equal(page.element('#choice-image').href, 'http://10.0.0.170:42073/');
   assert.equal(page.element('#chat-where').textContent, '10.0.0.170:42072');
   assert.equal(page.element('#image-where').textContent, '10.0.0.170:42073');
-  assert.equal(page.element('#landing-status').textContent, 'ready, 3 models');
+  assert.equal(page.element('#landing-status').hidden, true,
+    'the resting page shows a status line');
 });
 
 test('a surface the launch bound none of says so rather than linking nowhere', async () => {
@@ -103,6 +104,13 @@ test('the landing markup holds two choices and no client of its own', () => {
   for (const absent of ['id="chat-frame"', 'id="image-form"', 'iframe']) {
     assert.ok(!markup.includes(absent), `the landing page still carries ${absent}`);
   }
+  // The resting page is the two names and nothing else: no rail, no card
+  // copy, no address, no legacy link.
+  assert.equal(markup.match(/class="name"/g).length, 2);
+  assert.ok(!markup.includes('class="note"'), 'the landing page carries card copy');
+  assert.ok(!markup.includes('href="legacy/"'), 'the landing page carries a legacy link');
+  assert.ok(!markup.includes('class="rail"'), 'the landing page carries a rail');
+  assert.ok(markup.includes('Image Generation'), 'the image choice is unnamed');
   assert.ok(markup.includes('src="js/launcher.js"'));
   const image = fs.readFileSync(new URL('../../static/image/index.html', import.meta.url), 'utf8');
   assert.ok(image.includes('id="image-form"'), 'the image surface lost its composer');
