@@ -14,6 +14,19 @@ selected_variant=${1:-all}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=remote/qwen-home.sh
 . "$script_directory/qwen-home.sh"
+
+# remote/quarantine.tsv withholds this checkpoint: its weights are absent
+# from the appliance disk by decision and the ledger row is the placeholder.
+# model-registry.sh validates the whole ledger before it answers, which a
+# grep over the file does not.
+for withheld_subject in qwen38-27b-q2kxl qwen38-27b-iq3xxs; do
+    if "$script_directory/model-registry.sh" quarantine-subjects |
+        grep -qx -- "$withheld_subject"; then
+        printf '%s is withheld by remote/quarantine.tsv; no copy is fetched\n' \
+            "$withheld_subject" >&2
+        exit 1
+    fi
+done
 destination_directory=${2:-"$qwen_home_models/Qwen3.8-27B-GGUF"}
 manifest_path=$script_directory/../benchmarks/models/qwen38-27b-files.tsv
 source_revision=4ca720788d1e01f1bff70c033e0d0028fd02e502

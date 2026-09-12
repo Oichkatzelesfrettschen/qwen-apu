@@ -422,7 +422,11 @@ def cmd_models_verify(paths: RuntimePaths, artifacts: bool, groups: list[str]) -
         failures = 0
         for outcome in model_installer.verify(paths, groups or ["all"]):
             print(f"{outcome.artifact_id}\t{outcome.status}\t{outcome.destination}")
-            failures += outcome.status != "verified"
+            # `withheld` is the intended state of a checkpoint remote/quarantine.tsv
+            # excludes at model scope: its weights left the appliance disk by
+            # decision, so counting it as a failure would make this command exit
+            # non-zero for as long as the withholding stands.
+            failures += outcome.status not in {"verified", "withheld"}
         return 1 if failures else 0
     return 0
 

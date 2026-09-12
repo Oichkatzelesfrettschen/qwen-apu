@@ -4,6 +4,18 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=remote/qwen-home.sh
 . "$script_directory/qwen-home.sh"
 
+# remote/quarantine.tsv withholds this checkpoint: its weights are absent
+# from the appliance disk by decision and the ledger row is the placeholder.
+# model-registry.sh validates the whole ledger before it answers, which a
+# grep over the file does not.
+withheld_subject=qwen38-4b-i1-q5km
+if "$script_directory/model-registry.sh" quarantine-subjects |
+    grep -qx -- "$withheld_subject"; then
+    printf '%s is withheld by remote/quarantine.tsv; no copy is fetched\n' \
+        "$withheld_subject" >&2
+    exit 1
+fi
+
 # The intermediate rung of the unpacking-cost ladder. Achieved streaming rate
 # on this device orders by quantization layout rather than by byte count -- the
 # 2B reaches 11.89 GB/s at 50.08% Q6_K, the 4B Q4_K_M reaches 8.65 at 38.36%,

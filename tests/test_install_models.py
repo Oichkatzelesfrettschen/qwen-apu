@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import http.server
 import re
+import subprocess
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -506,3 +507,138 @@ def test_verify_reports_verified_over_a_matching_fixture(tmp_path: Path) -> None
         install_models.resolve_group = original
     by_id = {outcome.artifact_id: outcome for outcome in outcomes}
     assert by_id["qwen35-08b"].status == "verified"
+
+
+# ---------------------------------------------------------------------------
+# Withheld checkpoints: remote/quarantine.tsv at model scope
+# ---------------------------------------------------------------------------
+
+WITHHELD_MODEL_IDS = {
+    "ministral3-3b",
+    "nanbeige42-3b",
+    "qwen38-4b-i1-q2k",
+    "qwen38-4b-i1-q5km",
+    "qwen38-4b-i1-q6k",
+    "qwen38-9b-distill",
+    "qwen38-27b-iq3xxs",
+    "qwen38-27b-q2kxl",
+}
+
+
+def test_every_model_scope_quarantine_row_is_a_registry_row() -> None:
+    """A withheld row is documentation, so its registry row stays."""
+    model_ids = {row.id for row in load_models()}
+    assert set(install_models.withheld_subjects()) == WITHHELD_MODEL_IDS
+    assert WITHHELD_MODEL_IDS <= model_ids
+
+
+def test_research_group_resolves_every_member_as_withheld() -> None:
+    plans = resolve_group(["research"], models_dir=TREE / "nonexistent-models-dir")
+    by_id = {plan.artifact_id: plan for plan in plans}
+    assert set(by_id) == WITHHELD_MODEL_IDS | {"ministral3-3b-mmproj"}
+    for plan in plans:
+        assert plan.kind == "withheld"
+        assert plan.url is None
+        assert plan.expected_bytes is None
+        assert plan.expected_sha256 is None
+        assert plan.withheld_failure_class
+        assert plan.withheld_record
+
+
+def test_withheld_projector_follows_its_checkpoint() -> None:
+    """The projector encodes into a checkpoint the appliance no longer holds."""
+    plans = resolve_group(["research"], models_dir=TREE / "nonexistent-models-dir")
+    by_id = {plan.artifact_id: plan for plan in plans}
+    projector = by_id["ministral3-3b-mmproj"]
+    assert projector.kind == "withheld"
+    assert projector.withheld_record == by_id["ministral3-3b"].withheld_record
+
+
+def test_no_servable_group_carries_a_withheld_plan() -> None:
+    for name in ("core", "vision", "personalities", "image"):
+        plans = resolve_group([name], models_dir=TREE / "nonexistent-models-dir")
+        assert all(plan.kind != "withheld" for plan in plans), name
+
+
+def test_install_refuses_a_group_holding_a_withheld_row(tmp_path: Path) -> None:
+    runtime = RuntimePaths.resolve(tree=tmp_path)
+    runtime.lay_out()
+    with pytest.raises(ModelGroupError) as refusal:
+        install(runtime, ["research"], dry_run=True)
+    message = str(refusal.value)
+    assert "qwen38-9b-distill" in message
+    assert "archive-decode-rate" in message
+    assert "evidence/quarantine/qwen38-9b-distill.md" in message
+
+
+def test_install_all_refuses_while_a_withheld_row_stands(tmp_path: Path) -> None:
+    runtime = RuntimePaths.resolve(tree=tmp_path)
+    runtime.lay_out()
+    with pytest.raises(ModelGroupError):
+        install(runtime, ["all"], dry_run=True)
+
+
+def test_install_still_admits_the_servable_groups(tmp_path: Path) -> None:
+    runtime = RuntimePaths.resolve(tree=tmp_path)
+    runtime.lay_out()
+    outcomes = install(runtime, ["core", "vision"], dry_run=True)
+    assert all(outcome.status == "dry_run" for outcome in outcomes)
+
+
+def test_verify_reports_withheld_rather_than_absent(tmp_path: Path) -> None:
+    runtime = RuntimePaths.resolve(tree=tmp_path)
+    runtime.lay_out()
+    outcomes = verify(runtime, ["research"])
+    assert {outcome.status for outcome in outcomes} == {"withheld"}
+    core = verify(runtime, ["core"])
+    assert {outcome.status for outcome in core} == {"absent"}
+
+
+WITHHELD_FETCH_SCRIPTS = {
+    "download-ministral3-3b-q4km.sh",
+    "download-ministral3-3b-mmproj.sh",
+    "download-nanbeige42-3b-q4km.sh",
+    "download-qwen38-4b-distill-i1-q2k.sh",
+    "download-qwen38-4b-distill-i1-q5km.sh",
+    "download-qwen38-4b-distill-i1-q6k.sh",
+    "download-qwen38-9b-distill-q4km.sh",
+    "download-qwen38-27b-ladder.sh",
+}
+
+
+def test_every_withheld_row_names_a_guarded_fetch_script() -> None:
+    """The registry's own fetch_script columns are exactly the guarded set."""
+    named: set[str] = set()
+    for row in load_models():
+        if row.id not in WITHHELD_MODEL_IDS:
+            continue
+        named.add(row.fetch_script)
+        if row.projector_fetch_script is not None:
+            named.add(row.projector_fetch_script)
+    assert named == WITHHELD_FETCH_SCRIPTS
+
+
+@pytest.mark.parametrize("script_name", sorted(WITHHELD_FETCH_SCRIPTS))
+def test_withheld_fetch_script_refuses_at_its_top(script_name: str, tmp_path: Path) -> None:
+    """The guard runs before the destination is resolved, so no byte is written."""
+    completed = subprocess.run(
+        [str(TREE / "remote" / script_name), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert "withheld by remote/quarantine.tsv" in completed.stderr
+    assert not any(tmp_path.iterdir())
+
+
+def test_model_plan_refuses_a_withheld_row() -> None:
+    """The single-checkpoint entry a launch reaches through preflight.resolve_model."""
+    rows = {row.id: row for row in load_models()}
+    artifacts = {row.model_id: row for row in load_model_artifacts()}
+    models_dir = TREE / "nonexistent-models-dir"
+    with pytest.raises(ModelGroupError) as refusal:
+        install_models.model_plan(rows["qwen38-27b-q2kxl"], artifacts, models_dir)
+    assert "archive-capacity-experiment" in str(refusal.value)
+    served = install_models.model_plan(rows["qwen38-2b-distill"], artifacts, models_dir)
+    assert served.kind == "fetch"
