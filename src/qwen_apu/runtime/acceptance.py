@@ -1591,6 +1591,28 @@ class AcceptanceRun:
             {"attempts": attempts, "results_issued": len(issued)},
             started,
         )
+        # A live source that refused or carried no text already answered
+        # `incomplete` with a retrieval term inside a 200, which is the whole
+        # claim the explicit item makes; the empty-window probe below spends a
+        # fetch, so it runs only where no attempt proved the item already.
+        refused = next(
+            (
+                attempt
+                for attempt in attempts
+                if attempt["status"] == 200
+                and attempt["state"] == "incomplete"
+                and attempt["term"] in RETRIEVAL_FAILURE_TERMS
+            ),
+            None,
+        )
+        if refused is not None:
+            self.record(
+                explicit,
+                PASS,
+                "",
+                {"proved_by": "refusing_source", **refused},
+            )
+            return
         probe = self.client.post_json(
             TOOLS_ROUTE,
             {

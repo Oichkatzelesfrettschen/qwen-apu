@@ -1379,5 +1379,8 @@ def test_a_released_reservation_frees_the_client_slot() -> None:
     grants.reserve("10.0.0.7", 100.0, 1000.0)
     with pytest.raises(approvals.OutstandingImageGrantExhausted):
         grants.reserve("10.0.0.7", 101.0, 1001.0)
-    grants.release("10.0.0.7", 1000.0)
+    grants.release("10.0.0.7", 1000.6)
     grants.reserve("10.0.0.7", 102.0, 1002.0)
+    grants.release("10.0.0.7", 1500.0)
+    with pytest.raises(approvals.OutstandingImageGrantExhausted):
+        grants.reserve("10.0.0.7", 103.0, 1003.0)
