@@ -655,6 +655,23 @@ def serve(paths: RuntimePaths, request: ApplianceRequest) -> int:
     return Appliance(paths, request).run()
 
 
+@dataclass(frozen=True, slots=True)
+class LaneChildren:
+    """The lane children one launch derives, beside what the gateway reads from them.
+
+    `searxng_armed` is false where the profile names a loopback instance and this
+    root derives no child for it, which is the state the gateway needs: the
+    matrix mounts its web rows from the profile's own `searxng_url`, so an
+    unarmed lane reading `available` would spend a single-use grant at a provider
+    nothing is listening for. Every other case is armed, including a profile
+    under provider `exa` or `fake`, whose rows carry no URL and refuse on that.
+    """
+
+    image: ChildSpec | None = None
+    searxng: ChildSpec | None = None
+    searxng_armed: bool = True
+
+
 def child_specs_from_request(
     paths: RuntimePaths,
     *,
@@ -664,7 +681,7 @@ def child_specs_from_request(
     web_profile: str = "",
     origin: str = "",
     bind_host: str = "127.0.0.1",
-) -> tuple[ChildSpec | None, ChildSpec | None]:
+) -> LaneChildren:
     """The two lane children, derived from the profile ledgers or from a whole argv.
 
     A caller supplying `image_service` or `searxng` states the command itself
@@ -704,16 +721,20 @@ def child_specs_from_request(
             bind_host=bind_host,
         )
     if searxng:
-        search: ChildSpec | None = ChildSpec(
-            name=SEARXNG_CHILD,
-            argv=tuple(searxng),
-            env=dict(os.environ),
-            log_name="appliance-searxng",
-            port=int(os.environ.get("QWEN_SEARXNG_PORT", "8888")),
+        # The caller composed this argv, so the instance it starts is the one it
+        # named and the lane is armed by that statement.
+        return LaneChildren(
+            image=image,
+            searxng=ChildSpec(
+                name=SEARXNG_CHILD,
+                argv=tuple(searxng),
+                env=dict(os.environ),
+                log_name="appliance-searxng",
+                port=int(os.environ.get("QWEN_SEARXNG_PORT", "8888")),
+            ),
         )
-    else:
-        search = _derived_searxng_child(paths, web_profile)
-    return image, search
+    search, armed = _derived_searxng_child(paths, web_profile)
+    return LaneChildren(image=image, searxng=search, searxng_armed=armed)
 
 
 def _derived_image_child(
@@ -757,29 +778,38 @@ def _derived_image_child(
     )
 
 
-def _derived_searxng_child(paths: RuntimePaths, web_profile: str) -> ChildSpec | None:
-    """The instance the web profile's own `searxng_url` names, where it names one."""
+def _derived_searxng_child(paths: RuntimePaths, web_profile: str) -> tuple[ChildSpec | None, bool]:
+    """The instance the web profile's own `searxng_url` names, beside the armed state.
+
+    The second element is false for one case alone: the row names a loopback
+    endpoint and this root carries no components to serve it from. A profile
+    naming no instance is armed, because its own rows refuse on the absent URL
+    rather than on a missing process.
+    """
     if not web_profile:
-        return None
+        return None, True
     row = next(
         (entry for entry in config_models.load_web_profiles() if entry.profile_id == web_profile),
         None,
     )
     if row is None:
-        return None
+        return None, True
     endpoint = lanes.searxng_endpoint(row)
     if endpoint is None:
-        return None
+        return None, True
     absent = lanes.searxng_components_present(paths)
     if absent:
         print(f"searxng_lane=unarmed profile={web_profile} reason={absent}", flush=True)
-        return None
+        return None, False
     host, port = endpoint
-    return ChildSpec(
-        name=SEARXNG_CHILD,
-        argv=lanes.searxng_argv(paths),
-        env=lanes.searxng_env(host=host, port=port),
-        log_name="appliance-searxng",
-        port=port,
-        ready=READY_HEALTHZ,
+    return (
+        ChildSpec(
+            name=SEARXNG_CHILD,
+            argv=lanes.searxng_argv(paths),
+            env=lanes.searxng_env(host=host, port=port),
+            log_name="appliance-searxng",
+            port=port,
+            ready=READY_HEALTHZ,
+        ),
+        True,
     )

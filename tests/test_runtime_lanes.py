@@ -264,7 +264,7 @@ def test_the_searxng_child_runs_the_launch_script_as_an_argv_list(
     root: RuntimePaths, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _components_present(monkeypatch)
-    _image, search = appliance.child_specs_from_request(root, web_profile=SEARXNG_PROFILE)
+    search = appliance.child_specs_from_request(root, web_profile=SEARXNG_PROFILE).searxng
     assert search is not None
     assert search.argv == (
         str(TREE / "remote" / "searxng-launch.sh"),
@@ -284,17 +284,17 @@ def test_the_searxng_child_runs_the_launch_script_as_an_argv_list(
 
 def test_a_shape_only_image_profile_arms_no_worker(root: RuntimePaths) -> None:
     """`refused` admits a shape and spends no device time, so no process exists."""
-    image, _search = appliance.child_specs_from_request(root, image_profile=SHAPE_ONLY_PROFILE)
-    assert image is None
+    derived = appliance.child_specs_from_request(root, image_profile=SHAPE_ONLY_PROFILE)
+    assert derived.image is None
 
 
 def test_the_served_image_profile_derives_the_whole_child(root: RuntimePaths) -> None:
-    image, _search = appliance.child_specs_from_request(
+    image = appliance.child_specs_from_request(
         root,
         image_profile=SERVED_PROFILE,
         web_profile="web-open",
         origin="http://127.0.0.1:8600",
-    )
+    ).image
     assert image is not None
     assert image.name == appliance.IMAGE_CHILD
     assert image.ready == appliance.READY_SOCKET
@@ -310,8 +310,12 @@ def test_an_unpopulated_searxng_root_arms_no_instance(
     monkeypatch.setattr(
         lanes, "searxng_components_present", lambda paths, **_: "searxng source is absent"
     )
-    _image, search = appliance.child_specs_from_request(root, web_profile=SEARXNG_PROFILE)
-    assert search is None
+    derived = appliance.child_specs_from_request(root, web_profile=SEARXNG_PROFILE)
+    assert derived.searxng is None
+    # The profile names a loopback instance this root serves none of, so the
+    # gateway leaves its web executor unmounted rather than advertising a lane
+    # whose first approved query would spend a grant at nothing.
+    assert derived.searxng_armed is False
     printed = capsys.readouterr().out
     assert "searxng_lane=unarmed" in printed
     assert "searxng source is absent" in printed
@@ -328,13 +332,17 @@ def test_the_component_check_runs_the_script_and_answers_a_sentence(root: Runtim
 
 
 def test_a_whole_argv_override_keeps_the_process_identity_alone(root: RuntimePaths) -> None:
-    image, search = appliance.child_specs_from_request(
+    derived = appliance.child_specs_from_request(
         root,
         image_service=["python3", "worker.py"],
         searxng=["searxng-launch.sh", "serve", "/state"],
         image_profile=SERVED_PROFILE,
         web_profile=SEARXNG_PROFILE,
     )
+    image, search = derived.image, derived.searxng
+    # The caller named the instance, so the lane is armed by that statement and
+    # the gateway mounts its executor.
+    assert derived.searxng_armed is True
     assert image is not None and search is not None
     assert image.argv == ("python3", "worker.py")
     assert search.argv == ("searxng-launch.sh", "serve", "/state")

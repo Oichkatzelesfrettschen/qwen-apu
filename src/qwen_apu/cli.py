@@ -490,7 +490,7 @@ def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
         record = appliance.status(paths)
         return 0 if record is None or record.state == "stopped" else 1
     gateway_origin = f"http://{args.bind_host}:{args.gateway_port}"
-    image, searxng = appliance.child_specs_from_request(
+    lane_children = appliance.child_specs_from_request(
         paths,
         image_service=args.image_service,
         searxng=args.searxng,
@@ -516,9 +516,10 @@ def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
                 image_profile=args.image_profile,
                 static_root=args.static,
                 file_roots=tuple(args.file_root),
+                searxng_armed=lane_children.searxng_armed,
             ),
-            image_service=image,
-            searxng=searxng,
+            image_service=lane_children.image,
+            searxng=lane_children.searxng,
         ),
     )
 

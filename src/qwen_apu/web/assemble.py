@@ -57,6 +57,12 @@ class GatewayRequest:
     # gateway requires one; a research gateway against an unsupervised server
     # clears this and reads the upstream's roster alone.
     require_deployment: bool = True
+    # Whether a SearXNG instance this launch armed serves the profile's own
+    # `searxng_url`. A launch that derived no child for a profile naming one
+    # clears this, and the executor stays unmounted so the matrix reports both
+    # web rows `temporarily_unavailable` rather than letting an approved query
+    # spend its single-use grant at a provider nothing is listening for.
+    searxng_armed: bool = True
 
 
 def review_model_for(request: GatewayRequest) -> str:
@@ -342,7 +348,7 @@ def _assemble_armed(
         approval_service.outstanding_image_grants.release(client, expiry)
 
     web_settings = build_web_tool_settings(
-        resolve_web_profile(request.web_profile),
+        resolve_web_profile(request.web_profile) if request.searxng_armed else None,
         token_key_file=paths["qwen_home_web_token_key"],
         profile_id=approval_settings.profile,
         session_admits=session_admits,

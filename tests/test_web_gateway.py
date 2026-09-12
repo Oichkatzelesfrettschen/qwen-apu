@@ -1120,6 +1120,49 @@ def test_one_origin_answers_the_matrix_on_get_and_the_executor_on_post(
         serving.join(timeout=EXCHANGE_DEADLINE_SECONDS)
 
 
+def test_an_unarmed_searxng_lane_leaves_both_web_rows_unavailable(
+    tmp_path: Path, leased_port: int
+) -> None:
+    """A root that armed no instance answers the lane rather than advertising it.
+
+    `build_web_tool_settings` mounts the executor from the profile's own
+    `searxng_url`, and every row of remote/web-profiles.tsv names
+    `http://127.0.0.1:8888`, so a root whose SearXNG components are absent
+    derived no child and still reported `web_search` available; the first
+    approved query then spent its single-use grant and failed at the provider.
+    `searxng_armed=False` leaves the profile unresolved, the executor unmounted,
+    and `matrix._web_gate` answering `temporarily_unavailable`.
+    """
+    paths = _assembly_root(tmp_path)
+    _write_key(paths, b"c0ffee\n")
+    gateway, _ = gateway_assembly.assemble(
+        paths,
+        gateway_assembly.GatewayRequest(
+            port=leased_port, require_deployment=False, searxng_armed=False
+        ),
+    )
+    try:
+        found = match(gateway.routes, "GET", matrix.MATRIX_PATH)
+        assert found is not None
+        answer = found[0].handler(
+            Request(
+                "GET",
+                matrix.MATRIX_PATH,
+                {"model": gateway_assembly.DEFAULT_WEB_PROFILE},
+                {"host": "127.0.0.1"},
+                b"",
+                "127.0.0.1",
+            )
+        )
+        assert isinstance(answer, Response)
+        rows = {row["tool_id"]: row for row in json.loads(answer.body.decode("utf-8"))["tools"]}
+        for tool_id in ("web_search", "read_url"):
+            assert rows[tool_id]["state"] == "temporarily_unavailable"
+            assert "definition" not in rows[tool_id]
+    finally:
+        gateway.shutdown()
+
+
 def test_a_lan_bind_admits_its_own_host_literal() -> None:
     assert gateway_assembly.lan_exposure("127.0.0.1") == ""
     assert gateway_assembly.lan_exposure("::1") == ""

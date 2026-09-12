@@ -291,17 +291,19 @@ def test_a_child_spec_carries_an_argv_list_rather_than_a_command_string(
     root: RuntimePaths,
 ) -> None:
     """Every owned process is spawned from a list, so no shell parses it."""
-    image, searxng = appliance.child_specs_from_request(
+    derived = appliance.child_specs_from_request(
         root,
         image_service=["python3", "image-service.py", "--state-dir", str(root["qwen_home_state"])],
         searxng=["searxng-launch.sh", "serve", str(root["qwen_home_state"])],
     )
+    image, searxng = derived.image, derived.searxng
     assert image is not None and searxng is not None
     assert image.argv[0] == "python3"
     assert image.socket_path.endswith("image-service.sock")
     assert searxng.argv[1] == "serve"
     assert all(isinstance(word, str) for word in image.argv + searxng.argv)
-    absent_image, absent_searxng = appliance.child_specs_from_request(root)
+    absent = appliance.child_specs_from_request(root)
+    absent_image, absent_searxng = absent.image, absent.searxng
     assert absent_image is None
     assert absent_searxng is None
 
