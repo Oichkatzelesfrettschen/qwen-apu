@@ -432,3 +432,17 @@ def test_the_record_carries_both_lane_children(root: RuntimePaths) -> None:
 
 def _profile(profile_id: str) -> ImageProfile:
     return config_models.image_profile(profile_id)
+
+
+def test_the_authority_names_are_the_env_the_worker_child_receives(tmp_path: Path) -> None:
+    """The appliance exports exactly the names the verifier reads in both processes."""
+    paths = RuntimePaths(tree=Path(__file__).resolve().parents[1], root=tmp_path / "root")
+    paths.lay_out()
+    env = lanes.image_service_env(
+        paths, profile_id="image-sdxs-512-a", web_profile="web-open", parameters=tmp_path / "p.json"
+    )
+    for name in lanes.IMAGE_AUTHORITY_NAMES:
+        assert env[name]
+    assert set(lanes.IMAGE_AUTHORITY_NAMES) == {
+        name for name in env if name.startswith("QWEN_IMAGE_")
+    }
