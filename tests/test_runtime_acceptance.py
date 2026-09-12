@@ -43,8 +43,10 @@ from qwen_apu.runtime.acceptance import (
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import read_start_time
 from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
+from qwen_apu.tools import approvals
 from qwen_apu.web import assemble as gateway_assembly
 from qwen_apu.web.auth import PAIRING_CODE_FILENAME
+from qwen_apu.web.history import DOCUMENT_VERSION
 from test_web_gateway import _FakeUpstream
 
 TREE = Path(__file__).resolve().parents[1]
@@ -289,6 +291,10 @@ def _by_name(results: list[acceptance.CheckResult]) -> dict[str, acceptance.Chec
     return {result.name: result for result in results}
 
 
+def results_term(result: acceptance.CheckResult) -> str:
+    return str(result.evidence.get("term", ""))
+
+
 # ---------------------------------------------------------------------------
 # The gateway-backed run
 # ---------------------------------------------------------------------------
@@ -319,15 +325,133 @@ def test_a_whole_run_passes_every_reachable_check(gateway: Fixture) -> None:
     assert results["browser_history_import"].status == PASS
     assert results["conversation_open"].status == PASS
 
-    # The web lane has no route on this branch, so both items skip and name it.
+    # Both lanes read the tool matrix first, and this launch arms neither: no
+    # row of remote/web-profiles.tsv names the selected checkpoint and no image
+    # profile is armed, so every item skips carrying the matrix's own sentence.
     assert results["web_search_then_fetch"].status == SKIPPED
-    assert "/api/tools/web/search" in results["web_search_then_fetch"].reason
-    # The image lane is mounted and the driver holds no approved grant.
+    assert "web_search" in results["web_search_then_fetch"].reason
     assert results["image_generate"].status == SKIPPED
-    assert "grant" in results["image_generate"].reason
+    assert "image_generation" in results["image_generate"].reason
     # No stop argv, so the two absence items name the argument they need.
     assert results["vulkan_lease_free"].status == SKIPPED
     assert results["teardown_leaves_no_residue"].status == SKIPPED
+
+
+def test_a_text_row_is_refused_before_it_receives_an_image(gateway: Fixture) -> None:
+    """`remote/models.tsv` reads projector none for a text row, so the arm never runs."""
+    run = AcceptanceRun(gateway.paths, _request(gateway))
+    run.check_pairing()
+    run.check_vision_consumes_image("qwen38-2b-distill")
+    result = _by_name(run.results)["vision_consumes_image:qwen38-2b-distill"]
+    assert result.status == FAIL
+    assert "projector none" in result.reason
+    assert result.evidence["projector"] == "none"
+
+
+def test_a_row_absent_from_the_registry_fails_the_vision_arm(gateway: Fixture) -> None:
+    run = AcceptanceRun(gateway.paths, _request(gateway))
+    run.check_pairing()
+    run.check_vision_consumes_image("a-checkpoint-no-row-names")
+    result = _by_name(run.results)["vision_consumes_image:a-checkpoint-no-row-names"]
+    assert result.status == FAIL
+    assert "carries no row" in result.reason
+
+
+def test_two_imports_over_one_root_each_carry_their_own_identifier(gateway: Fixture) -> None:
+    """The store refuses a conversation it already holds, so each run draws its own."""
+    run = AcceptanceRun(gateway.paths, _request(gateway))
+    run.check_pairing()
+    run.check_browser_history_import()
+    run.check_browser_history_import()
+    results = [entry for entry in run.results if entry.name == "browser_history_import"]
+    assert [entry.status for entry in results] == [PASS, PASS]
+    first, second = (str(entry.evidence["conversation_id"]) for entry in results)
+    assert first != second
+
+
+def test_the_store_refuses_a_second_import_of_one_identifier(gateway: Fixture) -> None:
+    """The refusal the per-run identifier exists to avoid, stated by the store itself."""
+    run = AcceptanceRun(gateway.paths, _request(gateway))
+    run.check_pairing()
+    run.check_browser_history_import()
+    held = str(_by_name(run.results)["browser_history_import"].evidence["conversation_id"])
+    document = {
+        "document_version": DOCUMENT_VERSION,
+        "conversations": [
+            {
+                "conversation_id": held,
+                "mode": "saved",
+                "title": "a second copy",
+                "created_utc": "2026-01-01T00:00:00Z",
+                "updated_utc": "2026-01-01T00:00:00Z",
+                "workflow_state": "idle",
+                "messages": [],
+            }
+        ],
+    }
+    answer = run.client.post_json("/api/conversations/import", document)
+    assert answer.status == 400
+    assert "already holds" in answer.body.decode("utf-8")
+
+
+def test_the_previous_report_proves_the_saved_conversation_survived(gateway: Fixture) -> None:
+    opening = AcceptanceRun(gateway.paths, _request(gateway))
+    opening.check_pairing()
+    opening.open_conversations()
+    report = gateway.paths["qwen_home_results"] / "previous.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        json.dumps(acceptance.report_document(_request(gateway), opening.results)),
+        encoding="utf-8",
+    )
+
+    later = AcceptanceRun(gateway.paths, _request(gateway, previous_report=report))
+    # A pairing code dies on its first use and a restart mints another, so this
+    # second run carries the session the first one paired rather than spending
+    # a code this one process will not mint again.
+    later.client.cookie = opening.client.cookie
+    later.check_history_across_restart()
+    result = _by_name(later.results)["history_survives_restart"]
+    assert result.status == PASS, result.reason
+    assert result.evidence["listed"] is True
+    assert result.evidence["conversation_id"] == opening.saved_conversation
+
+
+def test_a_previous_conversation_the_store_lost_fails_the_history_item(
+    gateway: Fixture,
+) -> None:
+    report = gateway.paths["qwen_home_results"] / "previous.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        json.dumps(
+            {
+                "schema": "qwen-apu-acceptance-report-v1",
+                "checks": [
+                    {
+                        "name": "conversation_open",
+                        "status": PASS,
+                        "evidence": {"saved": "e" * 32, "temporary": "f" * 32},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    run = AcceptanceRun(gateway.paths, _request(gateway, previous_report=report))
+    run.check_pairing()
+    run.check_history_across_restart()
+    result = _by_name(run.results)["history_survives_restart"]
+    assert result.status == FAIL, result.reason
+    assert "absent from the listing" in result.reason
+    assert result.evidence["read_status"] == 404
+
+
+def test_a_run_naming_neither_history_argument_skips_the_item(gateway: Fixture) -> None:
+    run = AcceptanceRun(gateway.paths, _request(gateway))
+    run.check_history_across_restart()
+    result = _by_name(run.results)["history_survives_restart"]
+    assert result.status == SKIPPED
+    assert "--previous-report" in result.reason
 
 
 def test_a_completion_that_states_no_model_fails_the_text_turn(gateway: Fixture) -> None:
@@ -469,55 +593,495 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> RuntimePaths:
     return paths
 
 
-def test_the_image_lane_passes_behind_a_granted_token(root: RuntimePaths) -> None:
-    digest = "a" * 64
-    table = {
-        ("POST", "/api/tools/grant-image"): _json_answer(200, {"token": "granted"}),
-        ("POST", "/api/tools/image/generate"): _json_answer(201, {"artifact": {"sha256": digest}}),
-        ("GET", f"/api/artifacts/{digest}.png"): Answer(200, b"\x89PNG", {}),
-        ("POST", "/api/tools/image/review"): _json_answer(200, {"judgment": "matches"}),
-        ("POST", "/api/tools/image/cancel"): _json_answer(200, {"cancelled": True}),
-        ("POST", "/api/tools/image/remove"): _json_answer(200, {"removed": True}),
+# ---------------------------------------------------------------------------
+# The lane gateway: the session secret, the grants, the executor, and the image
+# routes, answered in process so every branch of both lanes is device-free
+# ---------------------------------------------------------------------------
+
+
+MATRIX_MODEL = TEXT_MODELS[0]
+IMAGE_BOUNDS: dict[str, object] = {
+    "profile_id": "image-sd15",
+    "width": 512,
+    "height": 512,
+    "max_dimension": 512,
+    "max_steps": 4,
+}
+ARTIFACT_DIGEST = "d" * 64
+PAGE_TEXT = "BEGIN UNTRUSTED\nSource: https://example.invalid/page\nthe page window"
+
+
+def _outcome(
+    state: str, *, kind: str = "fetched_page", usable: bool = True, text: str = "", status: str = ""
+) -> dict[str, object]:
+    """One `qwen.web-tool-outcome` record in the shape `tools/web.py` answers with."""
+    return {
+        "schema": "qwen.web-tool-outcome",
+        "version": 1,
+        "outcome": "success" if state == "complete" else "failure",
+        "state": state,
+        "status": status or ("success" if state == "complete" else "provider_content_error"),
+        "evidence": {"kind": kind, "scope": "document_window", "usable": usable, "sources": []},
+        "text": text,
     }
-    run = _scripted(root, table)
-    run.check_image_lane()
-    results = _by_name(run.results)
-    for name in ("image_generate", "artifact_read", "image_review", "image_cancel", "image_remove"):
-        assert results[name].status == PASS, results[name].reason
 
 
-def test_an_absent_image_route_skips_the_whole_lane(root: RuntimePaths) -> None:
-    run = _scripted(root, {})
-    run.check_image_lane()
-    results = _by_name(run.results)
-    assert results["image_generate"].status == SKIPPED
-    assert "404" in results["image_generate"].reason or "answers 404" in (
-        results["image_generate"].reason
+def _matrix(
+    *,
+    search_state: str = "available",
+    image_state: str = "available_through_helper",
+    bounds: Mapping[str, object] | None = IMAGE_BOUNDS,
+) -> dict[str, object]:
+    return {
+        "schema": "qwen.tool-matrix",
+        "version": 1,
+        "selection": {"model": MATRIX_MODEL},
+        "launch": {"approval_profile": "web-open", "image_profile": "image-sd15"},
+        "tools": [
+            {"tool_id": "web_search", "state": search_state, "helper": "searxng", "reason": "r"},
+            {
+                "tool_id": "image_generation",
+                "state": image_state,
+                "helper": "sd15",
+                "reason": "the image worker's control socket is unbound",
+                **({"bounds": dict(bounds)} if bounds is not None else {}),
+            },
+        ],
+    }
+
+
+def _declared(behavior: object, fallback: Mapping[str, object]) -> Answer:
+    """One declared answer: an `Answer` as itself, a document at 200, else the fallback."""
+    if isinstance(behavior, Answer):
+        return behavior
+    if isinstance(behavior, Mapping):
+        return _json_answer(200, dict(behavior))
+    return _json_answer(200, dict(fallback))
+
+
+class LaneGateway:
+    """The routes both lanes travel, answered from declared behavior.
+
+    The driver's own `Client` sits in front of this, so the session read, the
+    `X-Qwen-Web-Session` header, and the one retry on a stale secret are the
+    driver's code under test rather than the fixture's.
+    """
+
+    def __init__(self, **behavior: object) -> None:
+        self.behavior = behavior
+        # The per-launch approval secret this fixture signs for. It gates a
+        # grant rather than a login, and the stale-secret branch rotates it.
+        self.secret = "launch-secret"  # noqa: S105
+        self.rotated = False
+        self.issued: set[str] = set()
+        self.image_grants = 0
+        self.seen: list[tuple[str, str]] = []
+        self.posted: list[Mapping[str, object]] = []
+
+    # -- the gates -------------------------------------------------------
+
+    def _session(self) -> Answer:
+        return _json_answer(200, {"session_secret": self.secret})
+
+    def _grant(self, path: str, headers: Mapping[str, str], fields: Mapping[str, object]) -> Answer:
+        if self.behavior.get("stale_once") and not self.rotated:
+            # A gateway restarted on the same port signs a new secret, so the
+            # held one is stale rather than wrong.
+            self.rotated = True
+            self.secret = "the-secret-the-restart-signed"  # noqa: S105
+            return _json_answer(
+                403, {"error": "stale", "code": acceptance.STALE_SESSION_SECRET_CODE}
+            )
+        if headers.get(acceptance.SESSION_HEADER) != self.secret:
+            return _json_answer(403, {"error": "no valid session header"})
+        image = path == acceptance.IMAGE_GRANT_ROUTE
+        if image:
+            self.image_grants += 1
+            refusal = self.behavior.get("image_grant_refusal")
+            if isinstance(refusal, tuple) and self.image_grants >= int(refusal[0]):
+                status, retry_after = int(refusal[1]), str(refusal[2])
+                return Answer(
+                    status,
+                    json.dumps({"error": "one outstanding grant per client"}).encode("utf-8"),
+                    {"retry-after": retry_after},
+                )
+        refused = self.behavior.get("grant_status")
+        if not image and isinstance(refused, int):
+            return _json_answer(refused, {"error": "the approval broker refused"})
+        self.posted.append(dict(fields))
+        token = f"grant-{len(self.issued)}"
+        self.issued.add(token)
+        return _json_answer(200, {"authorization": token})
+
+    # -- the executor ----------------------------------------------------
+
+    def _execute(self, payload: Mapping[str, object]) -> Answer:
+        tool = str(payload.get("tool", ""))
+        params = payload.get("params")
+        params = params if isinstance(params, dict) else {}
+        if tool == acceptance.SEARCH_TOOL:
+            if str(params.get("authorization", "")) not in self.issued:
+                return _json_answer(403, _outcome("incomplete", kind="none", usable=False))
+            return _declared(self.behavior.get("search"), self._search_record())
+        if tool == acceptance.READ_URL_TOOL:
+            if int(params.get("start_index", 0) or 0) >= acceptance.EMPTY_WINDOW_START_INDEX:
+                return _declared(
+                    self.behavior.get("probe"),
+                    _outcome("incomplete", kind="none", usable=False, text="no text at index"),
+                )
+            return _declared(self.behavior.get("fetch"), _outcome("complete", text=PAGE_TEXT))
+        return _json_answer(400, _outcome("incomplete", kind="none", usable=False))
+
+    def _search_record(self) -> dict[str, object]:
+        rendered = (
+            "Title: a page\nURL: https://example.invalid/page\n"
+            "Result ID: signed-result-0\nTrust: untrusted-web-result\nHighlights:\n---"
+        )
+        return _outcome("complete", kind="search_snippets", text=rendered)
+
+    # -- the image routes ------------------------------------------------
+
+    def _image(self, path: str, payload: Mapping[str, object]) -> Answer:
+        if path == "/api/tools/image/generate":
+            if str(payload.get("authorization", "")) not in self.issued:
+                return _json_answer(403, {"error": "the grant is unverified"})
+            answer = self.behavior.get("generate")
+            if isinstance(answer, Answer):
+                return answer
+            return _json_answer(200, {"sha256": ARTIFACT_DIGEST, "job_id": "job-1"})
+        if path == "/api/tools/image/review":
+            answer = self.behavior.get("review")
+            if isinstance(answer, Answer):
+                return answer
+            return _json_answer(
+                200,
+                {
+                    "completion": {"answered": True, "raw_reply": "{}"},
+                    "schema_validity": {"valid": True},
+                },
+            )
+        if path == "/api/tools/image/cancel":
+            return _json_answer(200, {"status": "refused", "reason": "not_running"})
+        if path == "/api/tools/image/remove":
+            answer = self.behavior.get("remove")
+            if isinstance(answer, Answer):
+                return answer
+            return _json_answer(200, {"removed": True, "png_sha256": ARTIFACT_DIGEST})
+        return _json_answer(404, {"error": "no route"})
+
+    # -- the dispatch ----------------------------------------------------
+
+    def handle(
+        self, method: str, path: str, body: bytes | None, headers: Mapping[str, str]
+    ) -> Answer:
+        self.seen.append((method, path))
+        payload = json.loads(body.decode("utf-8")) if body else {}
+        payload = payload if isinstance(payload, dict) else {}
+        if method == "GET" and path == acceptance.SESSION_ROUTE:
+            return self._session()
+        if method == "GET" and path.startswith(acceptance.MATRIX_ROUTE):
+            matrix = self.behavior.get("matrix")
+            if isinstance(matrix, Answer):
+                return matrix
+            return _json_answer(200, matrix if isinstance(matrix, dict) else _matrix())
+        if method == "POST" and path in (acceptance.GRANT_ROUTE, acceptance.IMAGE_GRANT_ROUTE):
+            return self._grant(path, headers, payload)
+        if method == "POST" and path == acceptance.TOOLS_ROUTE:
+            return self._execute(payload)
+        if method == "GET" and path == f"/api/artifacts/{ARTIFACT_DIGEST}.png":
+            artifact = self.behavior.get("artifact")
+            if isinstance(artifact, Answer):
+                return artifact
+            return Answer(200, acceptance.PNG_MAGIC + b"bytes", {})
+        if method == "POST" and path.startswith("/api/tools/image/"):
+            return self._image(path, payload)
+        return _json_answer(404, {"error": "no route"})
+
+
+class LaneClient(acceptance.Client):
+    """The driver's own client over the lane gateway, so its grant flow is what runs."""
+
+    def __init__(self, gateway: LaneGateway) -> None:
+        super().__init__("http://127.0.0.1:1", 1.0)
+        self.gateway = gateway
+
+    def exchange(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | None = None,
+        headers: Mapping[str, str] | None = None,
+        authenticated: bool = True,
+    ) -> Answer:
+        del authenticated
+        return self.gateway.handle(method, path, body, dict(headers or {}))
+
+
+def _lane_run(paths: RuntimePaths, **behavior: object) -> tuple[AcceptanceRun, LaneGateway]:
+    run = AcceptanceRun(
+        paths,
+        AcceptanceRequest(
+            base="http://127.0.0.1:1",
+            pairing_code="code",
+            report=Path("acceptance/report.json"),
+            text_models=TEXT_MODELS,
+        ),
     )
+    gateway = LaneGateway(**behavior)
+    run.client = LaneClient(gateway)
+    return run, gateway
 
 
-def test_the_web_lane_passes_when_both_routes_answer(root: RuntimePaths) -> None:
-    table = {
-        ("POST", "/api/tools/web/search"): _json_answer(200, {"results": [{"url": "x"}]}),
-        ("POST", "/api/tools/web/fetch"): _json_answer(502, {"error": "unreachable"}),
-    }
-    run = _scripted(root, table)
+# ---------------------------------------------------------------------------
+# The web lane
+# ---------------------------------------------------------------------------
+
+
+def test_the_web_lane_searches_then_reads_the_page_it_named(root: RuntimePaths) -> None:
+    run, gateway = _lane_run(root)
     run.check_web_lane()
     results = _by_name(run.results)
-    assert results["web_search_then_fetch"].status == PASS
+    assert results["web_search_then_fetch"].status == PASS, results["web_search_then_fetch"].reason
     assert results["web_retrieval_failure_explicit"].status == PASS
+    assert results["web_retrieval_failure_explicit"].evidence["proved_by"] == "empty_window"
+    # The grant travelled under the session secret the driver read first.
+    assert (("GET", acceptance.SESSION_ROUTE)) in gateway.seen
+    assert gateway.posted[0]["query"] == acceptance.WEB_QUERY
+    assert gateway.posted[0]["profile_id"] == "web-open"
 
 
-def test_a_failed_retrieval_reported_as_success_fails(root: RuntimePaths) -> None:
-    table = {
-        ("POST", "/api/tools/web/search"): _json_answer(200, {"results": []}),
-        ("POST", "/api/tools/web/fetch"): _json_answer(200, {"text": ""}),
-    }
-    run = _scripted(root, table)
+def test_a_stale_session_secret_is_read_again_and_the_grant_lands(root: RuntimePaths) -> None:
+    run, gateway = _lane_run(root, stale_once=True)
     run.check_web_lane()
     results = _by_name(run.results)
-    assert results["web_retrieval_failure_explicit"].status == FAIL
-    assert "invisible" in results["web_retrieval_failure_explicit"].reason
+    assert results["web_search_then_fetch"].status == PASS, results["web_search_then_fetch"].reason
+    assert gateway.seen.count(("GET", acceptance.SESSION_ROUTE)) == 2
+
+
+def test_a_refused_web_grant_skips_both_items(root: RuntimePaths) -> None:
+    run, _gateway = _lane_run(root, grant_status=403)
+    run.check_web_lane()
+    results = _by_name(run.results)
+    for name in acceptance.AcceptanceRun.WEB_ITEMS:
+        assert results[name].status == SKIPPED
+        assert "single-use grant" in results[name].reason
+
+
+def test_an_unavailable_search_backend_skips_naming_the_matrix_state(root: RuntimePaths) -> None:
+    run, _gateway = _lane_run(root, matrix=_matrix(search_state="temporarily_unavailable"))
+    run.check_web_lane()
+    results = _by_name(run.results)
+    for name in acceptance.AcceptanceRun.WEB_ITEMS:
+        assert results[name].status == SKIPPED
+        assert "temporarily_unavailable" in results[name].reason
+
+
+def test_a_search_that_answers_incomplete_proves_the_explicit_failure(root: RuntimePaths) -> None:
+    unreachable = _outcome(
+        "incomplete", kind="none", usable=False, text="the search instance refused the connection"
+    )
+    run, _gateway = _lane_run(root, search=unreachable)
+    run.check_web_lane()
+    results = _by_name(run.results)
+    assert results["web_search_then_fetch"].status == SKIPPED
+    assert "the search itself answered" in results["web_search_then_fetch"].reason
+    explicit = results["web_retrieval_failure_explicit"]
+    assert explicit.status == PASS
+    assert explicit.evidence["proved_by"] == "search"
+
+
+def test_a_fetch_that_carries_no_page_window_fails_the_grounded_item(root: RuntimePaths) -> None:
+    run, _gateway = _lane_run(root, fetch=_outcome("complete", kind="none", usable=False, text="x"))
+    run.check_web_lane()
+    assert _by_name(run.results)["web_search_then_fetch"].status == FAIL
+
+
+def test_an_empty_window_reported_as_complete_fails_the_explicit_item(root: RuntimePaths) -> None:
+    run, _gateway = _lane_run(root, probe=_outcome("complete", text="a window"))
+    run.check_web_lane()
+    result = _by_name(run.results)["web_retrieval_failure_explicit"]
+    assert result.status == FAIL
+    assert "invisible" in result.reason
+
+
+# ---------------------------------------------------------------------------
+# The image lane
+# ---------------------------------------------------------------------------
+
+
+def test_the_image_lane_passes_behind_a_granted_token(root: RuntimePaths) -> None:
+    run, gateway = _lane_run(root)
+    run.check_image_lane()
+    results = _by_name(run.results)
+    for name in acceptance.AcceptanceRun.IMAGE_ITEMS:
+        assert results[name].status == PASS, results[name].reason
+    grant = gateway.posted[0]
+    assert grant["context"] == acceptance.IMAGE_CLAIM_CONTEXT
+    assert grant["image_profile"] == IMAGE_BOUNDS["profile_id"]
+    assert grant["aspect"] == "1:1"
+    assert grant["max_steps"] == acceptance.IMAGE_STEPS
+    assert grant["prompt_hash"] == acceptance.prompt_digest(acceptance.IMAGE_PROMPT)
+
+
+def test_an_unbound_image_socket_skips_the_whole_lane(root: RuntimePaths) -> None:
+    run, _gateway = _lane_run(root, matrix=_matrix(image_state="temporarily_unavailable"))
+    run.check_image_lane()
+    results = _by_name(run.results)
+    for name in acceptance.AcceptanceRun.IMAGE_ITEMS:
+        assert results[name].status == SKIPPED
+        assert "control socket is unbound" in results[name].reason
+
+
+def test_a_refused_image_grant_skips_the_whole_lane(root: RuntimePaths) -> None:
+    run, _gateway = _lane_run(root, image_grant_refusal=(1, 403, ""))
+    run.check_image_lane()
+    results = _by_name(run.results)
+    for name in acceptance.AcceptanceRun.IMAGE_ITEMS:
+        assert results[name].status == SKIPPED
+        assert "single-use grant" in results[name].reason
+
+
+def test_an_outstanding_grant_beyond_the_wait_skips_the_review_alone(root: RuntimePaths) -> None:
+    run, _gateway = _lane_run(root, image_grant_refusal=(2, 429, "900"))
+    run.check_image_lane()
+    results = _by_name(run.results)
+    assert results["image_generate"].status == PASS
+    review = results["image_review"]
+    assert review.status == SKIPPED
+    assert "one unexpired grant per client" in review.reason
+    assert results["image_cancel"].status == PASS
+    assert results["image_remove"].status == PASS
+
+
+def test_an_outstanding_grant_inside_the_wait_is_retried(root: RuntimePaths) -> None:
+    run, gateway = _lane_run(root, image_grant_refusal=(2, 429, "0"))
+
+    def one_refusal(path: str, headers: Mapping[str, str], fields: Mapping[str, object]) -> Answer:
+        if gateway.image_grants >= 2:
+            gateway.behavior.pop("image_grant_refusal", None)
+        return original(path, headers, fields)
+
+    original = gateway._grant
+    gateway._grant = one_refusal  # type: ignore[method-assign]
+    run.check_image_lane()
+    assert _by_name(run.results)["image_review"].status == PASS
+
+
+def test_a_generation_the_worker_refused_fails_and_the_rest_follow(root: RuntimePaths) -> None:
+    run, _gateway = _lane_run(
+        root, generate=_json_answer(502, {"error": "the image service failed the generation"})
+    )
+    run.check_image_lane()
+    results = _by_name(run.results)
+    assert results["image_generate"].status == FAIL
+    assert "502" in results["image_generate"].reason
+    assert results["artifact_read"].status == SKIPPED
+    assert results["image_review"].status == SKIPPED
+    assert results["image_remove"].status == SKIPPED
+
+
+def test_an_artifact_that_opens_with_no_png_signature_fails(root: RuntimePaths) -> None:
+    run, _gateway = _lane_run(root, artifact=Answer(200, b"not a png", {}))
+    run.check_image_lane()
+    result = _by_name(run.results)["artifact_read"]
+    assert result.status == FAIL
+    assert "PNG signature" in result.reason
+
+
+def test_a_review_the_router_refused_fails_the_review_alone(root: RuntimePaths) -> None:
+    run, _gateway = _lane_run(root, review=_json_answer(502, {"error": "the router refused"}))
+    run.check_image_lane()
+    results = _by_name(run.results)
+    assert results["image_generate"].status == PASS
+    assert results["image_review"].status == FAIL
+    assert results["image_remove"].status == PASS
+
+
+def test_both_grant_bodies_parse_under_the_broker_that_signs_them(root: RuntimePaths) -> None:
+    """The driver's field sets against the parsers, which refuse an unknown key by name.
+
+    `parse_image_request` carries a field allowlist and `parse_search_request`
+    its own required set, so this is what holds the driver's spelling to the
+    server's rather than to the fixture's.
+    """
+    run, _gateway = _lane_run(root)
+    image = approvals.parse_image_request(run.image_grant_fields(IMAGE_BOUNDS, "web-open"))
+    assert image.image_profile == IMAGE_BOUNDS["profile_id"]
+    assert image.aspect == "1:1"
+    assert image.max_steps == acceptance.IMAGE_STEPS
+    search = approvals.parse_search_request(
+        {
+            "profile_id": "web-open",
+            "query": acceptance.WEB_QUERY,
+            "include_domains": [],
+            "exclude_domains": [],
+        }
+    )
+    assert search.query == acceptance.WEB_QUERY
+    assert search.max_results == approvals.RESULT_COUNT_DEFAULT
+
+
+def test_a_spent_fetch_allowance_skips_the_explicit_item(root: RuntimePaths) -> None:
+    """A profile admitting one document spends it on the grounded read."""
+    spent = _outcome(
+        "incomplete",
+        kind="none",
+        usable=False,
+        status="budget_exhausted",
+        text="the approved search admits 1 fetch(es), and every one is spent",
+    )
+    run, _gateway = _lane_run(root, probe=Answer(429, json.dumps(spent).encode("utf-8"), {}))
+    run.check_web_lane()
+    result = _by_name(run.results)["web_retrieval_failure_explicit"]
+    assert result.status == SKIPPED
+    assert "fetch allowance" in result.reason
+    assert results_term(result) == "budget_exhausted"
+
+
+def test_an_incomplete_state_under_no_retrieval_term_fails(root: RuntimePaths) -> None:
+    """The term names the retrieval; a refusal wearing the state is not the claim."""
+    run, _gateway = _lane_run(
+        root,
+        probe=_outcome("incomplete", kind="none", usable=False, status="invalid_argument"),
+    )
+    run.check_web_lane()
+    result = _by_name(run.results)["web_retrieval_failure_explicit"]
+    assert result.status == FAIL
+    assert "invalid_argument" in result.reason
+
+
+def test_a_selector_the_matrix_does_not_carry_skips_naming_the_model(
+    root: RuntimePaths,
+) -> None:
+    refusal = _json_answer(404, {"error": "no row carries the id qwen35-08b"})
+    run, _gateway = _lane_run(root, matrix=refusal)
+    run.check_web_lane()
+    result = _by_name(run.results)["web_search_then_fetch"]
+    assert result.status == SKIPPED
+    assert "no row carries the id qwen35-08b" in result.reason
+    assert result.evidence["model"] == "qwen35-08b"
+
+
+def test_a_refused_session_read_names_the_session_route(root: RuntimePaths) -> None:
+    run, gateway = _lane_run(root)
+    gateway._session = lambda: _json_answer(403, {"error": "the Origin is outside the set"})  # type: ignore[method-assign]
+    run.check_image_lane()
+    result = _by_name(run.results)["image_generate"]
+    assert result.status == SKIPPED
+    assert acceptance.SESSION_ROUTE in result.reason
+    assert "Origin" in result.reason
+
+
+def test_an_absent_matrix_route_skips_both_lanes(root: RuntimePaths) -> None:
+    run, _gateway = _lane_run(root, matrix=_json_answer(404, {"error": "no route"}))
+    run.check_web_lane()
+    run.check_image_lane()
+    results = _by_name(run.results)
+    for name in (*acceptance.AcceptanceRun.WEB_ITEMS, *acceptance.AcceptanceRun.IMAGE_ITEMS):
+        assert results[name].status == SKIPPED
+        assert acceptance.MATRIX_ROUTE in results[name].reason
+        assert results[name].evidence["route"] == acceptance.MATRIX_ROUTE
 
 
 def test_a_held_lease_after_the_stop_fails(root: RuntimePaths) -> None:

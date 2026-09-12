@@ -38,13 +38,14 @@ import socket
 import struct
 import subprocess
 import time
+import uuid
 import zlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from http.client import HTTPConnection, HTTPException, HTTPResponse
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from qwen_apu.config import models as registry
 from qwen_apu.runtime import appliance as appliance_state
@@ -52,6 +53,14 @@ from qwen_apu.runtime import policy
 from qwen_apu.runtime.locks import WorkloadLease
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import read_start_time
+from qwen_apu.tools.approvals import (
+    IMAGE_CLAIM_CONTEXT,
+    SESSION_HEADER,
+    STALE_SESSION_SECRET_CODE,
+    canonical_aspect,
+    prompt_digest,
+)
+from qwen_apu.tools.web import RETRIEVAL_FAILURE_TERMS
 from qwen_apu.web import browser_import
 from qwen_apu.web.auth import PAIRING_CODE_FILENAME
 from qwen_apu.web.history import DOCUMENT_VERSION, conversation_to_json
@@ -94,10 +103,74 @@ MISSING_EXTRACTOR_MARKER = "pypdf"
 # The one media type long enough to earn a name of its own.
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
+# The route the page reads the per-launch approval secret from, the header it
+# presents it under, and the two signing routes it posts a proposal to.
+# `tools/approvals.py` owns all four spellings; the page in `static/js/api.js`
+# reads the secret once, holds it in memory, and retries a grant once against a
+# freshly read secret when a refusal carries the stale-secret code.
+SESSION_ROUTE = "/api/tools/session"
+GRANT_ROUTE = "/api/tools/grant"
+IMAGE_GRANT_ROUTE = "/api/tools/grant-image"
+
+# `GET /api/tools?model=ID` is the tool matrix and `POST /api/tools` is the
+# executor, so one path carries both and the method separates them.
+MATRIX_ROUTE = "/api/tools"
+TOOLS_ROUTE = "/api/tools"
+# The two matrix states that admit a call. Every other state is a lane this
+# launch does not execute, and the row's own reason names which party withheld
+# it.
+EXECUTING_TOOL_STATES: tuple[str, str] = ("available", "available_through_helper")
+TEMPORARILY_UNAVAILABLE = "temporarily_unavailable"
+SEARCH_TOOL_ROW = "web_search"
+IMAGE_GENERATION_ROW = "image_generation"
+SEARCH_TOOL = "web_search"
+READ_URL_TOOL = "read_url"
+
+# The one query the web lane approves and runs. It names this appliance's own
+# subject so a result set is recognizable in the report.
+WEB_QUERY = "raven2 vulkan decode throughput"
+RESULT_ID_PREFIX = "Result ID: "
+# `run_read_url` returns an empty window, and with it the 200 that carries
+# `state: incomplete`, for any document shorter than the character cap. The
+# probe therefore reads one character at the last admitted offset:
+# `start_index + max_chars` equals the cap, which the bound admits.
+DOCUMENT_CHARACTER_CAP = 131072
+EMPTY_WINDOW_START_INDEX = DOCUMENT_CHARACTER_CAP - 1
+EMPTY_WINDOW_CHARACTERS = 1
+# `remote/web-profiles.tsv` sets `max_fetches`, and a profile admitting one
+# document spends its whole allowance on the grounded read, so the probe meets
+# `Ledger.spend_fetch`'s budget refusal rather than a retrieval outcome.
+BUDGET_TERM = "budget_exhausted"
+
+# The generation the image lane approves. The seed is fixed rather than random
+# because the grant binds it and a report states what ran.
+IMAGE_PROMPT = "a red square on a white ground"
+IMAGE_NEGATIVE_PROMPT = ""
+IMAGE_SEED = 7
+IMAGE_STEPS = 1
+IMAGE_REVIEW_CONSTRAINT = (
+    "declared_subject",
+    "the image shows a single red square on a white ground",
+)
+# `POST /api/tools/grant-image` admits one unexpired grant per client address
+# and the quota decays with that grant's own term, so the review's own grant
+# meets 429 until the generate grant ages out. The driver waits where the
+# refusal names a term inside this bound and reports the item skipped naming
+# the limit otherwise, because a launch signing a 900-second term would
+# otherwise hold an acceptance run for a quarter of an hour.
+IMAGE_REVIEW_GRANT_WAIT_SECONDS = 30
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
 # The identifier the imported page transcript carries. `web/conversations.py`
 # admits 32 hexadecimal characters and nothing else, because an identifier is
-# `uuid.uuid4().hex`, which is the shape the page itself writes.
-BROWSER_CONVERSATION_ID = "a9f3c1d40e7b4c2e8f60a1b2c3d4e5f6"
+# `uuid.uuid4().hex`, which is the shape the page itself writes. The value is
+# drawn per run because `ConversationStore.import_document` refuses a
+# conversation the store already holds, so a fixed identifier imports once and
+# refuses on every later run over the same root.
+def browser_conversation_id() -> str:
+    return uuid.uuid4().hex
+
 
 # The fixture image, declared here the way remote/generate-quality-images.py
 # declares its own: three bars of stated heights on a white ground, so the
@@ -150,6 +223,11 @@ class AcceptanceRequest:
     # list because nothing here reaches a shell.
     restart_command: tuple[str, ...] = ()
     stop_command: tuple[str, ...] = ()
+    # The report a previous run of this driver wrote. Its `conversation_open`
+    # evidence names a saved conversation that a later run over the same root
+    # reads back, which states survival across the restart that separated the
+    # two runs without this run stopping the gateway itself.
+    previous_report: Path | None = None
     lease_path: Path | None = None
     appliance_record: Path | None = None
     router_presets: Path | None = None
@@ -260,6 +338,14 @@ class Client:
         self.origin = f"http://{self.host}:{self.port}"
         self.timeout_s = timeout_s
         self.cookie = ""
+        # The per-launch approval secret, read once and held for the run the
+        # way `static/js/api.js` holds it for the life of the page, beside the
+        # route whose answer ended the last grant attempt: the session read and
+        # the signing route both refuse with 403 and a report that named the
+        # grant for a refused session read would send a reader to the wrong
+        # gate.
+        self.session_secret = ""
+        self.grant_gate = ""
 
     def connection(self) -> HTTPConnection:
         return HTTPConnection(self.host, self.port, timeout=self.timeout_s)
@@ -304,6 +390,49 @@ class Client:
         raw = answer.header("Set-Cookie")
         if raw:
             self.cookie = raw.split(";", 1)[0]
+        return answer
+
+    def approval_session(self) -> Answer:
+        """Read the per-launch approval secret and hold it for the run.
+
+        `GET /api/tools/session` releases the secret behind the admitted Host,
+        the Origin allowlist, and the gateway session, and the value travels in
+        the body rather than the URL.
+        """
+        answer = self.exchange("GET", SESSION_ROUTE)
+        payload = answer.json()
+        if answer.status == 200 and isinstance(payload, dict):
+            self.session_secret = str(payload.get("session_secret", ""))
+        return answer
+
+    def post_grant(self, route: str, fields: Mapping[str, object]) -> Answer:
+        """Post one grant proposal under the session secret, retrying a stale one.
+
+        A gateway restarted on the same port signs a new secret, so a held one
+        is stale rather than wrong: the refusal carries the stale-secret code
+        and one retry against a freshly read secret recovers it, which is the
+        flow the page performs. A second refusal is a genuine one and reaches
+        the caller.
+        """
+        self.grant_gate = route
+        if not self.session_secret:
+            session = self.approval_session()
+            if not self.session_secret:
+                self.grant_gate = SESSION_ROUTE
+                return session
+        headers = {SESSION_HEADER: self.session_secret}
+        answer = self.post_json(route, dict(fields), headers=headers)
+        payload = answer.json()
+        stale = isinstance(payload, dict) and payload.get("code") == STALE_SESSION_SECRET_CODE
+        if answer.status == 403 and stale:
+            self.session_secret = ""
+            session = self.approval_session()
+            if not self.session_secret:
+                self.grant_gate = SESSION_ROUTE
+                return session
+            answer = self.post_json(
+                route, dict(fields), headers={SESSION_HEADER: self.session_secret}
+            )
         return answer
 
     def open_stream(self, path: str, payload: object) -> tuple[HTTPConnection, HTTPResponse]:
@@ -357,6 +486,109 @@ def vision_request(
         "max_tokens": max_tokens,
         "messages": [{"role": "user", "content": parts}],
     }
+
+
+def grant_token(answer: Answer) -> str:
+    """The signed grant one approval answered with, or the empty string."""
+    payload = answer.json()
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("authorization", ""))
+
+
+def refusal_sentence(answer: Answer) -> str:
+    """The sentence a refused route stated, or its first bytes."""
+    payload = answer.json()
+    if isinstance(payload, dict) and isinstance(payload.get("error"), str):
+        return str(payload["error"])
+    return answer.body[:200].decode("utf-8", "replace")
+
+
+def tool_offer(payload: object, tool_id: str) -> Mapping[str, object] | None:
+    """One row of the tool matrix by its identifier."""
+    tools = payload.get("tools") if isinstance(payload, dict) else None
+    if not isinstance(tools, list):
+        return None
+    for row in tools:
+        if isinstance(row, dict) and row.get("tool_id") == tool_id:
+            return row
+    return None
+
+
+def bound_value(bounds: Mapping[str, object], key: str, fallback: int = 0) -> int:
+    """One integer of a matrix row's `bounds` block, or the stated fallback."""
+    value = bounds.get(key, fallback)
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) else fallback
+
+
+def launch_field(payload: object, key: str) -> str:
+    """One field of the matrix's `launch` block, which names what this launch armed."""
+    launch = payload.get("launch") if isinstance(payload, dict) else None
+    return str(launch.get(key, "")) if isinstance(launch, dict) else ""
+
+
+def outcome_state(answer: Answer) -> tuple[str, str, str]:
+    """The state, the status term, and the text of one execution record."""
+    payload = answer.json()
+    if not isinstance(payload, dict):
+        return ("", "", "")
+    return (
+        str(payload.get("state", "")),
+        str(payload.get("status", "")),
+        str(payload.get("text", "")),
+    )
+
+
+def usable_page(answer: Answer) -> bool:
+    """Whether one record carries a page window a model can read.
+
+    `evidence.kind` and `evidence.usable` are what the executor states about
+    the retrieval, so the item reads them rather than the length of a frame
+    whose header is non-empty under every outcome.
+    """
+    payload = answer.json()
+    evidence = payload.get("evidence") if isinstance(payload, dict) else None
+    if not isinstance(evidence, dict):
+        return False
+    return evidence.get("kind") == "fetched_page" and bool(evidence.get("usable"))
+
+
+def result_identifiers(rendered: str) -> tuple[str, ...]:
+    """Every signed Result ID one rendered search block carries.
+
+    `render_search_results` writes the identifier on its own `Result ID:` line,
+    which is the same field `static/js/tools.js` reads to build the page's own
+    handle table.
+    """
+    found = [
+        line[len(RESULT_ID_PREFIX) :].strip()
+        for line in rendered.splitlines()
+        if line.startswith(RESULT_ID_PREFIX)
+    ]
+    return tuple(entry for entry in found if entry)
+
+
+def previous_saved_conversation(document: object) -> str:
+    """The saved conversation identifier a previous report's `conversation_open` names."""
+    checks = document.get("checks") if isinstance(document, dict) else None
+    if not isinstance(checks, list):
+        return ""
+    for entry in checks:
+        if not isinstance(entry, dict) or entry.get("name") != "conversation_open":
+            continue
+        evidence = entry.get("evidence")
+        if isinstance(evidence, dict):
+            return str(evidence.get("saved", ""))
+    return ""
+
+
+def listed_conversation_ids(answer: Answer) -> tuple[str, ...]:
+    """Every conversation identifier one listing answered with."""
+    payload = answer.json()
+    rows = payload.get("conversations") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return ()
+    return tuple(str(row.get("conversation_id", "")) for row in rows if isinstance(row, dict))
 
 
 def completion_text(payload: object) -> str:
@@ -589,8 +821,38 @@ class AcceptanceRun:
         matching dimensions loads cleanly while writing image tokens the
         language model reads nothing from, so a vision lane that ignores the
         bytes answers rather than erroring.
+
+        The registry decides whether the row is asked at all. `remote/models.tsv`
+        reads `projector required` for a row whose own directory holds one and
+        `none` for a row that runs text-only, and
+        `remote/select-projector.sh` binds the search to that directory, so a
+        text row receiving image parts has no path that consumes them and the
+        server answers 500. The item fails naming the column rather than sending
+        the image, because the finding is the argument rather than the server.
         """
         started = time.monotonic()
+        rows = {row.id: row for row in registry.load_models()}
+        row = rows.get(model)
+        if row is None:
+            self.record(
+                f"vision_consumes_image:{model}",
+                FAIL,
+                f"remote/models.tsv carries no row for {model}, so no projector claim "
+                "stands behind this vision arm",
+                {"registry_row": "absent"},
+                started,
+            )
+            return
+        if row.projector != "required":
+            self.record(
+                f"vision_consumes_image:{model}",
+                FAIL,
+                f"remote/models.tsv reads projector {row.projector} for {model}, so the "
+                "row runs text-only and consumes no image",
+                {"projector": row.projector, "role": row.role},
+                started,
+            )
+            return
         image = fixture_image()
         with_image = self.client.post_json(
             "/api/chat", vision_request(model, self.request.max_tokens, image)
@@ -711,20 +973,18 @@ class AcceptanceRun:
     def check_history_across_restart(self) -> None:
         """The saved conversation survives a gateway restart and the temporary one ends.
 
-        `--restart-command` is the one argv that makes this observable: the
-        temporary store lives in the process and under `tmp/conversations/<id>/`,
-        so only a second process reading the same root can state that it is
-        gone.
+        Two arguments make this observable and each states a different half.
+        `--restart-command` restarts the gateway inside this run, so the
+        temporary store, which lives in the process and under
+        `tmp/conversations/<id>/`, is read as gone by a second process over the
+        same root. `--previous-report` reads the saved conversation a previous
+        run created and proves it is still listed and readable here, which
+        states survival across whatever restart separated the two runs without
+        this run stopping the gateway itself.
         """
         started = time.monotonic()
         if not self.request.restart_command:
-            self.record(
-                "history_survives_restart",
-                SKIPPED,
-                "the run names no --restart-command, so no second process reads this root",
-                {},
-                started,
-            )
+            self.check_history_from_previous_report(started)
             return
         if not self.saved_conversation:
             self.record(
@@ -781,6 +1041,63 @@ class AcceptanceRun:
             started,
         )
 
+    def check_history_from_previous_report(self, started: float) -> None:
+        """Read the previous run's saved conversation back out of this one."""
+        report = self.request.previous_report
+        if report is None:
+            self.record(
+                "history_survives_restart",
+                SKIPPED,
+                "the run names neither --restart-command nor --previous-report, so no "
+                "second process reads this root",
+                {},
+                started,
+            )
+            return
+        try:
+            document = json.loads(report.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            self.record(
+                "history_survives_restart",
+                FAIL,
+                f"the previous report {report} is unreadable: {error}",
+                {"previous_report": str(report)},
+                started,
+            )
+            return
+        previous = previous_saved_conversation(document)
+        if not previous:
+            self.record(
+                "history_survives_restart",
+                SKIPPED,
+                f"the previous report {report} names no saved conversation, so its "
+                "conversation_open item created none to read back",
+                {"previous_report": str(report)},
+                started,
+            )
+            return
+        read_back = self.client.exchange("GET", f"/api/conversations/{previous}")
+        listing = self.client.exchange("GET", "/api/conversations")
+        listed = previous in listed_conversation_ids(listing)
+        evidence = {
+            "previous_report": str(report),
+            "conversation_id": previous,
+            "read_status": read_back.status,
+            "listed": listed,
+            "listing_status": listing.status,
+        }
+        if read_back.status == 200 and listed:
+            self.record("history_survives_restart", PASS, "", evidence, started)
+            return
+        self.record(
+            "history_survives_restart",
+            FAIL,
+            f"the previous run's saved conversation reads back {read_back.status} and is "
+            f"{'listed' if listed else 'absent from the listing'}",
+            evidence,
+            started,
+        )
+
     def _current_pairing_code(self) -> str:
         """The code the restarted gateway minted, read from the file it wrote.
 
@@ -821,14 +1138,20 @@ class AcceptanceRun:
         `web/browser_import.parse_export` is the authority the CLI's
         `import --browser` uses, so the driver converts through it and posts the
         store's own document shape rather than inventing a second reader.
+
+        The identifier is drawn per run because `ConversationStore.import_document`
+        refuses a conversation the store already holds: a fixed identifier
+        imports on the first run over a root and answers 400 on every later one,
+        which reports a working route as a regression.
         """
         started = time.monotonic()
+        identifier = browser_conversation_id()
         document = json.dumps(
             {
                 "qwen_apu_browser_history_export": browser_import.EXPORT_VERSION,
                 "conversations": [
                     {
-                        "id": BROWSER_CONVERSATION_ID,
+                        "id": identifier,
                         "title": "an imported page transcript",
                         "updated": 1_700_000_000_000,
                         "messages": [
@@ -863,8 +1186,9 @@ class AcceptanceRun:
                 started,
             )
             return
-        read_back = self.client.exchange("GET", f"/api/conversations/{BROWSER_CONVERSATION_ID}")
+        read_back = self.client.exchange("GET", f"/api/conversations/{identifier}")
         evidence = {
+            "conversation_id": identifier,
             "warnings": list(report.warnings),
             "skipped": list(report.skipped),
             "read_back_status": read_back.status,
@@ -1033,114 +1357,462 @@ class AcceptanceRun:
 
     # -- the lanes this branch may not carry -----------------------------
 
-    def check_web_lane(self) -> None:
-        """Search then fetch, and a retrieval failure stated rather than swallowed."""
-        started = time.monotonic()
-        answer = self.client.post_json("/api/tools/web/search", {"query": "raven2 vulkan decode"})
+    WEB_ITEMS: tuple[str, str] = ("web_search_then_fetch", "web_retrieval_failure_explicit")
+
+    def read_matrix(self) -> tuple[Answer, object]:
+        """`GET /api/tools?model=ID` for the first text model this run names.
+
+        The matrix states what each lane answers for one selection, so a lane
+        that no launch armed is read from the row's own state rather than
+        inferred from a refusal the driver provoked.
+        """
+        model = self.request.text_models[0] if self.request.text_models else ""
+        answer = self.client.exchange("GET", f"{MATRIX_ROUTE}?model={quote(model)}")
+        return answer, answer.json()
+
+    def matrix_refused(self, names: Sequence[str], answer: Answer, payload: object) -> bool:
+        """Report a matrix that answered no rows, carrying its own sentence.
+
+        A 404 here is either a path the gateway does not mount or a selector no
+        registry or profile row carries, and both answer a JSON error, so the
+        item skips naming the route, the model it asked about, and the sentence
+        the answer stated rather than asserting which of the two it was.
+        """
+        del payload
+        if answer.status == 200:
+            return False
+        model = self.request.text_models[0] if self.request.text_models else ""
         if answer.absent_route:
-            self.absent("web_search_then_fetch", "/api/tools/web/search", answer)
-            self.absent("web_retrieval_failure_explicit", "/api/tools/web/fetch", answer)
-            return
-        grounded = self.client.post_json(
-            "/api/tools/web/fetch", {"url": "http://127.0.0.1:1/absent"}
-        )
-        self.record(
-            "web_search_then_fetch",
-            PASS if answer.status == 200 else FAIL,
-            "" if answer.status == 200 else f"the search answered {answer.status}",
-            {"search_status": answer.status},
-            started,
-        )
-        self.record(
-            "web_retrieval_failure_explicit",
-            PASS if grounded.status >= 400 else FAIL,
-            ""
-            if grounded.status >= 400
-            else "an unreachable fetch answered 200, so a failed retrieval is invisible",
-            {"fetch_status": grounded.status},
-        )
+            for name in names:
+                self.record(
+                    name,
+                    SKIPPED,
+                    f"GET {MATRIX_ROUTE} answered 404 for {model}, so no row states "
+                    f"whether this lane executes: {refusal_sentence(answer)}",
+                    {"route": MATRIX_ROUTE, "status": answer.status, "model": model},
+                )
+            return True
+        for name in names:
+            self.record(
+                name,
+                FAIL,
+                f"GET {MATRIX_ROUTE} answered {answer.status}: {refusal_sentence(answer)}",
+                {"status": answer.status},
+            )
+        return True
 
-    IMAGE_ITEMS: tuple[tuple[str, str], ...] = (
-        ("image_generate", "/api/tools/image/generate"),
-        ("artifact_read", "/api/artifacts"),
-        ("image_review", "/api/tools/image/review"),
-        ("image_cancel", "/api/tools/image/cancel"),
-        ("image_remove", "/api/tools/image/remove"),
-    )
+    def lane_unavailable(
+        self, names: Sequence[str], offer: Mapping[str, object] | None, row: str
+    ) -> bool:
+        """Report a lane this launch does not execute, and say which party withheld it.
 
-    def check_image_lane(self) -> None:
-        """Generate, read the artifact, review, cancel, and remove, behind one grant.
+        A row absent from the matrix, a `temporarily_unavailable` row naming the
+        socket or the search backend it waits on, and a `not_installed` or
+        `policy_refused` row each leave the lane unexecuted, so every item skips
+        carrying the matrix's own sentence rather than a status code the driver
+        produced by calling anyway.
+        """
+        if offer is None:
+            for name in names:
+                self.record(name, SKIPPED, f"the tool matrix carries no {row} row", {"row": row})
+            return True
+        state = str(offer.get("state", ""))
+        if state in EXECUTING_TOOL_STATES:
+            return False
+        evidence = {"row": row, "state": state, "helper": str(offer.get("helper", ""))}
+        reason = f"the matrix reads {state} for {row}: {offer.get('reason', '')}"
+        for name in names:
+            self.record(name, SKIPPED, reason, evidence)
+        return True
 
-        Every device-reaching call in this lane passes one human approval and a
-        single-use grant, so the driver asks the broker for one first. A refused
-        grant reports the whole lane as skipped naming that refusal, because a
-        generate the grant never authorized measures the gate rather than the
-        lane.
+    def check_web_lane(self) -> None:
+        """One approved search, the page one of its results names, and a stated failure.
+
+        The executor is `POST /api/tools`: `web_search` runs behind a
+        `search-authorization` grant covering the exact arguments, and
+        `read_url` redeems one signed Result ID that search issued. The second
+        item reads one character at the last admitted offset of the same
+        document, which returns an empty window and with it the 200 carrying
+        `state: incomplete` that keeps a failed retrieval from reading as a
+        turn that went quiet.
         """
         started = time.monotonic()
-        grant = self.client.post_json(
-            "/api/tools/grant-image",
-            {"prompt": "a red square", "profile_id": "", "steps": 1},
-        )
-        if grant.absent_route:
-            for name, route in self.IMAGE_ITEMS:
-                self.absent(name, route, grant)
+        grounded, explicit = self.WEB_ITEMS
+        matrix, payload = self.read_matrix()
+        if self.matrix_refused(self.WEB_ITEMS, matrix, payload):
             return
-        if grant.status != 200:
+        offer = tool_offer(payload, SEARCH_TOOL_ROW)
+        if self.lane_unavailable(self.WEB_ITEMS, offer, SEARCH_TOOL_ROW):
+            return
+        model = self.request.text_models[0] if self.request.text_models else ""
+        grant = self.client.post_grant(
+            GRANT_ROUTE,
+            {
+                "profile_id": launch_field(payload, "approval_profile"),
+                "query": WEB_QUERY,
+                "include_domains": [],
+                "exclude_domains": [],
+            },
+        )
+        token = grant_token(grant)
+        if not token:
             reason = (
-                f"the image grant answered {grant.status}; every device-reaching call in "
-                "this lane passes one human approval and a single-use grant"
+                f"{self.client.grant_gate} answered {grant.status}: "
+                f"{refusal_sentence(grant)}; every network-reaching call in this lane "
+                "passes one human approval and a single-use grant"
             )
-            for name, _route in self.IMAGE_ITEMS:
+            for name in self.WEB_ITEMS:
                 self.record(name, SKIPPED, reason, {"grant_status": grant.status})
             return
-        token = ""
-        payload = grant.json()
-        if isinstance(payload, dict):
-            token = str(payload.get("token", ""))
-        answer = self.client.post_json(
-            "/api/tools/image/generate", {"prompt": "a red square", "token": token}
+        search = self.client.post_json(
+            TOOLS_ROUTE,
+            {
+                "model": model,
+                "tool": SEARCH_TOOL,
+                "params": {"query": WEB_QUERY, "authorization": token},
+                "stream": False,
+            },
         )
-        if answer.absent_route:
-            for name, route in self.IMAGE_ITEMS:
-                self.absent(name, route, answer)
+        state, term, rendered = outcome_state(search)
+        if search.status == 200 and state == "incomplete":
+            # The search reached the boundary and came back empty, which the
+            # explicit-failure item is exactly the claim about; the grounded
+            # item has no page to read and names the instance that answered.
+            self.record(
+                grounded,
+                SKIPPED,
+                f"the search itself answered {term}, so no result was issued to fetch: "
+                f"{rendered[:200]}",
+                {"status": search.status, "state": state, "term": term},
+                started,
+            )
+            self.record(
+                explicit,
+                PASS,
+                "",
+                {"proved_by": "search", "status": search.status, "state": state, "term": term},
+            )
             return
-        digest = ""
-        generated = answer.json()
-        if isinstance(generated, dict):
-            artifact = generated.get("artifact")
-            if isinstance(artifact, dict):
-                digest = str(artifact.get("sha256", ""))
+        if search.status != 200 or state != "complete":
+            for name in self.WEB_ITEMS:
+                self.record(
+                    name,
+                    FAIL,
+                    f"the search answered {search.status} in state {state or 'none'}: "
+                    f"{rendered[:200] or refusal_sentence(search)}",
+                    {"status": search.status, "state": state, "term": term},
+                )
+            return
+        issued = result_identifiers(rendered)
+        if not issued:
+            reason = "the search answered complete and issued no Result ID, so no page is named"
+            self.record(grounded, FAIL, reason, {"status": search.status}, started)
+            self.record(explicit, SKIPPED, reason, {"status": search.status})
+            return
+        self.check_web_fetch(grounded, explicit, model, issued[0], started)
+
+    def check_web_fetch(
+        self, grounded: str, explicit: str, model: str, result_id: str, started: float
+    ) -> None:
+        """Read one page through its Result ID, then read a window that holds no text."""
+        fetch = self.client.post_json(
+            TOOLS_ROUTE,
+            {
+                "model": model,
+                "tool": READ_URL_TOOL,
+                "params": {"result_id": result_id},
+                "stream": False,
+            },
+        )
+        state, term, text = outcome_state(fetch)
+        usable = usable_page(fetch)
+        self.record(
+            grounded,
+            PASS if fetch.status == 200 and state == "complete" and usable and text else FAIL,
+            ""
+            if fetch.status == 200 and state == "complete" and usable and text
+            else f"the fetch answered {fetch.status} in state {state or 'none'} "
+            f"carrying {'a' if usable else 'no'} page window: {text[:200]}",
+            {"status": fetch.status, "state": state, "term": term, "characters": len(text)},
+            started,
+        )
+        probe = self.client.post_json(
+            TOOLS_ROUTE,
+            {
+                "model": model,
+                "tool": READ_URL_TOOL,
+                "params": {
+                    "result_id": result_id,
+                    "start_index": EMPTY_WINDOW_START_INDEX,
+                    "max_chars": EMPTY_WINDOW_CHARACTERS,
+                },
+                "stream": False,
+            },
+        )
+        probe_state, probe_term, probe_text = outcome_state(probe)
+        evidence = {
+            "proved_by": "empty_window",
+            "start_index": EMPTY_WINDOW_START_INDEX,
+            "status": probe.status,
+            "state": probe_state,
+            "term": probe_term,
+        }
+        if probe_term == BUDGET_TERM:
+            # The approved search opens a fetch allowance `max_fetches` wide,
+            # so a profile admitting one document spends it on the read above
+            # and the probe reaches the ledger rather than the source.
+            self.record(
+                explicit,
+                SKIPPED,
+                "the approved search's own fetch allowance was spent by the grounded "
+                f"read, so no second retrieval ran: {probe_text[:200]}",
+                evidence,
+            )
+            return
+        held = (
+            probe.status == 200
+            and probe_state == "incomplete"
+            and probe_term in RETRIEVAL_FAILURE_TERMS
+        )
+        self.record(
+            explicit,
+            PASS if held else FAIL,
+            ""
+            if held
+            else f"a retrieval that returned no text answered {probe.status} in state "
+            f"{probe_state or 'none'} under the term {probe_term or 'none'}, so a failed "
+            f"retrieval is invisible: {probe_text[:200]}",
+            evidence,
+        )
+
+    IMAGE_ITEMS: tuple[str, ...] = (
+        "image_generate",
+        "artifact_read",
+        "image_review",
+        "image_cancel",
+        "image_remove",
+    )
+
+    def image_grant_fields(self, bounds: Mapping[str, object], language: str) -> dict[str, object]:
+        """The proposal the page posts, built from the armed profile's own bounds.
+
+        `image_grant.enforce_image_authorization` compares the prompt digests,
+        the seed, and the aspect for equality and the width, height, and step
+        count as `<=` bounds, so the aspect is the reduced form of the geometry
+        the generate call then sends and the maxima are the profile's own.
+        """
+        width = bound_value(bounds, "width")
+        height = bound_value(bounds, "height")
+        return {
+            "context": IMAGE_CLAIM_CONTEXT,
+            "language_profile": language,
+            "image_profile": str(bounds.get("profile_id", "")),
+            "prompt_hash": prompt_digest(IMAGE_PROMPT),
+            "negative_prompt_hash": prompt_digest(IMAGE_NEGATIVE_PROMPT),
+            "seed": IMAGE_SEED,
+            "aspect": canonical_aspect(width, height),
+            "max_dimension": bound_value(bounds, "max_dimension"),
+            "max_steps": min(IMAGE_STEPS, bound_value(bounds, "max_steps", IMAGE_STEPS)),
+            "conversation_generation": 0,
+        }
+
+    def check_image_lane(self) -> None:
+        """Generate, read the artifact, review, cancel, and remove, each behind its gate.
+
+        The matrix states whether the lane executes at all, and a
+        `temporarily_unavailable` row names the worker's control socket, so a
+        launch that armed no worker reports the lane skipped naming that socket
+        rather than failing five items against a service nobody started.
+        """
+        started = time.monotonic()
+        matrix, payload = self.read_matrix()
+        if self.matrix_refused(self.IMAGE_ITEMS, matrix, payload):
+            return
+        offer = tool_offer(payload, IMAGE_GENERATION_ROW)
+        if self.lane_unavailable(self.IMAGE_ITEMS, offer, IMAGE_GENERATION_ROW):
+            return
+        bounds = offer.get("bounds") if offer is not None else None
+        if not isinstance(bounds, Mapping):
+            reason = "the matrix row admits the lane and carries no geometry bounds"
+            for name in self.IMAGE_ITEMS:
+                self.record(name, SKIPPED, reason, {"row": IMAGE_GENERATION_ROW})
+            return
+        language = launch_field(payload, "approval_profile")
+        fields = self.image_grant_fields(bounds, language)
+        grant = self.client.post_grant(IMAGE_GRANT_ROUTE, fields)
+        token = grant_token(grant)
+        if not token:
+            reason = (
+                f"{self.client.grant_gate} answered {grant.status}: "
+                f"{refusal_sentence(grant)}; every device-reaching call in this lane "
+                "passes one human approval and a single-use grant"
+            )
+            for name in self.IMAGE_ITEMS:
+                self.record(name, SKIPPED, reason, {"grant_status": grant.status})
+            return
+        digest = self.check_image_generate(bounds, token, started)
+        self.check_artifact_read(digest)
+        self.check_image_review(bounds, language, digest)
+        self.check_image_control(digest)
+
+    def check_image_generate(self, bounds: Mapping[str, object], token: str, started: float) -> str:
+        """Spend the grant on one job and return the artifact digest it published."""
+        answer = self.client.post_json(
+            "/api/tools/image/generate",
+            {
+                "profile_id": str(bounds.get("profile_id", "")),
+                "prompt": IMAGE_PROMPT,
+                "negative_prompt": IMAGE_NEGATIVE_PROMPT,
+                "authorization": token,
+                "seed": IMAGE_SEED,
+                "width": bound_value(bounds, "width"),
+                "height": bound_value(bounds, "height"),
+                "steps": min(IMAGE_STEPS, bound_value(bounds, "max_steps", IMAGE_STEPS)),
+            },
+        )
+        payload = answer.json()
+        digest = str(payload.get("sha256", "")) if isinstance(payload, dict) else ""
+        held = answer.status == 200 and bool(digest)
         self.record(
             "image_generate",
-            PASS if answer.status in (200, 201) else FAIL,
-            "" if answer.status in (200, 201) else f"generate answered {answer.status}",
+            PASS if held else FAIL,
+            ""
+            if held
+            else f"generate answered {answer.status} naming "
+            f"{'no artifact' if answer.status == 200 else refusal_sentence(answer)}",
             {"status": answer.status, "artifact": digest},
             started,
         )
-        if digest:
-            read = self.client.exchange("GET", f"/api/artifacts/{digest}.png")
-            self.record(
-                "artifact_read",
-                PASS if read.status == 200 else FAIL,
-                "" if read.status == 200 else f"the artifact read answered {read.status}",
-                {"status": read.status, "bytes": len(read.body)},
-            )
-        else:
+        return digest
+
+    def check_artifact_read(self, digest: str) -> None:
+        """Read the published PNG over the credentialed artifact route."""
+        if not digest:
             self.record(
                 "artifact_read", SKIPPED, "the generate answer named no artifact digest", {}
             )
-        for name, route in self.IMAGE_ITEMS[2:]:
-            probe = self.client.post_json(route, {"artifact": digest, "token": token})
-            if probe.absent_route:
-                self.absent(name, route, probe)
-                continue
+            return
+        read = self.client.exchange("GET", f"/api/artifacts/{digest}.png")
+        held = read.status == 200 and read.body.startswith(PNG_MAGIC)
+        self.record(
+            "artifact_read",
+            PASS if held else FAIL,
+            ""
+            if held
+            else f"the artifact read answered {read.status} carrying "
+            f"{len(read.body)} bytes that open with no PNG signature",
+            {"status": read.status, "bytes": len(read.body)},
+        )
+
+    def check_image_review(self, bounds: Mapping[str, object], language: str, digest: str) -> None:
+        """Review the artifact against one declared constraint, behind its own grant.
+
+        A review carries the claim alone and binds to the artifact through the
+        provenance record, so its grant is signed over the same prompt digest
+        the generation was. The lane admits one unexpired grant per client
+        address, so this second grant waits where the refusal names a term
+        inside the declared bound and reports the item skipped otherwise.
+        """
+        if not digest:
+            self.record("image_review", SKIPPED, "no artifact was published to review", {})
+            return
+        fields = self.image_grant_fields(bounds, language)
+        grant = self.client.post_grant(IMAGE_GRANT_ROUTE, fields)
+        if grant.status == 429:
+            waited = self.wait_for_image_grant(grant, fields)
+            if waited is None:
+                self.record(
+                    "image_review",
+                    SKIPPED,
+                    f"the lane admits one unexpired grant per client and the generate "
+                    f"grant's term leaves {grant.header('Retry-After') or 'an unstated'} "
+                    f"second(s), above the {IMAGE_REVIEW_GRANT_WAIT_SECONDS} second bound "
+                    f"this run declares",
+                    {"grant_status": grant.status, "retry_after": grant.header("Retry-After")},
+                )
+                return
+            grant = waited
+        token = grant_token(grant)
+        if not token:
             self.record(
-                name,
-                PASS if probe.status < 400 else FAIL,
-                "" if probe.status < 400 else f"{route} answered {probe.status}",
-                {"status": probe.status},
+                "image_review",
+                SKIPPED,
+                f"{self.client.grant_gate} answered {grant.status}: {refusal_sentence(grant)}",
+                {"grant_status": grant.status},
             )
+            return
+        name, description = IMAGE_REVIEW_CONSTRAINT
+        answer = self.client.post_json(
+            "/api/tools/image/review",
+            {
+                "authorization": token,
+                "sha256": digest,
+                "constraints": [{"name": name, "description": description}],
+            },
+        )
+        payload = answer.json()
+        completion = payload.get("completion") if isinstance(payload, dict) else None
+        answered = bool(completion.get("answered")) if isinstance(completion, dict) else False
+        schema = payload.get("schema_validity") if isinstance(payload, dict) else None
+        valid = bool(schema.get("valid")) if isinstance(schema, dict) else False
+        held = answer.status == 200 and answered
+        self.record(
+            "image_review",
+            PASS if held else FAIL,
+            ""
+            if held
+            else f"the review answered {answer.status} and the reviewer "
+            f"{'returned no completion' if answer.status == 200 else refusal_sentence(answer)}",
+            {"status": answer.status, "answered": answered, "schema_valid": valid},
+        )
+
+    def wait_for_image_grant(self, refusal: Answer, fields: Mapping[str, object]) -> Answer | None:
+        """Retry one refused image grant inside the declared wait, or report none.
+
+        The quota decays with the outstanding grant's own term, so `Retry-After`
+        names the seconds until it ages out rather than a fixed window.
+        """
+        stated = refusal.header("Retry-After")
+        try:
+            seconds = int(stated)
+        except ValueError:
+            return None
+        if seconds < 0 or seconds > IMAGE_REVIEW_GRANT_WAIT_SECONDS:
+            return None
+        time.sleep(seconds + 1)
+        return self.client.post_grant(IMAGE_GRANT_ROUTE, fields)
+
+    def check_image_control(self, digest: str) -> None:
+        """Cancel a job this run does not hold, then retract the artifact.
+
+        A cancel naming a job the worker is not running answers `not_running`
+        inside a 200, which is the truth the caller asked for, so the item reads
+        the status rather than requiring a job to interrupt. Remove runs last
+        because it retracts the publication marker the review read.
+        """
+        request_id = uuid.uuid4().hex
+        cancel = self.client.post_json("/api/tools/image/cancel", {"request_id": request_id})
+        payload = cancel.json()
+        observed = str(payload.get("status", "")) if isinstance(payload, dict) else ""
+        self.record(
+            "image_cancel",
+            PASS if cancel.status == 200 else FAIL,
+            "" if cancel.status == 200 else f"the cancel answered {cancel.status}",
+            {"status": cancel.status, "worker_status": observed, "request_id": request_id},
+        )
+        if not digest:
+            self.record("image_remove", SKIPPED, "no artifact was published to retract", {})
+            return
+        remove = self.client.post_json("/api/tools/image/remove", {"sha256": digest})
+        payload = remove.json()
+        removed = bool(payload.get("removed")) if isinstance(payload, dict) else False
+        held = remove.status == 200 and removed
+        self.record(
+            "image_remove",
+            PASS if held else FAIL,
+            "" if held else f"the removal answered {remove.status}: {refusal_sentence(remove)}",
+            {"status": remove.status, "removed": removed},
+        )
 
     # -- the teardown phase ----------------------------------------------
 

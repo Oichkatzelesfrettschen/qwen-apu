@@ -219,6 +219,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ARG",
         help="one argv word of the stop the teardown phase runs; repeat to build the command",
     )
+    acceptance_run.add_argument(
+        "--previous-report",
+        type=Path,
+        default=None,
+        help="a previous run's JSON report, whose saved conversation this run reads back",
+    )
     acceptance_run.add_argument("--lease-path", type=Path, default=None)
     acceptance_run.add_argument("--appliance-state", type=Path, default=None)
     acceptance_run.add_argument("--router-presets", type=Path, default=None)
@@ -574,6 +580,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     vision_models=tuple(args.vision_model) or acceptance.DEFAULT_VISION_MODELS,
                     restart_command=tuple(args.restart_command),
                     stop_command=tuple(args.stop_command),
+                    previous_report=args.previous_report,
                     lease_path=args.lease_path,
                     appliance_record=args.appliance_state,
                     router_presets=args.router_presets,
