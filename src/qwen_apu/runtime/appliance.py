@@ -144,6 +144,11 @@ class ApplianceState:
     gateway_start_time: int = 0
     gateway_port: int = 0
     gateway_origin: str = "-"
+    # The second gateway listener, which serves llama.cpp's own page through
+    # the loopback proxy. A launch that starts none reports 0 and `-`, and both
+    # fields name this process, since the listener runs on a thread of it.
+    llama_ui_port: int = 0
+    llama_ui_origin: str = "-"
     deployment: str = "-"
     deployment_directory: str = "-"
     router_state: str = "-"
@@ -308,6 +313,7 @@ class Appliance:
         previous = runtime_state.read(self.runtime_record)
         self._superseded_pid = previous.supervisor_pid if previous is not None else 0
         self._children: list[tuple[ChildSpec, Owned]] = []
+        self._llama_ui: Any = None
         self._stop = threading.Event()
 
     # -- the run ---------------------------------------------------------
@@ -344,6 +350,7 @@ class Appliance:
         primary_failure: str | None = None
         gateway = None
         thread: threading.Thread | None = None
+        threads: list[threading.Thread] = []
         try:
             self._start(router_child_spec(self.paths, plan_path))
             for lane in (self.request.image_service, self.request.searxng):
@@ -352,12 +359,20 @@ class Appliance:
             gateway, _session_gate, code = self._start_gateway()
             thread = threading.Thread(target=gateway.serve_forever, name="qwen-apu-gateway")
             thread.start()
+            if self._llama_ui is not None:
+                llama_ui_thread = threading.Thread(
+                    target=self._llama_ui.serve_forever, name="qwen-apu-llama-ui"
+                )
+                llama_ui_thread.start()
+                threads.append(llama_ui_thread)
             self.record.transition(
                 "starting",
                 gateway_pid=os.getpid(),
                 gateway_start_time=read_start_time(os.getpid()) or 0,
                 gateway_port=gateway.port,
                 gateway_origin=f"http://{self.request.gateway.bind_host}:{gateway.port}",
+                llama_ui_port=self._llama_ui.port if self._llama_ui is not None else 0,
+                llama_ui_origin=gateway_assembly.llama_ui_origin(self.request.gateway) or "-",
                 deployment=plan.deployment,
                 children=tuple(
                     child_record(spec.name, owned, spec) for spec, owned in self._children
@@ -375,8 +390,12 @@ class Appliance:
         finally:
             if gateway is not None:
                 gateway.shutdown()
+            if self._llama_ui is not None:
+                self._llama_ui.shutdown()
             if thread is not None:
                 thread.join(timeout=10.0)
+            for extra in threads:
+                extra.join(timeout=10.0)
             exit_status = self._shut_down(primary_failure)
         return exit_status
 
@@ -440,11 +459,21 @@ class Appliance:
         `authorize-session.secret`, so a `session.start()` that raises runs that
         shutdown here rather than losing the gateway object to this frame and
         leaving `Appliance.run`'s own guard nothing to shut down.
+
+        The second listener is assembled under the same guard and from the same
+        `SessionGate`, so one pairing admits both origins and a refusal on
+        either leaves neither socket bound.
         """
         gateway, session = gateway_assembly.assemble(self.paths, self.request.gateway)
         try:
+            self._llama_ui = gateway_assembly.assemble_llama_ui(
+                self.paths, self.request.gateway, session=session
+            )
             return gateway, session, session.start()
         except BaseException:
+            if self._llama_ui is not None:
+                self._llama_ui.shutdown()
+                self._llama_ui = None
             gateway.shutdown()
             raise
 
@@ -503,6 +532,7 @@ class Appliance:
             children=(),
             gateway_pid=0,
             gateway_start_time=0,
+            llama_ui_port=0,
         )
         for detail in residue:
             print(f"appliance teardown residue: {detail}", file=sys.stderr)
@@ -641,6 +671,7 @@ def render(record: ApplianceState | None) -> str:
         f"router_state={record.router_state}",
         f"served_models={','.join(record.served_models) or '-'}",
         f"gateway={record.gateway_origin}",
+        f"llama_ui={record.llama_ui_origin}",
         f"primary_failure={record.primary_failure or '-'}",
     ]
     lines.extend(
