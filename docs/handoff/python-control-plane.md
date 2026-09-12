@@ -741,6 +741,85 @@ sweeps at about 20%, and the report states both numbers. A window of one
 alternation refuses outright, each metric carries its own ratio and verdict, and
 an absent timings block refuses rather than reading as a zero.
 
+## Phase 10: the two lane children the launch derives
+
+The cutover rehearsal passed every item its launch armed and skipped both tool
+lanes, each for a reason on the launch side rather than in the driver. The image
+lane read `this launch armed no image lane`, because `appliance serve` took the
+worker as `--image-service ARG` alone and the rehearsal supplied none. The web
+lane read `no row of remote/web-profiles.tsv names qwen35-08b`, because
+`qwen_apu.tools.matrix.resolve_selection` attaches a `WebProfile` only where the
+selector equals a `profile_id` and the driver asked the matrix about its first
+`--model`. Both are closed here, device-free.
+
+`qwen_apu.runtime.lanes` holds the derivation. `--image-profile ID` reads
+remote/image-profiles.tsv, remote/image-models.tsv, and
+remote/image-artifacts.tsv and writes the validated parameter document at
+`qwen_home_image_parameters`, the path `remote/image-launch-lib.sh` requires a
+`QWEN_IMAGE_PROFILES_JSON` to resolve inside the runtime root at and
+`remote/build-web-presets.sh` names in the preset. The derivation ported is
+`remote/admit-image-router.sh`'s own parameter writer joined against
+`remote/image-registry.sh bundle MODEL_ID`, rather than anything in
+`build-web-presets.sh`: that generator emits the INI keys and derives no
+parameters itself. One entry is written, keyed by the served profile, which is
+what `image_signed_verifier.verify` resolves through `PROFILES.get(profile_id)`.
+The autoencoder slot branches on the artifact's `component_type`, because
+`sdxs-512-vae` reads `tae` and stable-diffusion.cpp's metadata check refuses a
+Tiny AutoEncoder under the full-VAE loading path, so it reaches the runtime
+through `--taesd`. Placement `A` is the only arm derived: the served turn in
+`evidence/image-appliance/served-turn-admission/` fixes `--backend vulkan0`, and
+no retained run fixes the `te=,vae=,diffusion=` spelling arms `B` and `C` would
+take, so those refuse by name.
+
+The argv is the one `qwen-webui-session.sh` composes -- `--state-dir`,
+`--profiles-json`, `--verifier image_signed_verifier:verify`, `--api-key-file`,
+`--origin`, `--http-host`, `--http-port`, and `--lan-exposure` where the gateway
+binds a routable address. Two facts the shell lane carries implicitly are stated
+explicitly here. `image_signed_verifier._load_authorities` reads
+`QWEN_IMAGE_PROFILES_JSON`, `QWEN_IMAGE_TOKEN_KEY_FILE`, `QWEN_IMAGE_PROFILE`,
+and `QWEN_IMAGE_LANGUAGE_PROFILE` at import and raises where one is absent, so
+the `ChildSpec` env states all four. The worker's artifact listener compares a
+Web UI bearer that the Python gateway has no counterpart for, since the gateway
+serves artifacts from its own `/api/artifacts/` route, so the launch mints
+`state/image-artifact.key` for that listener alone rather than lending the grant
+signing key a second purpose.
+
+SearXNG stays a shell launch. `remote/searxng-launch.sh serve STATE_DIRECTORY`
+renders the settings, writes a fresh secret at mode 0600, and execs the instance
+in the child's own pid; `--web-profile ID` runs that argv as an owned child with
+`QWEN_SEARXNG_PORT` and `QWEN_SEARXNG_BIND_ADDRESS` taken from the profile's own
+`searxng_url`, and the render substitutes both into the instance's settings.
+Porting the render is that script's own cluster. A profile under provider `exa`
+or `fake` names no URL and starts no instance; `config.models.load_web_profiles`
+already refuses a `searxng_url` outside loopback, so a routable URL never
+reaches this decision.
+
+`ChildSpec.ready` carries what proves each child reached its listener, since the
+router's own 240 second readiness deadline would otherwise absorb a worker that
+never binds and report `router_not_ready` against the wrong child. `socket`
+waits for the bound Unix socket, the observable the session reads off the
+worker's `socket` line; `healthz` waits for `GET /healthz`, the route
+`searxng-launch.sh start` waits on. Each names itself, its deadline, and its
+listener in the refusal, and `state/appliance.json` records both children with
+their pid, process group, start time, and listener identity.
+
+The gateway now connects where the worker binds. `image-service.py` joins
+`--state-dir` to `images/` before the socket leaf and
+`build-web-presets.sh` names the same path; `ImageControlClient.under_state`
+joined the state directory to the leaf alone, which put every image matrix row
+at `temporarily_unavailable` against a worker that was listening.
+
+The acceptance driver's web lane reads its matrix under the launch's own
+`approval_profile` and executes on the `selection.model_id` that profile's model
+column names. It opens on the first text model, whose answer carries the
+`launch` block, then reads again under the profile; `--web-model ID` names the
+selector directly. A profile whose row leaves the lane unavailable skips
+carrying the matrix's own sentence, which names the profile.
+
+An image profile reading `execution_policy refused` arms no worker: the row
+admits a shape and spends no device time, and the matrix answers
+`policy_refused` for it whether or not a process exists.
+
 ### What Phase 10's three surfaces leave to the device
 
 - One `build-application` on the laptop against an activated native bundle and a
