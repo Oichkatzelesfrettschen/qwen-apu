@@ -30,6 +30,54 @@ mounting the bundle under a prefix on the chat port: mounting would split the
 API between two prefixes, and the frame keeps every request on the origin the
 bundle was built for.
 
+## Which peers a launch serves, and what a page holds
+
+`appliance serve` takes one of `--local`, `--lan`, or `--both`, and
+`GatewayRequest.exposure_mode` carries the answer into the assembly.
+
+`--local` binds 127.0.0.1 and opens it: `SessionGate.require_session` returns
+for a peer the kernel accepted on loopback, because that caller is a process
+on the appliance and already reads the state directory holding the pairing
+code and the session store. `--lan` binds the named address and pairs every
+peer. `--both` binds each address on one shared port through
+`GatewayConfig.loopback_alias`, which adds a second socket over the same
+route table, so the appliance's own browser needs nothing and a peer on the
+network pairs once. A port-zero bind with an alias is refused, since two
+sockets would take two ephemeral ports and the page's own origin would differ
+between them.
+
+The origin set follows the bind set. `page_origins` and `llama_ui_origins`
+return every address a launch binds, and the Origin allowlist, the shell's
+`frame-src`, and the listener's `frame-ancestors` are all built from them, so
+a reader on 127.0.0.1 frames the loopback listener and a reader on the LAN
+address frames the LAN one.
+
+`--lan-open` states the second boundary, the one the credential answers to.
+Bare, it derives the bound interface's own network through
+`interface_network`, which reads `SIOCGIFADDR` and `SIOCGIFNETMASK` over
+`socket.if_nameindex()` and returns the prefix the machine carries rather
+than an assumed /24; a stated CIDR block replaces that derivation and may
+repeat. `SessionGate.admits_without_pairing` answers loopback from
+`loopback_open` and every other address from `open_networks`, so a peer
+inside one is served with no cookie and a peer outside pairs, including one
+routed in from another network whose address the Host set happened to admit.
+A derivation finding no interface ends the launch, because an open boundary
+this process cannot describe is one it refuses to guess.
+
+What the open boundary gives up is one thing: a peer on the named network
+chats and reads without presenting a code. `AGENTS.md` names this posture and
+what continues to carry the gate, and every item of it still stands here: the
+closed Host set, the Origin allowlist, the per-launch session secret, the
+single-use grant, and the one human approval each network-reaching and
+device-reaching call takes in the rail.
+
+Neither page holds a bearer. The router listens on loopback with no
+`--api-key`, so the proxy injects nothing and needs nothing; the gateway's
+credential is the pairing cookie. llama.cpp's page offers an API key field
+and treats a 401 as a demand for one, so an unpaired session surfaces there
+as a key prompt: the answer is to pair, and `--local` or `--both` removes the
+prompt entirely for a reader on the appliance itself.
+
 ## What one pairing covers
 
 `POST /api/pair` on the shell's port mints the `qwen_apu_session` cookie with

@@ -27,9 +27,12 @@ plus exactly its own blocks rather than under `'unsafe-inline'`.
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
+import ipaddress
 import mimetypes
 import socket
+import struct
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -132,6 +135,47 @@ def admitted_hosts(exposure: str = "", name: str = "") -> tuple[str, ...]:
             )
         admitted.append(name)
     return tuple(admitted)
+
+
+# The two ioctl numbers that read an interface's own IPv4 address and netmask.
+# `linux/sockios.h` fixes both, and the appliance runs one kernel family, so
+# reading them beats carrying a dependency for two integers.
+SIOCGIFADDR = 0x8915
+SIOCGIFNETMASK = 0x891B
+
+
+def network_of(address: str, netmask: str) -> ipaddress.IPv4Network:
+    """The network one interface address and netmask describe."""
+    return ipaddress.IPv4Network(f"{address}/{netmask}", strict=False)
+
+
+def interface_network(bind_host: str) -> ipaddress.IPv4Network | None:
+    """The network of the interface holding `bind_host`, or None for none.
+
+    A caller reads this to admit the peers that share the appliance's own
+    network, so the prefix comes from the interface rather than from an
+    assumed /24: a /16 admits more than a /24 and a /28 admits less, and
+    guessing either way states a boundary the machine does not have.
+    """
+    try:
+        parsed = ipaddress.ip_address(bind_host)
+    except ValueError:
+        return None
+    if not isinstance(parsed, ipaddress.IPv4Address):
+        return None
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        for _, name in socket.if_nameindex():
+            packed = struct.pack("256s", name.encode("utf-8")[:15])
+            try:
+                address = socket.inet_ntoa(fcntl.ioctl(probe.fileno(), SIOCGIFADDR, packed)[20:24])
+                netmask = socket.inet_ntoa(
+                    fcntl.ioctl(probe.fileno(), SIOCGIFNETMASK, packed)[20:24]
+                )
+            except OSError:
+                continue
+            if address == bind_host:
+                return network_of(address, netmask)
+    return None
 
 
 def host_header_names(header: str, admitted: Sequence[str]) -> str:
@@ -286,12 +330,24 @@ class GatewayConfig:
     exposure: str = ""
     exposure_name: str = ""
     origins: tuple[str, ...] = ()
+    # Bind 127.0.0.1 beside `bind_host`, so a browser on the appliance itself
+    # reaches the page without going out to the LAN address. The port is
+    # shared, so both sockets answer the same routes and one `port` reads back;
+    # a port-zero bind names two different ephemeral ports and is refused.
+    loopback_alias: bool = False
     # The origins the served page may frame; the shell names the second
     # listener here, and the empty tuple leaves `frame-src 'none'`.
     frame_sources: tuple[str, ...] = ()
 
     def admitted_hosts(self) -> tuple[str, ...]:
         return admitted_hosts(self.exposure, self.exposure_name)
+
+    def bind_addresses(self) -> tuple[tuple[str, int], ...]:
+        """Every address this gateway listens on, the named bind first."""
+        addresses = [(self.bind_host, self.port)]
+        if self.loopback_alias and self.bind_host not in LOOPBACK_HOSTS:
+            addresses.append((DEFAULT_BIND_HOST, self.port))
+        return tuple(addresses)
 
     @property
     def binds_loopback(self) -> bool:
@@ -668,10 +724,18 @@ class Gateway:
         self.content_security_policy = content_security_policy(
             self.static.index(), config.frame_sources
         )
-        self._server = _GatewayServer((config.bind_host, config.port), _Handler, self)
+        addresses = config.bind_addresses()
+        if len(addresses) > 1 and config.port == 0:
+            raise ValueError(
+                "a loopback alias shares one port with the named bind, and port zero "
+                "names a different ephemeral port per socket"
+            )
+        self._servers = tuple(_GatewayServer(address, _Handler, self) for address in addresses)
+        self._server = self._servers[0]
         self._lock = threading.Lock()
         self._on_shutdown = tuple(on_shutdown)
         self._serving = False
+        self._threads: tuple[threading.Thread, ...] = ()
 
     @property
     def port(self) -> int:
@@ -680,8 +744,21 @@ class Gateway:
         return int(address[1])
 
     def serve_forever(self) -> None:
+        """Accept on every bound address, the named bind on the caller's thread.
+
+        A second socket runs its accept loop on a thread of its own, so the
+        caller's own blocking semantics stay what a single-bind gateway gave
+        it and `shutdown` ends both loops.
+        """
+        extra = tuple(
+            threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1})
+            for server in self._servers[1:]
+        )
         with self._lock:
             self._serving = True
+            self._threads = extra
+        for thread in extra:
+            thread.start()
         try:
             self._server.serve_forever(poll_interval=0.1)
         finally:
@@ -690,8 +767,12 @@ class Gateway:
 
     def shutdown(self) -> None:
         with self._lock:
-            if self._serving:
-                self._server.shutdown()
-            self._server.server_close()
+            for server in self._servers:
+                if self._serving:
+                    server.shutdown()
+                server.server_close()
+            for thread in self._threads:
+                thread.join(timeout=5)
+            self._threads = ()
             for hook in self._on_shutdown:
                 hook()

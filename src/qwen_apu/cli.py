@@ -9,6 +9,7 @@ boundary rather than hiding it behind a shell call.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import subprocess
@@ -32,6 +33,7 @@ from qwen_apu.runtime import (
 )
 from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError, render_paths
+from qwen_apu.web import app as gateway_app
 from qwen_apu.web import assemble as gateway_assembly
 from qwen_apu.web import browser_import
 from qwen_apu.web.history import ConversationStore, HistoryError
@@ -159,6 +161,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--gateway-port", type=int, default=gateway_assembly.DEFAULT_GATEWAY_PORT
     )
     appliance_serve.add_argument("--bind-host", default="127.0.0.1")
+    # Which peers this launch serves. `--local` binds this host and admits it
+    # without pairing, `--lan` binds `--bind-host` and pairs every peer, and
+    # `--both` binds each so the appliance's own browser needs nothing and a
+    # peer on the network still pairs. Naming none keeps the bind `--bind-host`
+    # states and pairs every peer, which is what every launch before these
+    # flags did.
+    exposure = appliance_serve.add_mutually_exclusive_group()
+    exposure.add_argument("--local", dest="exposure_mode", action="store_const", const="local")
+    exposure.add_argument("--lan", dest="exposure_mode", action="store_const", const="lan")
+    exposure.add_argument("--both", dest="exposure_mode", action="store_const", const="both")
+    appliance_serve.set_defaults(exposure_mode="lan")
+    # The operator's explicit decision to serve the network this appliance sits
+    # on with no pairing code, which `AGENTS.md` names as the `lan-open`
+    # boundary: the closed Host set, the Origin allowlist, the per-launch
+    # session secret, the single-use grant, and the one human approval each
+    # network-reaching and device-reaching call takes carry the whole gate.
+    # Bare derives the bound interface's own network; a CIDR block states one
+    # and may repeat.
+    appliance_serve.add_argument(
+        "--lan-open",
+        dest="lan_open",
+        nargs="?",
+        const="",
+        action="append",
+        default=[],
+        metavar="CIDR",
+    )
     appliance_serve.add_argument("--web-profile", default=gateway_assembly.DEFAULT_WEB_PROFILE)
     appliance_serve.add_argument("--image-profile", default="")
     appliance_serve.add_argument("--static", type=Path, default=None)
@@ -500,6 +529,30 @@ def cmd_deployment(paths: RuntimePaths, args: argparse.Namespace) -> int:
     return 0
 
 
+def resolve_open_networks(stated: Sequence[str], bind_host: str) -> tuple[str, ...]:
+    """The networks a launch admits without pairing, as CIDR blocks.
+
+    A bare `--lan-open` derives the network of the interface holding the bind
+    address, so the prefix is the one the machine has rather than an assumed
+    /24. A derivation that finds none ends the launch: an open boundary the
+    operator asked for and this process cannot describe is one it refuses to
+    guess at, and naming the block explicitly answers it.
+    """
+    blocks: list[str] = []
+    for entry in stated:
+        if entry:
+            blocks.append(str(ipaddress.IPv4Network(entry, strict=False)))
+            continue
+        derived = gateway_app.interface_network(bind_host)
+        if derived is None:
+            raise SystemExit(
+                f"--lan-open derives the network of {bind_host} and no interface carries "
+                "that address; state the block as --lan-open CIDR"
+            )
+        blocks.append(str(derived))
+    return tuple(dict.fromkeys(blocks))
+
+
 def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
     if args.appliance_command == "status":
         sys.stdout.write(appliance.render(appliance.status(paths)))
@@ -509,7 +562,11 @@ def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
         print(f"signalled={','.join(str(pid) for pid in signalled) or '-'}")
         record = appliance.status(paths)
         return 0 if record is None or record.state == "stopped" else 1
-    gateway_origin = f"http://{args.bind_host}:{args.gateway_port}"
+    # `--local` serves this host alone, so its bind is the loopback address
+    # whatever `--bind-host` states; the other two modes bind what it states.
+    bind_host = "127.0.0.1" if args.exposure_mode == "local" else args.bind_host
+    open_networks = resolve_open_networks(args.lan_open, bind_host)
+    gateway_origin = f"http://{bind_host}:{args.gateway_port}"
     lane_children = appliance.child_specs_from_request(
         paths,
         image_service=args.image_service,
@@ -517,7 +574,7 @@ def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
         image_profile=args.image_profile,
         web_profile=args.web_profile,
         origin=gateway_origin,
-        bind_host=args.bind_host,
+        bind_host=bind_host,
     )
     return appliance.serve(
         paths,
@@ -534,7 +591,9 @@ def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
             gateway=gateway_assembly.GatewayRequest(
                 port=args.gateway_port,
                 upstream_port=args.port,
-                bind_host=args.bind_host,
+                bind_host=bind_host,
+                exposure_mode=args.exposure_mode,
+                open_networks=open_networks,
                 web_profile=args.web_profile,
                 image_profile=args.image_profile,
                 static_root=args.static,

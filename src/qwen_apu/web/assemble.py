@@ -9,11 +9,13 @@ goes through that same ledger. The runtime root supplies every path.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
+from ipaddress import IPv4Network
 from pathlib import Path
 
 from qwen_apu.config import models as config_models
@@ -52,6 +54,15 @@ class GatewayRequest:
     port: int = DEFAULT_GATEWAY_PORT
     upstream_port: int = DEFAULT_UPSTREAM_PORT
     bind_host: str = "127.0.0.1"
+    # `local`, `lan`, or `both`: which peers this launch serves, and therefore
+    # which of them present a pairing cookie. `local` binds this host alone
+    # and admits it; `lan` binds the named address and pairs every peer;
+    # `both` binds each and admits this host alone without pairing.
+    exposure_mode: str = "lan"
+    # The networks whose peers this launch serves without a pairing code. The
+    # operator states them, `--lan-open` derives the bound interface's own
+    # network into them, and an empty tuple pairs every peer off this host.
+    open_networks: tuple[str, ...] = ()
     web_profile: str = DEFAULT_WEB_PROFILE
     image_profile: str = ""
     provider: str = "searxng"
@@ -246,6 +257,47 @@ def active_router_presets(paths: RuntimePaths) -> Path | None:
         return None
 
 
+EXPOSURE_MODES: tuple[str, ...] = ("local", "lan", "both")
+
+
+def loopback_alias(request: GatewayRequest) -> bool:
+    """Whether this launch binds 127.0.0.1 beside its named address."""
+    return request.exposure_mode == "both" and request.bind_host not in LOOPBACK_HOSTS
+
+
+def loopback_open(request: GatewayRequest) -> bool:
+    """Whether a connection from this host is admitted without pairing."""
+    return request.exposure_mode in ("local", "both")
+
+
+def open_networks(request: GatewayRequest) -> tuple[IPv4Network, ...]:
+    """The networks this launch admits without a pairing code.
+
+    Each entry is stated by the operator as a CIDR block and parsed here, so a
+    block the parser refuses ends the launch rather than silently admitting
+    nothing or everything.
+    """
+    return tuple(ipaddress.IPv4Network(block, strict=False) for block in request.open_networks)
+
+
+def page_origins(request: GatewayRequest) -> tuple[str, ...]:
+    """Every origin the shell is reachable at, which is what may frame the page."""
+    hosts = [request.bind_host]
+    if loopback_alias(request):
+        hosts.append(LOOPBACK_HOSTS[0])
+    return tuple(f"http://{host}:{request.port}" for host in hosts)
+
+
+def llama_ui_origins(request: GatewayRequest) -> tuple[str, ...]:
+    """Every origin the second listener is reachable at, for the page to frame."""
+    if request.llama_ui_port <= 0:
+        return ()
+    hosts = [request.bind_host]
+    if loopback_alias(request):
+        hosts.append(LOOPBACK_HOSTS[0])
+    return tuple(f"http://{host}:{request.llama_ui_port}" for host in hosts)
+
+
 def lan_exposure(bind_host: str) -> str:
     """The one Host literal a LAN bind admits beside the loopback names.
 
@@ -326,8 +378,9 @@ def assemble_llama_ui(
         static_root=assets or card_directory,
         port=request.llama_ui_port,
         bind_host=request.bind_host,
-        origins=(origin,),
+        origins=llama_ui_origins(request),
         exposure=lan_exposure(request.bind_host),
+        loopback_alias=loopback_alias(request),
     )
     settings = llama_ui.LlamaUiSettings(
         client_factory=lambda: upstream_client(paths, request),
@@ -337,7 +390,7 @@ def assemble_llama_ui(
         assets=assets,
         # The shell on the chat page's port frames this page, so that origin
         # is the one `frame-ancestors` admits.
-        frame_ancestors=page_origin(request),
+        frame_ancestors=" ".join(page_origins(request)),
         # Read once here rather than per request: a build that replaces the
         # bundle restarts this listener.
         script_sources=llama_ui.bundle_script_sources(assets),
@@ -357,24 +410,30 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
     static_root = request.static_root or paths.tree / "static"
     if request.port <= 0:
         raise ValueError("the gateway names its own origin, so the port must be explicit")
-    # One origin serves the page and the routes, so the page origin the
-    # approval rules admit is the gateway's own address.
-    origin = f"http://{request.bind_host}:{request.port}"
+    # The gateway serves the page and the routes it calls, so the origins the
+    # approval rules admit are exactly the addresses this launch binds, read
+    # back from the config below as `config.origins`.
     config = GatewayConfig(
         static_root=static_root,
         port=request.port,
         bind_host=request.bind_host,
-        origins=(origin,),
+        origins=page_origins(request),
         exposure=lan_exposure(request.bind_host),
+        loopback_alias=loopback_alias(request),
         # The shell frames the second listener's page; a launch that binds
         # none leaves the page framing nothing.
-        frame_sources=(llama_ui_origin(request),),
+        frame_sources=llama_ui_origins(request),
     )
     # The gateway serves plain HTTP on every bind, and a Secure cookie travels
     # over HTTPS alone, so a Secure attribute would make the pairing cookie one
     # the browser never returns; the attribute follows a TLS front when one
     # exists rather than the bind address.
-    session = SessionGate(state, secure_cookie=False)
+    session = SessionGate(
+        state,
+        secure_cookie=False,
+        loopback_open=loopback_open(request),
+        open_networks=open_networks(request),
+    )
 
     def session_check(incoming: Request) -> approvals.SessionOrRefusal:
         try:
