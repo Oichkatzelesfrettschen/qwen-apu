@@ -36,18 +36,72 @@ and tool integration differ. Use Chat for the combined workflows in the guide.
 
 ## Use an installed laptop
 
-The appliance is one Python supervisor, `qwen-apu appliance serve`, that owns
-the router, the approval gateway, the image service, and the search instance,
-records them in `state/appliance.json` under the runtime root, and ends them
-together with `qwen-apu appliance stop`. On the laptop, in its checkout:
+The appliance is one Python supervisor that owns the router, the approval
+gateway, the image service, and the search instance, records them in
+`state/appliance.json` under the runtime root, and ends them together. Three
+words drive it:
+
+```sh
+qwen up         # derive the launch, detach it, print the addresses it serves
+qwen status     # the record the running appliance publishes
+qwen down       # stop it and prove every recorded identity absent
+qwen restart    # down, then up on the same derived defaults
+```
+
+`up` returns when the record reads `ready`, which is the router reporting a
+served model rather than a socket answering, and prints what a browser opens:
+
+```text
+state=ready
+home http://<lan address>:42069
+chat http://<lan address>:42072
+image http://<lan address>:42073
+serving=qwen38-2b-distill
+deployment=python-prod-32k
+```
+
+Two of those fields are facts about the machine rather than decisions, so `up`
+reads them off the machine: the address comes from the interface carrying the
+default route, so a new DHCP lease leaves the command unchanged, and the
+documentation root the file lane serves comes from the checkout. `--local`
+serves this machine alone, `--bind-host ADDRESS` publishes one rather than
+deriving it, and `--no-lan-open` asks every peer on the network for a pairing
+code. A machine with no default route refuses the launch and names both flags
+rather than publishing a page at an address no browser reaches.
+
+`qwen` is a four-verb view of one command. `qwen-apu appliance serve` is the
+whole statement of a launch, which `up` composes and every other operation
+keeps its own spelling of:
 
 ```sh
 qwen-apu appliance serve --router --both --bind-host <lan address> \
     --port 8080 --gateway-port 42069 --llama-ui-port 42072 \
     --image-profile image-sdxs-512-a --web-profile web-open
-qwen-apu appliance status
-qwen-apu appliance stop
 ```
+
+That form holds the terminal it runs in. `up` detaches the same argv as a
+session leader with its output in `logs/appliance.log`, so the shell that
+started it closes without reaching it, and no unit file, crontab entry, or
+login hook is involved: the appliance starts and stops through these commands
+alone, and a reboot leaves the laptop with nothing listening.
+
+### Put it on the operator's own PATH
+
+`qwen` is a console script of the installed package, so one symlink from a
+directory already on the operator's PATH reaches it and no shell profile
+changes:
+
+```sh
+mkdir -p ~/.local/bin
+ln -sfn ~/Github/qwen-apu/.runtime/venv/bin/qwen ~/.local/bin/qwen
+command -v qwen
+```
+
+The symlink resolves the venv interpreter through the script's own absolute
+shebang, so `qwen` works from any directory and needs no activation. A profile
+that leaves `~/.local/bin` off PATH takes one line, `PATH="$HOME/.local/bin:$PATH"`.
+The account that runs these commands owns the appliance's processes: teardown
+signals the recorded pids, and a pid is signalled by the user that started it.
 
 One flag states which peers a launch serves:
 
@@ -69,8 +123,10 @@ instead and may repeat. A derivation that finds no interface ends the launch
 rather than guessing at a boundary.
 
 ```sh
+qwen up                                   # both, lan-open, all three listeners
+qwen up --no-lan-open                     # the same launch, every peer pairing
 qwen-apu appliance serve --router --both --lan-open --bind-host <lan address> \
-    --llama-ui-port --image-ui-port ...
+    --llama-ui-port --image-ui-port ...   # the same launch, stated in full
 ```
 
 That is the operator's explicit decision, and it gives up exactly one thing:
@@ -82,7 +138,7 @@ device-reaching call still takes one human approval in the rail and spends a
 single-use signed grant.
 
 Open `http://<lan address>:42069/` in a browser. A peer on the network is
-asked for a pairing code once: `qwen-apu status` on the laptop prints it, the
+asked for a pairing code once: `qwen status` on the laptop prints it, the
 first browser that presents it receives an HttpOnly session cookie, and the
 code is spent. There is no key to keep or paste after that; a restart mints a
 new code. One pairing admits both ports, because the cookie is scoped to the

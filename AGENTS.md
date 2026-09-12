@@ -316,6 +316,15 @@ error.
 make bootstrap && make install-models build-llama   # lay out .runtime, fetch, build
 make status && make doctor && make verify           # claimed, foreign, and live state
 
+# The appliance as three verbs, on the PATH of the account that owns its
+# processes. `up` derives the LAN address from the interface carrying the
+# default route and the file root from the checkout, detaches the
+# `appliance serve` argv those defaults state, and returns on the record
+# reading ready; `down` is `appliance stop`, which signals the recorded
+# identities and proves each absent. The full flag form states the same launch.
+qwen up [--local|--bind-host ADDRESS] [--no-lan-open]
+qwen status | qwen down | qwen restart
+
 # Start, inspect, and stop the appliance
 remote/qwen-launch.sh [paced-60|low-serialized|low-async]
 remote/qwen-web-launch.sh [PROFILE]        # web presets, loopback by default

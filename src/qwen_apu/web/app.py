@@ -149,6 +149,21 @@ def network_of(address: str, netmask: str) -> ipaddress.IPv4Network:
     return ipaddress.IPv4Network(f"{address}/{netmask}", strict=False)
 
 
+def interface_address(name: str) -> str | None:
+    """The IPv4 address one named interface carries, or None for none.
+
+    `SIOCGIFADDR` answers EADDRNOTAVAIL on an interface the kernel holds with no
+    address, which is an interface up and unconfigured rather than an error, so
+    the absence returns as None and the caller states what it does about it.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        packed = struct.pack("256s", name.encode("utf-8")[:15])
+        try:
+            return socket.inet_ntoa(fcntl.ioctl(probe.fileno(), SIOCGIFADDR, packed)[20:24])
+        except OSError:
+            return None
+
+
 def interface_network(bind_host: str) -> ipaddress.IPv4Network | None:
     """The network of the interface holding `bind_host`, or None for none.
 

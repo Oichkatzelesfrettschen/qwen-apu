@@ -31,6 +31,7 @@ from qwen_apu.runtime import (
     deployment,
     deployment_write,
     graphics_state,
+    operator,
 )
 from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError, render_paths
@@ -238,6 +239,32 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ARG",
         help="one argv word of the search instance; repeat to build the command",
     )
+    # The operator surface: the launch as one word, with the two machine facts
+    # derived rather than typed. `serve` above stays the full statement of a
+    # launch, and `up` composes it.
+    for verb, help_text in (
+        ("up", "derive the launch, detach it, and print the addresses it serves"),
+        ("restart", "take the appliance down and bring it back on the same defaults"),
+    ):
+        operator_parser = appliance_sub.add_parser(verb, help=help_text)
+        operator_parser.add_argument(
+            "--bind-host",
+            default="",
+            help="the address to publish; the default derives it from the default route",
+        )
+        operator_parser.add_argument(
+            "--local",
+            action="store_true",
+            help="serve this machine alone on the loopback address",
+        )
+        operator_parser.add_argument(
+            "--no-lan-open",
+            dest="lan_open",
+            action="store_false",
+            help="ask every peer on the network for a pairing code",
+        )
+        operator_parser.set_defaults(lan_open=True)
+    appliance_sub.add_parser("down", help="stop the appliance and prove every identity absent")
     appliance_sub.add_parser("stop", help="signal every identity the record names")
     appliance_sub.add_parser("status", help="the published application record")
     acceptance_parser = sub.add_parser(
@@ -587,9 +614,33 @@ def resolve_open_networks(stated: Sequence[str], bind_host: str) -> tuple[str, .
     return tuple(dict.fromkeys(blocks))
 
 
+def _launch_defaults(paths: RuntimePaths, args: argparse.Namespace) -> operator.LaunchDefaults:
+    """The derived launch, with a refused derivation reported as a usage error.
+
+    `operator.launch_defaults` raises where no interface carries a default
+    route, which is a condition the operator answers with a flag rather than a
+    traceback, so the message reaches stderr as the parser's own refusals do.
+    """
+    try:
+        return operator.launch_defaults(
+            paths,
+            bind_host=args.bind_host,
+            local=args.local,
+            lan_open=args.lan_open,
+        )
+    except operator.LaunchRefused as refusal:
+        raise SystemExit(str(refusal)) from refusal
+
+
 def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
+    if args.appliance_command == "up":
+        return operator.up(paths, _launch_defaults(paths, args))
+    if args.appliance_command == "restart":
+        return operator.restart(paths, _launch_defaults(paths, args))
+    if args.appliance_command == "down":
+        return operator.down(paths)
     if args.appliance_command == "status":
-        sys.stdout.write(appliance.render(appliance.status(paths)))
+        sys.stdout.write(operator.report(appliance.status(paths), paths))
         return 0
     if args.appliance_command == "stop":
         signalled = appliance.stop(paths)
@@ -807,6 +858,39 @@ def main(argv: Sequence[str] | None = None) -> int:
     except subprocess.CalledProcessError as error:
         print(f"qwen-apu: {error.cmd[0]} exited {error.returncode}", file=sys.stderr)
         return 1
+
+
+_OPERATOR_VERBS = ("up", "down", "restart", "status")
+_OPERATOR_USAGE = """usage: qwen up|down|restart|status [OPTION...]
+
+  up        derive the launch, detach it, and print the addresses it serves
+  down      stop the appliance and prove every recorded identity absent
+  restart   down, then up on the same derived defaults
+  status    the record the running appliance publishes
+
+`up` and `restart` take --local to serve this machine alone, --bind-host
+ADDRESS to publish one rather than derive it, and --no-lan-open to ask every
+peer on the network for a pairing code. Every other command of the appliance
+is `qwen-apu`, which this entry point is a four-verb view of.
+"""
+
+
+def operator_main(argv: Sequence[str] | None = None) -> int:
+    """`qwen VERB` as `qwen-apu appliance VERB`, for an operator's own PATH.
+
+    The four verbs are the whole surface: a name outside them prints the usage
+    block and exits 2 rather than reaching `qwen-apu`'s own parser, so the short
+    command stays a bring-up and teardown tool and every other operation keeps
+    one spelling.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] in ("-h", "--help"):
+        sys.stdout.write(_OPERATOR_USAGE)
+        return 0
+    if not args or args[0] not in _OPERATOR_VERBS:
+        sys.stderr.write(_OPERATOR_USAGE)
+        return 2
+    return main(["appliance", *args])
 
 
 if __name__ == "__main__":

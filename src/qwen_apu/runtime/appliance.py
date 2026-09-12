@@ -696,12 +696,23 @@ def render(record: ApplianceState | None) -> str:
         f"llama_ui={record.llama_ui_origin}",
         f"primary_failure={record.primary_failure or '-'}",
     ]
-    lines.extend(
+    return "".join(f"{line}\n" for line in lines) + render_children(record)
+
+
+def render_children(record: ApplianceState | None) -> str:
+    """One line per owned child, naming the identity a teardown signals.
+
+    `qwen_apu.runtime.operator.report` prints the addresses a browser opens and
+    then these lines, so the pid, start time, port, and socket an operator reads
+    while debugging carry one format wherever they are printed.
+    """
+    if record is None:
+        return ""
+    return "".join(
         f"child name={child.name} pid={child.pid} start_time={child.start_time} "
-        f"port={child.port if child.port else '-'} socket={child.socket_path}"
+        f"port={child.port if child.port else '-'} socket={child.socket_path}\n"
         for child in record.children
     )
-    return "".join(f"{line}\n" for line in lines)
 
 
 def serve(paths: RuntimePaths, request: ApplianceRequest) -> int:
