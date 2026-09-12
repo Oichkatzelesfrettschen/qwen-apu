@@ -25,8 +25,10 @@ from pathlib import Path
 import pytest
 
 from qwen_apu.engines.llama import LlamaClient, binding_from_runtime
+from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import read_start_time
 from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
+from qwen_apu.web import assemble as assemble_module
 from qwen_apu.web import llama_ui
 from qwen_apu.web.app import Gateway, GatewayConfig
 from qwen_apu.web.auth import SessionGate
@@ -37,6 +39,8 @@ SERVED_ALIAS = "qwen-apu"
 BUILT_IN_PAGE = b"<!doctype html><title>llama.cpp</title><script>window.llama=1;</script>"
 BUNDLE_ETAG = '"bundle-1"'
 CUSTOM_PAGE_MARKER = b"the custom qwen-apu page"
+BUILT_BUNDLE_PAGE = b"<!doctype html><title>built llama.cpp UI</title>\n"
+BUILT_BUNDLE_SCRIPT = b"export const built = true;\n"
 
 
 class _FakeUpstream(BaseHTTPRequestHandler):
@@ -181,8 +185,8 @@ def _write_runtime_record(state: Path, port: int) -> Path:
     return record_path
 
 
-@pytest.fixture
-def listeners(tmp_path: Path, upstream: ThreadingHTTPServer) -> Iterator[Fixture]:
+def _build(tmp_path: Path, upstream: ThreadingHTTPServer, assets: Path | None) -> Fixture:
+    """Both listeners over one session gate, with the proxy holding `assets` or none."""
     static_root = tmp_path / "static"
     (static_root / llama_ui.PAIRING_PAGE_DIRECTORY).mkdir(parents=True)
     # The custom page's own files, which the proxy listener must never serve.
@@ -206,18 +210,24 @@ def listeners(tmp_path: Path, upstream: ThreadingHTTPServer) -> Iterator[Fixture
         session_authority=gate,
     )
     proxy_gateway = Gateway(
-        GatewayConfig(static_root=card.parent, port=0, origins=()),
+        GatewayConfig(static_root=assets or card.parent, port=0, origins=()),
         (
             llama_ui.LlamaUiProxy(
                 llama_ui.LlamaUiSettings(
                     client_factory=client_factory,
                     require_session=gate.require_session,
                     pairing_page=card,
+                    assets=assets,
                 )
             ),
         ),
     )
-    running = Fixture(_Listener(page_gateway), _Listener(proxy_gateway), gate, code)
+    return Fixture(_Listener(page_gateway), _Listener(proxy_gateway), gate, code)
+
+
+@pytest.fixture
+def listeners(tmp_path: Path, upstream: ThreadingHTTPServer) -> Iterator[Fixture]:
+    running = _build(tmp_path, upstream, None)
     try:
         yield running
     finally:
@@ -420,3 +430,139 @@ def test_the_admitted_set_names_the_servers_own_routes() -> None:
     assert not llama_ui.path_is_admitted("PUT", "/props")
     assert not llama_ui.path_is_admitted("GET", "/../etc/passwd")
     assert not llama_ui.path_is_admitted("GET", "/a/b/c/d")
+
+
+# ---------------------------------------------------------------------------
+# The built bundle, served from disk ahead of the proxy
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def bundle(tmp_path: Path) -> Path:
+    """The `tools/ui` output `remote/build-llama-ui.sh` lays under the runtime root."""
+    root = tmp_path / "opt" / "llama-ui" / "dist"
+    (root / "assets").mkdir(parents=True)
+    (root / "index.html").write_bytes(BUILT_BUNDLE_PAGE)
+    (root / "assets" / "bundle.abc123.js").write_bytes(BUILT_BUNDLE_SCRIPT)
+    (root / "sw.js").write_bytes(b"self.addEventListener('install', () => {});\n")
+    (root / "manifest.webmanifest").write_bytes(b'{"name":"llama.cpp"}\n')
+    (tmp_path / "outside.txt").write_bytes(b"outside the bundle\n")
+    return root
+
+
+@pytest.fixture
+def served(tmp_path: Path, upstream: ThreadingHTTPServer, bundle: Path) -> Iterator[Fixture]:
+    """The same two listeners, with the proxy holding the built bundle."""
+    running = _build(tmp_path, upstream, bundle)
+    try:
+        yield running
+    finally:
+        running.stop()
+
+
+def test_the_built_bundle_is_served_from_disk_ahead_of_the_proxy(
+    served: Fixture, bundle: Path
+) -> None:
+    """The page and its hashed asset come off disk with the server's own headers.
+
+    The upstream would answer `/` with its own gzipped fixture page, so the
+    bytes name which side served the request.
+    """
+    cookie = _pair(served)
+    page, body = _request(
+        served.proxy, "GET", "/", headers={"Cookie": cookie, "Accept-Encoding": "gzip"}
+    )
+    assert page.status == 200
+    assert body == BUILT_BUNDLE_PAGE
+    assert page.getheader("content-type") == "text/html; charset=utf-8"
+    assert page.getheader("cache-control") == llama_ui.REVALIDATE_CACHE_CONTROL
+    assert page.getheader("cross-origin-embedder-policy") == "require-corp"
+    assert page.getheader("cross-origin-opener-policy") == "same-origin"
+
+    asset, script = _request(
+        served.proxy, "GET", "/assets/bundle.abc123.js", headers={"Cookie": cookie}
+    )
+    assert script == BUILT_BUNDLE_SCRIPT
+    assert asset.getheader("content-type") == "text/javascript; charset=utf-8"
+    assert asset.getheader("cache-control") == llama_ui.IMMUTABLE_CACHE_CONTROL
+
+    manifest, _ = _request(served.proxy, "GET", "/manifest.webmanifest", headers={"Cookie": cookie})
+    assert manifest.getheader("content-type") == "application/manifest+json"
+    assert manifest.getheader("cache-control") == llama_ui.REVALIDATE_CACHE_CONTROL
+
+
+def test_a_bundle_asset_answers_304_to_its_own_validator(served: Fixture) -> None:
+    cookie = _pair(served)
+    first, body = _request(served.proxy, "GET", "/index.html", headers={"Cookie": cookie})
+    tag = first.getheader("etag")
+    assert tag == llama_ui.asset_entity_tag(body)
+    again, empty = _request(
+        served.proxy, "GET", "/index.html", headers={"Cookie": cookie, "If-None-Match": tag}
+    )
+    assert again.status == 304
+    assert empty == b""
+
+
+def test_a_traversal_out_of_the_bundle_is_refused(served: Fixture) -> None:
+    """`StaticDirectory.resolve` unquotes before containment, so no escape resolves.
+
+    A path that names nothing inside the bundle falls to the proxy, and the
+    router answers for it, so the refusal is read as the absence of the file
+    outside rather than as a served one.
+    """
+    cookie = _pair(served)
+    for path in ("/../outside.txt", "/%2e%2e/outside.txt", "/assets/../../outside.txt"):
+        response, body = _request(served.proxy, "GET", path, headers={"Cookie": cookie})
+        assert b"outside the bundle" not in body
+        assert response.status == 404
+
+
+def test_a_path_the_bundle_lacks_still_reaches_the_router(served: Fixture) -> None:
+    """The bundle takes precedence and the proxy keeps every path it does not hold."""
+    cookie = _pair(served)
+    response, body = _request(served.proxy, "GET", "/v1/models", headers={"Cookie": cookie})
+    assert response.status == 200
+    assert json.loads(body)["data"][0]["id"] == SERVED_ALIAS
+
+
+def test_an_unpaired_load_answers_the_card_rather_than_the_bundle(served: Fixture) -> None:
+    """The session gate stands ahead of every file the bundle holds."""
+    response, body = _request(served.proxy, "GET", "/")
+    assert response.status == 401
+    assert b"pair on the chat page" in body
+
+    asset, _ = _request(served.proxy, "GET", "/assets/bundle.abc123.js")
+    assert asset.status == 401
+
+
+def test_an_absent_bundle_leaves_every_path_to_the_router(listeners: Fixture) -> None:
+    """A launch whose directory holds no page proxies the root as before."""
+    cookie = _pair(listeners)
+    response, body = _request(
+        listeners.proxy, "GET", "/", headers={"Cookie": cookie, "Accept-Encoding": "gzip"}
+    )
+    assert response.status == 200
+    assert gzip.decompress(body) == BUILT_IN_PAGE
+
+
+def test_the_assembly_reads_the_runtime_roots_bundle_where_a_build_left_one(
+    tmp_path: Path,
+) -> None:
+    """The default is `opt/llama-ui/dist`, and a named directory without a page refuses."""
+    paths = RuntimePaths(tree=Path(__file__).resolve().parents[1], root=tmp_path / "runtime")
+    paths.lay_out()
+    request = assemble_module.GatewayRequest(port=8090, llama_ui_port=42072)
+    assert assemble_module.llama_ui_assets(paths, request) is None
+
+    derived = paths["qwen_home_opt"] / "llama-ui" / "dist"
+    derived.mkdir(parents=True)
+    (derived / "index.html").write_bytes(BUILT_BUNDLE_PAGE)
+    assert assemble_module.llama_ui_assets(paths, request) == derived
+
+    empty = tmp_path / "named"
+    empty.mkdir()
+    with pytest.raises(ValueError, match="carries no index.html"):
+        assemble_module.llama_ui_assets(
+            paths,
+            assemble_module.GatewayRequest(port=8090, llama_ui_port=42072, llama_ui_static=empty),
+        )

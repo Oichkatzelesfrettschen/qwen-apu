@@ -290,11 +290,33 @@ supervisor process that runs each on a thread. `GET /api/status` reports
 `gateway.llama_ui_origin`, and the page's llama.cpp UI tab reads it when the
 panel opens.
 
-Open gap, device-side: `remote/build-llama-vulkan.sh` configures
+The bundle is five. `remote/build-llama-vulkan.sh` configures
 `-DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF`, so `LLAMA_UI_HAS_ASSETS`
-stays undefined and the embedded-asset branch compiles to nothing. `--ui`
-therefore registers no static route in the deployed binary and the proxied
-`GET /` answers the server's 404 while every admitted API route answers
-normally. Serving the page requires a build carrying the asset table; the
-proxy, the gate, and the admitted set are proven against the fixture in
-`tests/test_web_llama_ui.py` without one.
+stays undefined and the embedded-asset branch registers no route: `--ui` alone
+leaves the deployed server with the API routes and no page. The listener
+therefore serves the page itself. `remote/build-llama-ui.sh` builds `tools/ui`
+with Node where Node already is, and the appliance keeps the output under the
+runtime root at `opt/llama-ui/dist`; `appliance serve --llama-ui-static DIR`
+names another directory and a named directory carrying no `index.html` refuses
+the launch, while the default answers none until a build lands there and every
+path then proxies.
+
+A GET whose path resolves to a regular file inside the bundle is served from
+disk after the session gate, with the headers `serve_asset_cached` sends:
+`no-cache` on `index.html`, `sw.js`, `manifest.webmanifest`, `version.json`,
+and `build.json`, the immutable year on every hashed name, the
+`Cross-Origin-Embedder-Policy: require-corp` and
+`Cross-Origin-Opener-Policy: same-origin` pair on the page alone, an ETag the
+bytes decide, and a 304 to a request whose `If-None-Match` matches it. The
+content type comes from the extension, with `.js`, `.mjs`, `.webmanifest`,
+`.wasm`, and `.map` named explicitly, since a module served as anything but a
+JavaScript type is refused by the browser and a manifest served as JSON is
+ignored by the installer. `StaticDirectory.resolve` unquotes before the
+containment check, so `%2e%2e%2f` meets it rather than passing as an opaque
+segment; a path outside the bundle resolves to nothing and falls to the proxy,
+which the router answers 404 for. Every other path proxies as before, so the
+bundle takes precedence and the API routes stay on the router.
+
+The router still runs `--ui` with no `--path`. It registers no route in this
+build, and it states which page the server would hold in a build that embeds
+its asset table.

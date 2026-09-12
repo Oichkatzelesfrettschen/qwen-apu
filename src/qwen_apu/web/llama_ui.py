@@ -37,19 +37,33 @@ the browser reads compressed bytes labeled as JavaScript. `ETag` and
 them, and a dropped validator turns every reload into a full transfer. The
 cookie stays behind, as it does on the chat lane.
 
+The bundle is the fourth. The deployed server is configured
+`-DLLAMA_BUILD_UI=OFF`, so `LLAMA_UI_HAS_ASSETS` stays undefined and its
+embedded-asset branch registers no route: `--ui` alone leaves the page
+unserved. `remote/build-llama-ui.sh` builds `tools/ui` with Node and the
+appliance keeps the output under the runtime root, so this listener serves
+those files itself. A GET whose path resolves to a regular file inside that
+directory answers from disk with the headers `serve_asset_cached` sends --
+`no-cache` on the files a build replaces under a stable name, the immutable
+year on the hashed ones, the cross-origin isolation pair on the page itself,
+and an ETag the bytes decide -- and every other path proxies to the router. A
+launch whose directory holds no `index.html` names none and every path proxies.
+
 The body is forwarded and never rewritten, so what the second origin serves is
-the page the pinned build carries.
+the page the build produced.
 """
 
 from __future__ import annotations
 
+import hashlib
+import mimetypes
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
 from qwen_apu.engines.llama import LlamaClient, UpstreamAnswer, UpstreamRefused
-from qwen_apu.web.app import RequestRefused
+from qwen_apu.web.app import RequestRefused, StaticDirectory
 from qwen_apu.web.http import Request, Response, Route, StreamingResponse
 
 PAIRING_PAGE_DIRECTORY = "llama-ui"
@@ -157,6 +171,68 @@ CONTENT_SECURITY_POLICY = "; ".join(
 
 RequireSession = Callable[[Request], None]
 
+# `server-http.cpp` names these four as the assets a build replaces under a
+# stable name, and `index.html` joins them because its contents change on every
+# build while its name does not; every other asset carries a hash in its name
+# and never changes under it.
+REVALIDATED_ASSET_NAMES = frozenset(
+    {"index.html", "sw.js", "manifest.webmanifest", "version.json", "build.json"}
+)
+IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+REVALIDATE_CACHE_CONTROL = "no-cache"
+# `serve_asset_cached` sets both on the page alone, which is what puts the
+# document in a cross-origin isolated agent cluster.
+ISOLATION_HEADERS = {
+    "cross-origin-embedder-policy": "require-corp",
+    "cross-origin-opener-policy": "same-origin",
+}
+# The types `mimetypes` reads from the system table wrongly or not at all. A
+# manifest served as JSON is ignored by the installer, and a module served as
+# anything but a JavaScript type is refused by the browser outright.
+ASSET_CONTENT_TYPES = {
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".map": "application/json; charset=utf-8",
+    ".webmanifest": "application/manifest+json",
+    ".wasm": "application/wasm",
+    ".svg": "image/svg+xml",
+    ".woff2": "font/woff2",
+}
+
+
+def asset_content_type(name: str) -> str:
+    suffix = Path(name).suffix.lower()
+    if suffix in ASSET_CONTENT_TYPES:
+        return ASSET_CONTENT_TYPES[suffix]
+    guessed, _ = mimetypes.guess_type(name)
+    if guessed is None:
+        return "application/octet-stream"
+    if guessed.startswith("text/"):
+        return f"{guessed}; charset=utf-8"
+    return guessed
+
+
+def asset_entity_tag(payload: bytes) -> str:
+    """One strong validator the bytes decide, the way `embed.cpp` hashes an asset."""
+    return f'"{hashlib.sha256(payload).hexdigest()[:32]}"'
+
+
+def asset_headers(name: str, payload: bytes) -> dict[str, str]:
+    headers = {
+        "content-type": asset_content_type(name),
+        "content-security-policy": CONTENT_SECURITY_POLICY,
+        "etag": asset_entity_tag(payload),
+        "cache-control": (
+            REVALIDATE_CACHE_CONTROL if name in REVALIDATED_ASSET_NAMES else IMMUTABLE_CACHE_CONTROL
+        ),
+    }
+    if name == "index.html":
+        headers.update(ISOLATION_HEADERS)
+    return headers
+
 
 def asset_path_is_admitted(path: str) -> bool:
     """Whether one GET path names a file the server's asset table could hold.
@@ -191,12 +267,15 @@ def path_is_admitted(method: str, path: str) -> bool:
 
 @dataclass(frozen=True)
 class LlamaUiSettings:
-    """One proxy: the upstream it reaches, the gate it passes, and its card."""
+    """One proxy: the upstream it reaches, the gate it passes, its bundle, and its card."""
 
     client_factory: Callable[[], LlamaClient]
     require_session: RequireSession
     pairing_page: Path
     origin: str = ""
+    # The built `tools/ui` output this listener serves from disk. None leaves
+    # every path to the router, which is the launch that names no directory.
+    assets: Path | None = None
 
 
 class LlamaUiProxy:
@@ -241,12 +320,40 @@ class LlamaUiProxy:
 
     # -- the proxy -------------------------------------------------------
 
+    # -- the bundle ------------------------------------------------------
+
+    def asset(self, request: Request) -> Response | None:
+        """The file this GET names inside the bundle, or None where it names none.
+
+        `StaticDirectory.resolve` unquotes before resolving and refuses a
+        candidate outside its own root, so `%2e%2e%2f` meets the containment
+        check rather than passing as an opaque segment, and `/` maps to the
+        page. A matching `If-None-Match` answers 304 without the body, which is
+        the branch `serve_asset_cached` takes on the same header.
+        """
+        root = self.settings.assets
+        if root is None or request.method != "GET":
+            return None
+        target = StaticDirectory(root).resolve(request.path)
+        if target is None:
+            return None
+        payload = target.read_bytes()
+        headers = asset_headers(target.name, payload)
+        if request.header("if-none-match") == headers["etag"]:
+            return Response(304, b"", headers)
+        return Response(200, payload, headers)
+
+    # -- the proxy -------------------------------------------------------
+
     def forward(self, request: Request) -> Response | StreamingResponse:
-        """Pass one request to the router and its answer back, rewriting neither."""
+        """Serve the bundle where it holds the path, and proxy every other request."""
         if not self._paired(request):
             if request.method == "GET" and request.path in PAGE_PATHS:
                 return self.pairing_card()
             self.settings.require_session(request)
+        served = self.asset(request)
+        if served is not None:
+            return served
         if not path_is_admitted(request.method, request.path):
             raise RequestRefused(
                 404, f"the router serves no {request.method} {request.path} through this listener"
