@@ -23,6 +23,7 @@ import pytest
 from qwen_apu.runtime import appliance
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import read_start_time
+from qwen_apu.tools import approvals
 
 TREE = Path(__file__).resolve().parents[1]
 SH = shutil.which("sh")
@@ -204,6 +205,30 @@ def test_stop_leaves_a_pid_whose_start_time_moved_alone(root: RuntimePaths) -> N
 def test_stop_on_an_empty_root_signals_nothing(root: RuntimePaths) -> None:
     assert appliance.stop(root) == ()
     assert appliance.status(root) is None
+
+
+def test_stop_unlinks_the_session_secret_an_abrupt_exit_left(root: RuntimePaths) -> None:
+    """The recovery path: bytes with no record and no live process behind them.
+
+    The gateway runs inside the supervisor and disarms `authorize-session.secret`
+    on its own shutdown, so a supervisor killed outright leaves the file whole.
+    A presented secret matching those bytes would authorize a grant post against
+    the launch that follows, and the teardown requires the file absent whether
+    or not a pid was recorded, so `stop` unlinks before it reads the record.
+    """
+    secret = root["qwen_home_state"] / approvals.SESSION_SECRET_FILE_NAME
+    secret.parent.mkdir(parents=True, exist_ok=True)
+    secret.write_text("stale\n", encoding="utf-8")
+
+    assert appliance.stop(root) == ()
+
+    assert not secret.exists()
+
+
+def test_stop_on_a_root_carrying_no_session_secret_is_quiet(root: RuntimePaths) -> None:
+    """An ordinary teardown after the gateway disarmed finds nothing to unlink."""
+    assert appliance.stop(root) == ()
+    assert not (root["qwen_home_state"] / approvals.SESSION_SECRET_FILE_NAME).exists()
 
 
 def test_render_states_every_child_and_the_readiness(root: RuntimePaths) -> None:

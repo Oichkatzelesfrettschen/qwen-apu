@@ -50,6 +50,7 @@ from qwen_apu.runtime import state as runtime_state
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import Owned, read_start_time, spawn, terminate
 from qwen_apu.runtime.state import utc_now
+from qwen_apu.tools import approvals
 from qwen_apu.web import assemble as gateway_assembly
 
 SCHEMA = "qwen-apu-appliance-state-v1"
@@ -421,8 +422,19 @@ class Appliance:
         return False
 
     def _start_gateway(self) -> tuple[Any, Any, str]:
+        """The assembled gateway and its pairing code, with the code minted under a guard.
+
+        `gateway.shutdown()` carries the approval service's disarming of
+        `authorize-session.secret`, so a `session.start()` that raises runs that
+        shutdown here rather than losing the gateway object to this frame and
+        leaving `Appliance.run`'s own guard nothing to shut down.
+        """
         gateway, session = gateway_assembly.assemble(self.paths, self.request.gateway)
-        return gateway, session, session.start()
+        try:
+            return gateway, session, session.start()
+        except BaseException:
+            gateway.shutdown()
+            raise
 
     def _router_record(self) -> runtime_state.RuntimeState | None:
         """This run's router record; the previous run's is read as none."""
@@ -525,7 +537,14 @@ def stop(paths: RuntimePaths, *, grace_s: float = TERMINATION_GRACE_SECONDS) -> 
     started, and a number alone would signal whatever now holds it. No name
     match, no `pkill`, and no tmux session is involved, so a second appliance on
     the same machine is untouched by this one's teardown.
+
+    The session secret is unlinked first and unconditionally. The gateway runs
+    inside the supervisor and disarms the file on its own shutdown, so an abrupt
+    supervisor exit leaves the bytes behind with no live process recorded, and a
+    teardown that returned on an absent record would leave a file that
+    authorizes a grant post against the next launch.
     """
+    _disarm_session_secret(paths)
     record = ApplianceRecord(path=record_path(paths))
     current = record.read()
     if current is None:
@@ -562,6 +581,18 @@ def stop(paths: RuntimePaths, *, grace_s: float = TERMINATION_GRACE_SECONDS) -> 
         )
     )
     return tuple(signalled)
+
+
+def _disarm_session_secret(paths: RuntimePaths) -> None:
+    """Remove `authorize-session.secret`, which the teardown proves absent.
+
+    `qwen_apu.tools.approvals.ApprovalService.disarm_session_secret` is the
+    ordinary owner and runs on the gateway's shutdown; this is the recovery path
+    for a supervisor that left without running it.
+    """
+    secret = paths["qwen_home_state"] / approvals.SESSION_SECRET_FILE_NAME
+    if secret.is_symlink() or secret.exists():
+        secret.unlink()
 
 
 def render(record: ApplianceState | None) -> str:

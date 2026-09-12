@@ -284,8 +284,49 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
     # The per-launch secret every grant post presents is minted here, at the
     # one place this launch's service exists, and its file is what the
     # teardown proves absent; a service left unarmed compares every presented
-    # secret against an empty string and admits none.
+    # secret against an empty string and admits none. Every assembly step after
+    # the arming can refuse -- an occupied gateway port is the ordinary case --
+    # and the teardown requires the file gone whether or not a process ran, so
+    # the arming and the rest of the assembly share one lifecycle that disarms
+    # on the way out.
     approval_service.arm_session_secret()
+    try:
+        return _assemble_armed(
+            paths,
+            request,
+            config=config,
+            state=state,
+            session=session,
+            session_check=session_check,
+            session_admits=session_admits,
+            client=client,
+            approval_settings=approval_settings,
+            approval_service=approval_service,
+        )
+    except BaseException:
+        approval_service.disarm_session_secret()
+        raise
+
+
+def _assemble_armed(
+    paths: RuntimePaths,
+    request: GatewayRequest,
+    *,
+    config: GatewayConfig,
+    state: Path,
+    session: SessionGate,
+    session_check: Callable[[Request], approvals.SessionOrRefusal],
+    session_admits: Callable[[Request], bool],
+    client: Callable[[], LlamaClient],
+    approval_settings: approvals.ApprovalSettings,
+    approval_service: approvals.ApprovalService,
+) -> tuple[Gateway, SessionGate]:
+    """Mount every provider on one gateway, with the session secret already armed.
+
+    `assemble` owns the arming and the disarming, so a refusal raised anywhere
+    below leaves `authorize-session.secret` absent rather than authorizing a
+    page against the launch that follows this one.
+    """
 
     def ledger() -> Ledger:
         return Ledger(state)
@@ -432,9 +473,12 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
 
 def run(paths: RuntimePaths, request: GatewayRequest) -> int:
     gateway, session = assemble(paths, request)
-    code = session.start()
-    print(f"gateway=http://{request.bind_host}:{gateway.port}/ pairing_code={code}", flush=True)
+    # `session.start()` runs inside the shutdown guard because the gateway's
+    # `on_shutdown` carries the secret's disarming, and a pairing code this
+    # process fails to mint would otherwise leave the file behind.
     try:
+        code = session.start()
+        print(f"gateway=http://{request.bind_host}:{gateway.port}/ pairing_code={code}", flush=True)
         gateway.serve_forever()
     except KeyboardInterrupt:
         pass
