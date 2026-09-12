@@ -914,3 +914,15 @@ def test_a_delayed_append_into_a_closed_temporary_conversation_is_refused(
     delayed = Message(role="user", content="too late", created_utc="2026-01-01T00:00:00Z")
     with pytest.raises(UnknownConversation):
         registry.append(conversation.conversation_id, delayed)
+
+
+def test_the_assembly_arms_the_session_secret_and_the_shutdown_removes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = _runtime_paths(tmp_path, monkeypatch)
+    fixture = _start_gateway(paths, _static_root(tmp_path))
+    secret_file = paths["qwen_home_state"] / "authorize-session.secret"
+    assert secret_file.is_file()
+    assert secret_file.read_text(encoding="utf-8").strip()
+    fixture.stop()
+    assert not secret_file.exists()

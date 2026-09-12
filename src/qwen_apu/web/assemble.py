@@ -281,6 +281,11 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         exposure=lan_exposure(request.bind_host),
     )
     approval_service = approvals.ApprovalService(approval_settings, session_check)
+    # The per-launch secret every grant post presents is minted here, at the
+    # one place this launch's service exists, and its file is what the
+    # teardown proves absent; a service left unarmed compares every presented
+    # secret against an empty string and admits none.
+    approval_service.arm_session_secret()
 
     def ledger() -> Ledger:
         return Ledger(state)
@@ -409,7 +414,10 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
             config,
             providers,
             session_authority=session,
-            on_shutdown=(conversation_settings.temporary.shutdown,),
+            on_shutdown=(
+                conversation_settings.temporary.shutdown,
+                approval_service.disarm_session_secret,
+            ),
         ),
         session,
     )
