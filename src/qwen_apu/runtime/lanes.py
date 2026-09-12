@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -273,6 +274,31 @@ def searxng_argv(paths: RuntimePaths) -> tuple[str, ...]:
         str(paths.tree / "remote" / SEARXNG_SCRIPT),
         "serve",
         str(paths["qwen_home_state"]),
+    )
+
+
+def searxng_components_present(paths: RuntimePaths, *, timeout_s: float = 30.0) -> str:
+    """The `check` verdict, which is the one the instance's own launch applies.
+
+    `remote/searxng-launch.sh check` runs `check_instance_components` and exits
+    2 where the source tree, the virtual environment, or the settings template
+    is absent, printing `searxng_components=present` when all three are there.
+    `serve` runs that same check and exits before it binds, so a launch reading
+    the verdict first derives no child rather than starting one that leaves at
+    once. The return is the empty string where the components are present and
+    the refusal sentence otherwise.
+    """
+    argv = (str(paths.tree / "remote" / SEARXNG_SCRIPT), "check", str(paths["qwen_home_state"]))
+    try:
+        completed = subprocess.run(  # noqa: S603
+            argv, capture_output=True, text=True, timeout=timeout_s, check=False
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"{SEARXNG_SCRIPT} check did not run: {error}"
+    if completed.returncode == 0:
+        return ""
+    return (completed.stderr or completed.stdout).strip().replace("\n", "; ") or (
+        f"{SEARXNG_SCRIPT} check exited {completed.returncode}"
     )
 
 

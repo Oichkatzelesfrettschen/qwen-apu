@@ -211,7 +211,15 @@ def test_a_profile_naming_no_instance_derives_no_child(root: RuntimePaths) -> No
     assert lanes.searxng_endpoint(row) is None
 
 
-def test_the_searxng_child_runs_the_launch_script_as_an_argv_list(root: RuntimePaths) -> None:
+def _components_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand in for a populated `$qwen_home_searxng_root`, which no gate host holds."""
+    monkeypatch.setattr(lanes, "searxng_components_present", lambda paths, **_: "")
+
+
+def test_the_searxng_child_runs_the_launch_script_as_an_argv_list(
+    root: RuntimePaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _components_present(monkeypatch)
     _image, search = appliance.child_specs_from_request(root, web_profile=SEARXNG_PROFILE)
     assert search is not None
     assert search.argv == (
@@ -251,6 +259,30 @@ def test_the_served_image_profile_derives_the_whole_child(root: RuntimePaths) ->
     assert root["qwen_home_image_parameters"].is_file()
 
 
+def test_an_unpopulated_searxng_root_arms_no_instance(
+    root: RuntimePaths, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`serve` runs the same check and leaves before binding, so the launch reads it first."""
+    monkeypatch.setattr(
+        lanes, "searxng_components_present", lambda paths, **_: "searxng source is absent"
+    )
+    _image, search = appliance.child_specs_from_request(root, web_profile=SEARXNG_PROFILE)
+    assert search is None
+    printed = capsys.readouterr().out
+    assert "searxng_lane=unarmed" in printed
+    assert "searxng source is absent" in printed
+
+
+def test_the_component_check_runs_the_script_and_answers_a_sentence(root: RuntimePaths) -> None:
+    """The verdict is a string: empty where every component is present, the refusal otherwise.
+
+    A gate host carries no populated `$qwen_home_searxng_root`, so this states
+    the shape of the answer rather than which branch this host takes.
+    """
+    verdict = lanes.searxng_components_present(root)
+    assert isinstance(verdict, str)
+
+
 def test_a_whole_argv_override_keeps_the_process_identity_alone(root: RuntimePaths) -> None:
     image, search = appliance.child_specs_from_request(
         root,
@@ -262,6 +294,11 @@ def test_a_whole_argv_override_keeps_the_process_identity_alone(root: RuntimePat
     assert image is not None and search is not None
     assert image.argv == ("python3", "worker.py")
     assert search.argv == ("searxng-launch.sh", "serve", "/state")
+    # The caller composed the argv, so the caller owns the readiness claim: a
+    # wait bound to the derived socket and port would expire against a worker
+    # listening where the caller's own --state-dir and port put it.
+    assert image.ready == "-"
+    assert search.ready == "-"
 
 
 # ---------------------------------------------------------------------------
