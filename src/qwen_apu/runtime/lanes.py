@@ -51,6 +51,9 @@ IMAGE_AUTHORITY_NAMES = (
     "QWEN_IMAGE_LANGUAGE_PROFILE",
 )
 SEARXNG_SCRIPT = "searxng-launch.sh"
+# The one bind address `remote/searxng-launch.sh` admits: its own check reads
+# `QWEN_SEARXNG_BIND_ADDRESS` and exits 2 on any other value.
+SEARXNG_BIND_LITERAL = "127.0.0.1"
 LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "::1", "localhost"})
 # The Web UI bearer the worker's artifact listener compares against. The
 # gateway serves artifacts from its own `/api/artifacts/` route, so nothing
@@ -264,6 +267,15 @@ def searxng_endpoint(profile: WebProfile) -> tuple[str, int] | None:
     `config.models.load_web_profiles` already refuses a `searxng_url` outside
     loopback, so a row reaching here either names a loopback endpoint or names
     none at all under provider `exa` or `fake`.
+
+    `localhost` becomes `127.0.0.1`, because the host reaches
+    `remote/searxng-launch.sh` as `QWEN_SEARXNG_BIND_ADDRESS` and that script
+    accepts the literal alone, exiting 2 before it binds on any other spelling.
+    The two names resolve to the same interface, so the substitution changes
+    where the instance listens not at all and changes the derived child from one
+    that leaves at once to one that serves. `::1` stays verbatim: it names a
+    different address family, and mapping it to the IPv4 literal would move the
+    bind rather than respell it.
     """
     if profile.provider != "searxng" or not profile.searxng_url:
         return None
@@ -271,7 +283,7 @@ def searxng_endpoint(profile: WebProfile) -> tuple[str, int] | None:
     host = parsed.hostname or ""
     if host not in LOOPBACK_HOSTS:
         return None
-    return host, parsed.port or 8888
+    return (SEARXNG_BIND_LITERAL if host == "localhost" else host), parsed.port or 8888
 
 
 def searxng_argv(paths: RuntimePaths) -> tuple[str, ...]:

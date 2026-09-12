@@ -190,6 +190,48 @@ def test_the_searxng_endpoint_comes_from_the_profile_url() -> None:
     assert lanes.searxng_endpoint(row) == ("127.0.0.1", 8888)
 
 
+def _searxng_profile(url: str) -> WebProfile:
+    return WebProfile(
+        profile_id="web-named-loopback",
+        model_id="qwen35-08b",
+        web_mode="search",
+        context=4096,
+        validated_filled_depth=None,
+        max_results=1,
+        max_fetches=1,
+        max_chars_per_fetch=1,
+        multi_source="no",
+        vision_allowed="no",
+        tool_selection="graded",
+        execution_policy="validator-gated",
+        provider="searxng",
+        primary_category="general",
+        fallback_category=None,
+        minimum_results=1,
+        searxng_url=url,
+    )
+
+
+def test_a_localhost_endpoint_normalizes_to_the_bind_literal() -> None:
+    """`remote/searxng-launch.sh` accepts `127.0.0.1` as its bind address alone.
+
+    The loader admits `localhost`, and passing that spelling through as
+    `QWEN_SEARXNG_BIND_ADDRESS` made the script exit 2 before it bound, so the
+    derived child left at once. The two names reach the same interface, which is
+    why respelling the host changes where the instance listens not at all.
+    """
+    endpoint = lanes.searxng_endpoint(_searxng_profile("http://localhost:8899"))
+    assert endpoint == (lanes.SEARXNG_BIND_LITERAL, 8899)
+    assert endpoint is not None
+    env = lanes.searxng_env(host=endpoint[0], port=endpoint[1])
+    assert env["QWEN_SEARXNG_BIND_ADDRESS"] == lanes.SEARXNG_BIND_LITERAL
+
+
+def test_an_ipv6_loopback_endpoint_keeps_its_own_literal() -> None:
+    """`::1` names a different address family, so the derivation respells nothing."""
+    assert lanes.searxng_endpoint(_searxng_profile("http://[::1]:8888")) == ("::1", 8888)
+
+
 def test_a_profile_naming_no_instance_derives_no_child(root: RuntimePaths) -> None:
     row = WebProfile(
         profile_id="web-fake",
