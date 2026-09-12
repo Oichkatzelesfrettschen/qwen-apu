@@ -349,7 +349,11 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         origins=(origin,),
         exposure=lan_exposure(request.bind_host),
     )
-    session = SessionGate(state, secure_cookie=not config.binds_loopback)
+    # The gateway serves plain HTTP on every bind, and a Secure cookie travels
+    # over HTTPS alone, so a Secure attribute would make the pairing cookie one
+    # the browser never returns; the attribute follows a TLS front when one
+    # exists rather than the bind address.
+    session = SessionGate(state, secure_cookie=False)
 
     def session_check(incoming: Request) -> approvals.SessionOrRefusal:
         try:

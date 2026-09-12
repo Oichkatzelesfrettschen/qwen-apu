@@ -1263,3 +1263,24 @@ def test_the_approval_settings_admit_the_lan_bind_host(tmp_path: Path) -> None:
     )
     assert "10.0.0.170" in settings.admitted_hosts
     assert "127.0.0.1" in settings.admitted_hosts
+
+
+def test_a_lan_bound_pairing_cookie_travels_over_plain_http(tmp_path: Path) -> None:
+    """The gateway serves HTTP, so the cookie carries no Secure attribute on any bind."""
+    paths = _assembly_root(tmp_path)
+    _write_key(paths, b"c0ffee\n")
+    gate = SessionGate(paths["qwen_home_state"], secure_cookie=False)
+    code = gate.start()
+    request = Request(
+        method="POST",
+        path="/api/pair",
+        query={},
+        headers={"host": "10.0.0.170:42069", "content-type": "application/json"},
+        body=json.dumps({"code": code}).encode("utf-8"),
+        client_address="10.0.0.9",
+    )
+    response = gate.pair(request)
+    assert response.status == 200
+    cookie = response.headers.get("set-cookie") or response.headers.get("Set-Cookie", "")
+    assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
+    assert "Secure" not in cookie
