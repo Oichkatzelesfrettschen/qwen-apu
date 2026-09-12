@@ -489,8 +489,15 @@ def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
         print(f"signalled={','.join(str(pid) for pid in signalled) or '-'}")
         record = appliance.status(paths)
         return 0 if record is None or record.state == "stopped" else 1
+    gateway_origin = f"http://{args.bind_host}:{args.gateway_port}"
     image, searxng = appliance.child_specs_from_request(
-        paths, image_service=args.image_service, searxng=args.searxng
+        paths,
+        image_service=args.image_service,
+        searxng=args.searxng,
+        image_profile=args.image_profile,
+        web_profile=args.web_profile,
+        origin=gateway_origin,
+        bind_host=args.bind_host,
     )
     return appliance.serve(
         paths,
