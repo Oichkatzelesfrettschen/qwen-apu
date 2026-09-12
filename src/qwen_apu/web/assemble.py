@@ -20,7 +20,7 @@ from qwen_apu.config import models as config_models
 from qwen_apu.config.loader import RegistryError
 from qwen_apu.config.schema import WebProfile
 from qwen_apu.engines import llama as llama_engine
-from qwen_apu.engines.image import SOCKET_FILE_NAME, ImageControlClient
+from qwen_apu.engines.image import IMAGE_DIRECTORY_NAME, SOCKET_FILE_NAME, ImageControlClient
 from qwen_apu.engines.llama import LlamaClient, binding_from_runtime
 from qwen_apu.runtime import deployment, preflight
 from qwen_apu.runtime.paths import RuntimePaths
@@ -298,7 +298,7 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         ledger=ledger,
     )
     artifact_directory = state / "artifacts"
-    image_socket = state / SOCKET_FILE_NAME
+    image_socket = state / IMAGE_DIRECTORY_NAME / SOCKET_FILE_NAME
 
     def route_review(payload: Mapping[str, object]) -> object:
         """One `/v1/chat/completions` round trip against the router on loopback.
