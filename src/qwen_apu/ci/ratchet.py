@@ -13,7 +13,13 @@ this package. `outside-root` reuses the two path regexes from
 `remote/check-appliance-paths.py` so a Python script inherits the same
 runtime-root discipline a shell script already meets.
 
-`run(root)` returns every violation across all five rules. `main(argv)`
+`private-path` refuses a user's own home directory spelled absolutely in
+tracked documentation and source, since a receipt that names one describes a
+path no other checkout holds; `$HOME`, `$QWEN_HOME`, and `~/` pass. The
+`evidence/` tree stays outside this rule's reach because its own sanitization
+records state the substitution they apply and quote the literal they replace.
+
+`run(root)` returns every violation across all seven rules. `main(argv)`
 prints one line per violation as `path:line: rule: message` and exits 1 on
 any; `--rewrite-baseline` regenerates `config/shell-baseline.txt` from the
 current tracked set, refusing when that set is not a subset of the baseline
@@ -61,6 +67,17 @@ _OUTSIDE_ROOT_HOME = re.compile(
 )
 _OUTSIDE_ROOT_NAMED_MARKER = "appliance-path: named"
 _OUTSIDE_ROOT_FIXTURES_MARKER = "appliance-path: fixtures"
+
+# Split so this rule's own pattern, which matches an absolute user home
+# directory, does not match the definition that carries it.
+_PRIVATE_HOME_SEGMENT = "/ho" + "me/"
+_PRIVATE_HOME = re.compile(re.escape(_PRIVATE_HOME_SEGMENT) + r"(?![-\s]|$)[\w.-]+")
+_PRIVATE_PATH_NAMED_MARKER = "private-path: named"
+# Where the rule reads: every file under these directories plus `bootstrap.py`.
+# `evidence/` stays out, since a sanitization record quotes the literal it
+# replaced and that quotation is the record's own content.
+_PRIVATE_PATH_TREES = ("docs", "src", "tests")
+_PRIVATE_PATH_SUFFIXES = (".md", ".py", ".txt", ".tsv", ".json")
 
 
 @dataclass(frozen=True, order=True)
@@ -407,6 +424,59 @@ def rule_outside_root(root: Path) -> list[Violation]:
     return violations
 
 
+def _private_path_targets(root: Path) -> list[str]:
+    """Every documentation and source file the private-path rule reads.
+
+    The set is `docs/`, `src/`, and `tests/` plus `bootstrap.py`, filtered to
+    the text suffixes a path literal appears in, so a fixture image or a
+    checked-in binary is never decoded.
+    """
+    targets: list[str] = []
+    for tree in _PRIVATE_PATH_TREES:
+        directory = root / tree
+        if not directory.is_dir():
+            continue
+        targets.extend(
+            path.relative_to(root).as_posix()
+            for path in sorted(directory.rglob("*"))
+            if path.is_file() and path.suffix in _PRIVATE_PATH_SUFFIXES
+        )
+    if (root / "bootstrap.py").is_file():
+        targets.append("bootstrap.py")
+    return sorted(targets)
+
+
+def rule_private_paths(root: Path) -> list[Violation]:
+    """Documentation and source name no absolute user home directory.
+
+    A receipt carrying one describes storage the checkout reading it does not
+    hold, and the repository hard rule keeps a local absolute path out of a
+    commit. `$HOME`, `$QWEN_HOME`, and `~/` all pass, so a portable spelling is
+    what a scrubbed receipt reads. A line carrying the named marker states the
+    literal deliberately and is skipped.
+    """
+    violations = []
+    for rel in _private_path_targets(root):
+        try:
+            text = (root / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for number, line in enumerate(text.splitlines(), start=1):
+            if _PRIVATE_PATH_NAMED_MARKER in line:
+                continue
+            for match in _PRIVATE_HOME.finditer(line):
+                violations.append(
+                    Violation(
+                        rel,
+                        number,
+                        "private-path",
+                        "names an absolute user home directory rather than "
+                        f"$HOME or $QWEN_HOME: {match.group(0)}",
+                    )
+                )
+    return violations
+
+
 def run(root: Path) -> list[Violation]:
     """Every rule's violations over `root`, sorted for deterministic output."""
     resolved = root.resolve()
@@ -417,6 +487,7 @@ def run(root: Path) -> list[Violation]:
     violations.extend(rule_secret_exposure(resolved))
     violations.extend(rule_sudo(resolved))
     violations.extend(rule_outside_root(resolved))
+    violations.extend(rule_private_paths(resolved))
     return sorted(violations)
 
 
@@ -425,7 +496,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m qwen_apu.ci.ratchet",
         description="Refuse a shell-migration regression: new shell scripts, "
-        "string commands, shell=True, sudo, and owned storage outside the runtime root.",
+        "string commands, shell=True, sudo, owned storage outside the runtime "
+        "root, and an absolute user home directory in documentation or source.",
     )
     parser.add_argument(
         "--root", type=Path, default=_DEFAULT_ROOT, help="repository root (default: this checkout)"

@@ -13,6 +13,7 @@ from qwen_apu.ci.ratchet import (
     rewrite_baseline,
     rule_new_shell,
     rule_outside_root,
+    rule_private_paths,
     rule_secret_exposure,
     rule_shell_true,
     rule_string_command,
@@ -337,3 +338,57 @@ def test_secret_exposure_rule_quiet_on_a_scrubbed_environment(tmp_path: Path) ->
     )
 
     assert rule_secret_exposure(tmp_path) == []
+
+
+# -- private-path ----------------------------------------------------------
+
+# Composed rather than written, so this module's own source carries no absolute
+# user home directory for the rule to find when it reads the real worktree.
+_PRIVATE_HOME = "/ho" + "me/" + "someone"
+
+
+def test_private_path_rule_fires_on_an_absolute_home_in_a_receipt(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "docs/handoff/receipt.md",
+        f"| `vulkan_lease_free` | pass | lease={_PRIVATE_HOME}/tree/.runtime/state/x.lock |\n",
+    )
+
+    violations = rule_private_paths(tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].rule == "private-path"
+    assert violations[0].path == "docs/handoff/receipt.md"
+    assert _PRIVATE_HOME in violations[0].message
+
+
+def test_private_path_rule_quiet_on_the_portable_spellings(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "docs/handoff/receipt.md",
+        "lease=$QWEN_HOME/state/x.lock home=$HOME/tree braced=${HOME}/tree tilde=~/tree\n",
+    )
+    _write_module(tmp_path, "src/qwen_apu/quiet.py", "ROOT = '$HOME/tree'\n")
+
+    assert rule_private_paths(tmp_path) == []
+
+
+def test_private_path_rule_passes_over_the_evidence_tree(tmp_path: Path) -> None:
+    """A sanitization record quotes the literal it replaced, which is its content."""
+    _write_module(
+        tmp_path,
+        "evidence/web-live/README.md",
+        f"The scrub replaces `{_PRIVATE_HOME}` with `$HOME`.\n",
+    )
+
+    assert rule_private_paths(tmp_path) == []
+
+
+def test_private_path_rule_skips_a_line_carrying_the_named_marker(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "docs/handoff/receipt.md",
+        f"{_PRIVATE_HOME}/tree is the predecessor path (private-path: named)\n",
+    )
+
+    assert rule_private_paths(tmp_path) == []

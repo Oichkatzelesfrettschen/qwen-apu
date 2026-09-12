@@ -14,7 +14,7 @@ production, which stayed the serving path.
 
 ```text
 2026-09-11T23:44:51Z 3 verify the Python application offline
-application_verify=/home/eirikr/worktrees/qwen-apu/cutover/.runtime/deployments/applications/cutover manifest_sha256=73f01212fa062a2139a45acc1c34d6afc2321c5f58c69d74039b4eb24198821f checked=17 result=verified
+application_verify=$QWEN_HOME/deployments/applications/cutover manifest_sha256=73f01212fa062a2139a45acc1c34d6afc2321c5f58c69d74039b4eb24198821f checked=17 result=verified
 2026-09-11T23:44:53Z 5 python on the production address
 2026-09-11T23:44:55Z 6-8 pair and run the acceptance
 acceptance_1_exit=1
@@ -62,7 +62,7 @@ The first acceptance on the production address:
 | `history_survives_restart` | skipped | the run names no --restart-command, so no second process reads this root |
 | `stop_command` | pass | exit_status=0, stdout=signalled=475793,475767
  |
-| `vulkan_lease_free` | pass | free=True, lease=/home/eirikr/worktrees/qwen-apu/cutover/.runtime/state/vulkan-workload.lock |
+| `vulkan_lease_free` | pass | free=True, lease=$QWEN_HOME/state/vulkan-workload.lock |
 | `teardown_leaves_no_residue` | pass | children=0, listening_ports=[], record_state=stopped |
 
 A skipped item names the route or the argument its claim needs; a 404 from a route this branch does not mount is a skip, and a 401 or 403 is a live gate answering and stays a failure.
