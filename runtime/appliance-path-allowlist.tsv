@@ -1,6 +1,6 @@
 prefix	reason
 /etc/sudoers.d	one of the two persistent root-owned objects, 90-qwen-agent installed from runtime/sudoers/90-qwen-agent, and the directory it lives in
-/etc/udev/rules.d	the second persistent root-owned object, 90-qwen-amdgpu-clocks.rules installed from runtime/udev/ so the appliance states its own graphics operating point without privilege
+/etc/udev/rules.d	the second persistent root-owned object, 90-qwen-amdgpu-clocks.rules installed from runtime/udev/ by remote/install-amdgpu-clock-access.sh so the appliance states its own graphics operating point without privilege
 /etc/os-release	distribution identity read by the capacity audit
 /usr/local/bin	PATH component of the closed campaign environment; nothing is written there
 /usr/local/sbin	PATH component of the closed campaign environment; nothing is written there

@@ -17,13 +17,15 @@ written directly rather than a performance mode named.
 
 `remote/install-amdgpu-clock-access.sh` installs the udev rule that hands these
 three attributes to the `video` group, after which every write here needs no
-privilege. A launch without that rule reports the state it is serving at and
-carries on, because serving slowly is a worse answer than not serving but a
-silent 400 MHz is worse than either.
+privilege. That install is the one privileged step and it stays in the shell
+surface, because this package names no sudo. A launch without that rule
+reports the state it is serving at and carries on: serving slowly is a worse
+answer than not serving, and a silent 400 MHz is worse than either.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -162,3 +164,20 @@ def pin(root: Path | None = None) -> GraphicsState:
             ),
         )
     return read_state(device)
+
+
+# The rule the shell installer lays down, named here so the report can say
+# whether it is in place. The prefix is declared in
+# `runtime/appliance-path-allowlist.tsv` with the reason it exists.
+RULE_SOURCE = ("runtime", "udev", "90-qwen-amdgpu-clocks.rules")
+RULE_TARGET = Path("/etc/udev/rules.d/90-qwen-amdgpu-clocks.rules")
+
+
+def access_report(root: Path | None = None) -> str:
+    """Whether the three attributes are writable, and whether the rule is in place."""
+    device = resolve_device(root)
+    if device is None:
+        return "clock_access=absent reason=no amdgpu device"
+    writable = sum(1 for name in CLOCK_ATTRIBUTES if os.access(device / name, os.W_OK))
+    installed = "installed" if RULE_TARGET.is_file() else "absent"
+    return f"clock_access writable={writable} of {len(CLOCK_ATTRIBUTES)} rule={installed}"

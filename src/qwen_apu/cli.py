@@ -30,6 +30,7 @@ from qwen_apu.runtime import (
     canary,
     deployment,
     deployment_write,
+    graphics_state,
 )
 from qwen_apu.runtime import serve as serving
 from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError, render_paths
@@ -358,6 +359,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="research arm: read the upstream's own roster where no bundle is activated",
     )
+    graphics = sub.add_parser(
+        "graphics", help="the operating point the appliance serves its device at"
+    )
+    graphics_sub = graphics.add_subparsers(dest="graphics_command", required=True)
+    graphics_sub.add_parser("report", help="the point the part is delivering now")
+    graphics_sub.add_parser("pin", help="state the top of the tables and read back what took")
     status = sub.add_parser("status", help="runtime root binding and declared paths")
     status.add_argument("--json", action="store_true")
     sub.add_parser("doctor", help="prerequisites a user-space installer can only detect")
@@ -382,6 +389,22 @@ def cmd_bootstrap(paths: RuntimePaths) -> int:
     outcome = paths.lay_out(rebind=os.environ.get("QWEN_RUNTIME_ROOT_REBIND"))
     print(f"runtime_root={paths.root} schema={paths.marker_schema()} binding={outcome}")
     return 0
+
+
+def cmd_graphics(args: argparse.Namespace) -> int:
+    """Report or state the operating point, and print one line each.
+
+    The udev rule that makes the write possible is installed by
+    `remote/install-amdgpu-clock-access.sh`, which is where the one privileged
+    step lives: this package names no sudo.
+    """
+    if args.graphics_command == "report":
+        print(graphics_state.read_state(graphics_state.resolve_device()).as_line())
+        print(graphics_state.access_report())
+        return 0
+    state = graphics_state.pin()
+    print(state.as_line())
+    return 0 if state.pinned else 1
 
 
 def cmd_status(paths: RuntimePaths, as_json: bool) -> int:
@@ -661,6 +684,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         paths = RuntimePaths.resolve()
         if args.command == "bootstrap":
             return cmd_bootstrap(paths)
+        if args.command == "graphics":
+            return cmd_graphics(args)
         if args.command == "status":
             code = cmd_status(paths, args.json)
             return code or serving.status(paths)

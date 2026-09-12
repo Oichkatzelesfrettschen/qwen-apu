@@ -100,3 +100,27 @@ def test_a_device_whose_tables_name_no_step_is_reported_rather_than_written(
     assert state.pinned is False
     assert "name no step" in state.as_line()
     assert (device / graphics_state.LEVEL_ATTRIBUTE).read_text().strip() == "auto"
+
+
+def test_the_access_report_counts_what_is_writable(tmp_path: Path) -> None:
+    device = _device(tmp_path)
+    assert "writable=3 of 3" in graphics_state.access_report(tmp_path)
+    (device / graphics_state.ENGINE_ATTRIBUTE).chmod(0o444)
+    try:
+        assert "writable=2 of 3" in graphics_state.access_report(tmp_path)
+    finally:
+        (device / graphics_state.ENGINE_ATTRIBUTE).chmod(0o644)
+    assert graphics_state.access_report(tmp_path / "absent").startswith("clock_access=absent")
+
+
+def test_the_checkout_carries_the_rule_the_installer_names() -> None:
+    """The install reads this file, so its absence would be found at the one
+    moment an operator has a live timestamp and expects the thing to work."""
+    tree = Path(__file__).resolve().parents[1]
+    rule = tree.joinpath(*graphics_state.RULE_SOURCE)
+    assert rule.is_file()
+    text = rule.read_text(encoding="utf-8")
+    assert 'SUBSYSTEM=="pci"' in text
+    assert 'DRIVER=="amdgpu"' in text
+    for attribute in graphics_state.CLOCK_ATTRIBUTES:
+        assert attribute in text
