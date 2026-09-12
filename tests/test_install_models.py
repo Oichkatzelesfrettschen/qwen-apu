@@ -506,3 +506,88 @@ def test_verify_reports_verified_over_a_matching_fixture(tmp_path: Path) -> None
         install_models.resolve_group = original
     by_id = {outcome.artifact_id: outcome for outcome in outcomes}
     assert by_id["qwen35-08b"].status == "verified"
+
+
+# ---------------------------------------------------------------------------
+# Withheld checkpoints: remote/quarantine.tsv at model scope
+# ---------------------------------------------------------------------------
+
+WITHHELD_MODEL_IDS = {
+    "ministral3-3b",
+    "nanbeige42-3b",
+    "qwen38-4b-i1-q2k",
+    "qwen38-4b-i1-q5km",
+    "qwen38-4b-i1-q6k",
+    "qwen38-9b-distill",
+    "qwen38-27b-iq3xxs",
+    "qwen38-27b-q2kxl",
+}
+
+
+def test_every_model_scope_quarantine_row_is_a_registry_row() -> None:
+    """A withheld row is documentation, so its registry row stays."""
+    model_ids = {row.id for row in load_models()}
+    assert set(install_models.withheld_subjects()) == WITHHELD_MODEL_IDS
+    assert WITHHELD_MODEL_IDS <= model_ids
+
+
+def test_research_group_resolves_every_member_as_withheld() -> None:
+    plans = resolve_group(["research"], models_dir=TREE / "nonexistent-models-dir")
+    by_id = {plan.artifact_id: plan for plan in plans}
+    assert set(by_id) == WITHHELD_MODEL_IDS | {"ministral3-3b-mmproj"}
+    for plan in plans:
+        assert plan.kind == "withheld"
+        assert plan.url is None
+        assert plan.expected_bytes is None
+        assert plan.expected_sha256 is None
+        assert plan.withheld_failure_class
+        assert plan.withheld_record
+
+
+def test_withheld_projector_follows_its_checkpoint() -> None:
+    """The projector encodes into a checkpoint the appliance no longer holds."""
+    plans = resolve_group(["research"], models_dir=TREE / "nonexistent-models-dir")
+    by_id = {plan.artifact_id: plan for plan in plans}
+    projector = by_id["ministral3-3b-mmproj"]
+    assert projector.kind == "withheld"
+    assert projector.withheld_record == by_id["ministral3-3b"].withheld_record
+
+
+def test_no_servable_group_carries_a_withheld_plan() -> None:
+    for name in ("core", "vision", "personalities", "image"):
+        plans = resolve_group([name], models_dir=TREE / "nonexistent-models-dir")
+        assert all(plan.kind != "withheld" for plan in plans), name
+
+
+def test_install_refuses_a_group_holding_a_withheld_row(tmp_path: Path) -> None:
+    runtime = RuntimePaths.resolve(tree=tmp_path)
+    runtime.lay_out()
+    with pytest.raises(ModelGroupError) as refusal:
+        install(runtime, ["research"], dry_run=True)
+    message = str(refusal.value)
+    assert "qwen38-9b-distill" in message
+    assert "archive-decode-rate" in message
+    assert "evidence/quarantine/qwen38-9b-distill.md" in message
+
+
+def test_install_all_refuses_while_a_withheld_row_stands(tmp_path: Path) -> None:
+    runtime = RuntimePaths.resolve(tree=tmp_path)
+    runtime.lay_out()
+    with pytest.raises(ModelGroupError):
+        install(runtime, ["all"], dry_run=True)
+
+
+def test_install_still_admits_the_servable_groups(tmp_path: Path) -> None:
+    runtime = RuntimePaths.resolve(tree=tmp_path)
+    runtime.lay_out()
+    outcomes = install(runtime, ["core", "vision"], dry_run=True)
+    assert all(outcome.status == "dry_run" for outcome in outcomes)
+
+
+def test_verify_reports_withheld_rather_than_absent(tmp_path: Path) -> None:
+    runtime = RuntimePaths.resolve(tree=tmp_path)
+    runtime.lay_out()
+    outcomes = verify(runtime, ["research"])
+    assert {outcome.status for outcome in outcomes} == {"withheld"}
+    core = verify(runtime, ["core"])
+    assert {outcome.status for outcome in core} == {"absent"}

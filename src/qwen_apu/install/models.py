@@ -37,14 +37,14 @@ the digest that verify a fetch -- exactly as wide as every other row.
 from __future__ import annotations
 
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from qwen_apu.config.loader import read_ledger, require_columns, tree_root
-from qwen_apu.config.models import load_model_artifacts, load_models
-from qwen_apu.config.schema import ModelArtifact, ModelRow
+from qwen_apu.config.models import load_model_artifacts, load_models, load_quarantine
+from qwen_apu.config.schema import ModelArtifact, ModelRow, QuarantineRow
 from qwen_apu.install.downloads import DownloadError, FetchResult, fetch, sha256_file
 from qwen_apu.runtime.paths import RuntimePaths
 
@@ -91,7 +91,7 @@ SOURCE_FILENAME_OVERRIDE: dict[str, str] = {
     "qwen38-4b-i1-q6k": "Qwen3.8-4B-Distill.i1-Q6_K.gguf",
 }
 
-PlanKind = Literal["fetch", "derive"]
+PlanKind = Literal["fetch", "derive", "withheld"]
 
 
 class ModelGroupError(RuntimeError):
@@ -118,6 +118,14 @@ class ArtifactPlan:
     `kind == "derive"` carries no pin or URL -- `expected_bytes`,
     `expected_sha256`, and `url` are `None` -- because the artifact is
     produced on the appliance rather than fetched.
+
+    `kind == "withheld"` carries no pin or URL for a different reason: a
+    model-scope row of remote/quarantine.tsv excludes the checkpoint, its
+    weights are absent from the appliance disk by decision, and
+    `withheld_failure_class` and `withheld_record` carry the row's own reason
+    so a refusal names it. The plan still resolves, because `verify` reports
+    the state and `install` refuses it, and a refusal raised inside
+    `resolve_group` would leave `verify` unable to answer at all.
     """
 
     artifact_id: str
@@ -128,6 +136,8 @@ class ArtifactPlan:
     url: str | None
     source_repository: str | None
     source_revision: str | None
+    withheld_failure_class: str | None = None
+    withheld_record: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +152,42 @@ class VerifyOutcome:
     artifact_id: str
     status: str
     destination: Path
+
+
+def withheld_subjects(
+    quarantine: Sequence[QuarantineRow] | None = None,
+) -> dict[str, QuarantineRow]:
+    """Every checkpoint remote/quarantine.tsv excludes at model scope, by subject.
+
+    A `profile` scope row excludes one serving tuple of a checkpoint whose
+    weights the appliance still holds, so it names no withholding and stays
+    out of this index.
+    """
+    rows = quarantine if quarantine is not None else load_quarantine()
+    return {row.subject: row for row in rows if row.scope == "model"}
+
+
+def _withheld_plan(artifact_id: str, destination: Path, row: QuarantineRow) -> ArtifactPlan:
+    return ArtifactPlan(
+        artifact_id=artifact_id,
+        kind="withheld",
+        destination=destination,
+        expected_bytes=None,
+        expected_sha256=None,
+        url=None,
+        source_repository=None,
+        source_revision=None,
+        withheld_failure_class=row.failure_class,
+        withheld_record=row.reason_record,
+    )
+
+
+def withheld_refusal(plan: ArtifactPlan) -> str:
+    """The one-line refusal a withheld plan produces, naming the row and its reason."""
+    return (
+        f"{plan.artifact_id}: remote/quarantine.tsv withholds the checkpoint at model "
+        f"scope, reason {plan.withheld_failure_class}, record {plan.withheld_record}"
+    )
 
 
 def load_groups(path: Path | None = None) -> dict[str, tuple[str, ...]]:
@@ -309,6 +355,7 @@ def resolve_group(
     models: tuple[ModelRow, ...] | None = None,
     artifacts_by_id: dict[str, ModelArtifact] | None = None,
     image_rows: tuple[ImageArtifactRow, ...] | None = None,
+    quarantine: Sequence[QuarantineRow] | None = None,
 ) -> list[ArtifactPlan]:
     """Every artifact plan `names` (group names, `all` accepted) admits, in file order.
 
@@ -318,6 +365,12 @@ def resolve_group(
     contributes its projector plan as well, regardless of which named group
     placed the row -- `research`'s own `ministral3-3b` carries the same
     requirement `vision`'s rows do.
+
+    A row a model-scope quarantine row names resolves to a `withheld` plan,
+    and so does the projector that row pulls in, since the projector encodes
+    images into the embedding space of a checkpoint the appliance no longer
+    holds. The plan carries the destination and no pin: `install` refuses it
+    and `verify` reports `withheld` against the path the weights would occupy.
     """
     groups = load_groups(groups_path)
     resolved_names: list[str] = []
@@ -339,6 +392,7 @@ def resolve_group(
     )
     images = image_rows if image_rows is not None else load_image_artifacts()
     images_by_id = {row.artifact_id: row for row in images}
+    withheld = withheld_subjects(quarantine)
 
     plans: dict[str, ArtifactPlan] = {}
     for group_name in resolved_names:
@@ -353,10 +407,17 @@ def resolve_group(
             row = models_by_id.get(member_id)
             if row is None:
                 raise ModelGroupError(f"{member_id}: no remote/models.tsv row")
+            withheld_row = withheld.get(member_id)
             plan = _model_plan(row, artifacts, models_dir)
+            if withheld_row is not None:
+                plan = _withheld_plan(plan.artifact_id, plan.destination, withheld_row)
             plans.setdefault(plan.artifact_id, plan)
             if row.projector == "required":
                 projector_plan = _projector_plan(row, artifacts, models_dir)
+                if withheld_row is not None:
+                    projector_plan = _withheld_plan(
+                        projector_plan.artifact_id, projector_plan.destination, withheld_row
+                    )
                 plans.setdefault(projector_plan.artifact_id, projector_plan)
 
     return list(plans.values())
@@ -376,9 +437,19 @@ def install(
     preflight performs before a privileged step runs. A `derive`-kind plan
     reports `derive_required` under either mode, since `install` reaches only
     through `qwen_apu.install.downloads.fetch`.
+
+    A `withheld`-kind plan refuses the whole call before the first fetch,
+    naming every withheld row and its reason. The refusal covers the group
+    rather than the row because `names` is what the operator asked for: a
+    group holding a withheld checkpoint is a request this appliance declines,
+    and `all` is the union of the groups, so it declines too. Installing the
+    servable rows means naming their groups.
     """
     models_dir = paths["qwen_home_models"]
     plans = resolve_group(names, models_dir=models_dir, groups_path=groups_path)
+    refusals = [withheld_refusal(plan) for plan in plans if plan.kind == "withheld"]
+    if refusals:
+        raise ModelGroupError("; ".join(refusals))
     outcomes: list[InstallOutcome] = []
     for plan in plans:
         if plan.kind == "derive":
@@ -413,11 +484,20 @@ def verify(
     names for a checked file: `verified`, `absent`, `bytes-differ`, or
     `digest-differs`. A `derive`-kind plan reports `derive_required`, since
     its destination is produced on the appliance rather than pinned here.
+
+    A `withheld`-kind plan reports `withheld` rather than `absent`. The two
+    states differ in what they ask of an operator: `absent` names a fetch that
+    has yet to run, and `withheld` names a checkpoint whose weights are gone
+    from the appliance disk by decision, so the file's absence is the intended
+    state and a repair step would undo it.
     """
     models_dir = paths["qwen_home_models"]
     plans = resolve_group(names, models_dir=models_dir, groups_path=groups_path)
     outcomes: list[VerifyOutcome] = []
     for plan in plans:
+        if plan.kind == "withheld":
+            outcomes.append(VerifyOutcome(plan.artifact_id, "withheld", plan.destination))
+            continue
         if plan.kind == "derive":
             outcomes.append(VerifyOutcome(plan.artifact_id, "derive_required", plan.destination))
             continue

@@ -38,6 +38,7 @@ from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
 from qwen_apu.tools import matrix
 from qwen_apu.web import assemble as gateway_assembly
 from qwen_apu.web import auth as auth_module
+from qwen_apu.web import roster
 from qwen_apu.web.app import (
     REQUEST_BODY_BYTE_CAP,
     Gateway,
@@ -1078,3 +1079,41 @@ def test_a_lan_bind_admits_its_own_host_literal() -> None:
         static_root=Path("."), port=1, bind_host="10.0.0.170", exposure="10.0.0.170"
     )
     assert "10.0.0.170" in config.admitted_hosts()
+
+
+def test_research_roster_reports_a_withheld_checkpoint_as_quarantined() -> None:
+    """A model-scope quarantine row excludes the checkpoint whatever else admits it.
+
+    The withheld rows sit at tier `archive` or `rejected`, which
+    `remote/build-router-presets.sh` skips before it reads the quarantine
+    authority, so no preset section names them and only a research read puts
+    them in the candidate set. The state they carry there is the reason they
+    are out rather than the deployment's silence about them.
+    """
+    rows = registry.load_models()
+    answer = {
+        entry["id"]: entry["state"]
+        for entry in roster.build(
+            rows=rows,
+            sections=["qwen38-2b-distill"],
+            upstream=roster.UpstreamRoster(reachable=True, names=("qwen38-2b-distill",)),
+            admission=roster.Admission(
+                mode="router",
+                admitted=frozenset({"qwen38-2b-distill"}),
+                served_name={},
+            ),
+            research=True,
+        )
+    }
+    for withheld in (
+        "ministral3-3b",
+        "nanbeige42-3b",
+        "qwen38-4b-i1-q2k",
+        "qwen38-4b-i1-q5km",
+        "qwen38-4b-i1-q6k",
+        "qwen38-9b-distill",
+        "qwen38-27b-iq3xxs",
+        "qwen38-27b-q2kxl",
+    ):
+        assert answer[withheld] == roster.QUARANTINED, withheld
+    assert answer["qwen38-2b-distill"] == READY
