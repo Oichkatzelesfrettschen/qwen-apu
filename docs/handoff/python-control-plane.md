@@ -820,6 +820,21 @@ An image profile reading `execution_policy refused` arms no worker: the row
 admits a shape and spends no device time, and the matrix answers
 `policy_refused` for it whether or not a process exists.
 
+Three refusals keep the derivation from making a launch worse than the one it
+replaces. `--web-profile` defaults to `web-open` and every row of
+remote/web-profiles.tsv names `http://127.0.0.1:8888`, so an unguarded
+derivation would make SearXNG mandatory on every `appliance serve`; the launch
+runs `remote/searxng-launch.sh check` first, which is the same
+`check_instance_components` `serve` runs before it binds, and derives no child
+where the components are absent, printing `searxng_lane=unarmed` with the
+script's own sentence. A child supplied whole through `--image-service` or
+`--searxng` carries `ready` at `-`, since the caller's own `--state-dir` and
+port decide where that child listens and a wait bound to the derived path would
+expire against a worker that is up. The argv test compares flag by flag and
+value by value against the session's composition rather than word order, so it
+proves the pairing the worker's argparse reads rather than the sequence the
+shell writes.
+
 ### What Phase 10's three surfaces leave to the device
 
 - One `build-application` on the laptop against an activated native bundle and a

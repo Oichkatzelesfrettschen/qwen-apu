@@ -603,6 +603,10 @@ def child_specs_from_request(
     A caller supplying `image_service` or `searxng` states the command itself
     and this function owns the process identity alone, which is the override an
     operator serving a bundle assembled before the derivation existed needs.
+    An overridden child carries `ready` at `-`: the caller composed the argv, so
+    the state directory and the port a readiness wait would watch belong to the
+    caller rather than to this derivation, and a wait bound to the derived path
+    would expire against a worker listening where the caller put it.
     Every other launch names a profile id: `qwen_apu.runtime.lanes` reads
     remote/image-profiles.tsv, remote/image-models.tsv, remote/image-artifacts.tsv,
     and remote/web-profiles.tsv against the runtime root and composes the argv
@@ -612,7 +616,9 @@ def child_specs_from_request(
     the row admits a shape and spends no device time, and
     `qwen_apu.tools.matrix` answers `policy_refused` for it whether or not a
     process exists. A web profile naming no loopback SearXNG -- provider `exa`
-    or `fake` -- starts no instance the same way.
+    or `fake` -- starts no instance the same way, and so does a root whose
+    SearXNG components `remote/searxng-launch.sh check` reports absent, since
+    `serve` runs that same check and leaves before it binds.
     """
     if image_service:
         image: ChildSpec | None = ChildSpec(
@@ -621,7 +627,6 @@ def child_specs_from_request(
             env=dict(os.environ),
             log_name="appliance-image-service",
             socket_path=str(lanes.image_control_socket(paths)),
-            ready=READY_SOCKET,
         )
     else:
         image = _derived_image_child(
@@ -638,7 +643,6 @@ def child_specs_from_request(
             env=dict(os.environ),
             log_name="appliance-searxng",
             port=int(os.environ.get("QWEN_SEARXNG_PORT", "8888")),
-            ready=READY_HEALTHZ,
         )
     else:
         search = _derived_searxng_child(paths, web_profile)
@@ -691,6 +695,10 @@ def _derived_searxng_child(paths: RuntimePaths, web_profile: str) -> ChildSpec |
         return None
     endpoint = lanes.searxng_endpoint(row)
     if endpoint is None:
+        return None
+    absent = lanes.searxng_components_present(paths)
+    if absent:
+        print(f"searxng_lane=unarmed profile={web_profile} reason={absent}", flush=True)
         return None
     host, port = endpoint
     return ChildSpec(
