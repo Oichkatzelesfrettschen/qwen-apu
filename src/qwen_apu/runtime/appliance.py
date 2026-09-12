@@ -65,6 +65,12 @@ SEARXNG_CHILD = "searxng"
 READY_SOCKET = "socket"
 READY_HEALTHZ = "healthz"
 HEALTHZ_PATH = "/healthz"
+# `health_answers` in `remote/searxng-launch.sh` runs `curl -f`, which reports
+# failure on 400 and above, so the instance's own readiness contract admits a
+# 2xx or 3xx answer alone. A 4xx reads as an instance serving a route the
+# search executor cannot use, and admitting it would put the gateway in front
+# of a provider every approved query fails at after spending its grant.
+HEALTHZ_SUCCESS_CEILING = 400
 
 SAMPLE_INTERVAL_SECONDS = 0.5
 READINESS_DEADLINE_SECONDS = 240.0
@@ -97,8 +103,9 @@ class ChildSpec:
     # ready. `socket` waits for `socket_path` to accept a connection, which is
     # the worker's own `socket` line turned into an observable this process can
     # read and which a stale node left by a killed predecessor fails;
-    # `healthz` waits for `GET /healthz` on `port`, the route
-    # `remote/searxng-launch.sh start` waits on. `-` starts the child and
+    # `healthz` waits for a `GET /healthz` answer below 400 on `port`, the
+    # route and the `curl -f` verdict `remote/searxng-launch.sh start` waits
+    # on. `-` starts the child and
     # watches it for exit alone, which is what the router supervisor needs
     # since it publishes its readiness through `state/runtime.json`.
     ready: str = "-"
@@ -419,7 +426,7 @@ class Appliance:
             connection = http.client.HTTPConnection("127.0.0.1", spec.port, timeout=2.0)
             try:
                 connection.request("GET", HEALTHZ_PATH)
-                return connection.getresponse().status < 500
+                return connection.getresponse().status < HEALTHZ_SUCCESS_CEILING
             except (OSError, http.client.HTTPException):
                 return False
             finally:

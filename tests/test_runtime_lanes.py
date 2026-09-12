@@ -9,10 +9,12 @@ that answers `GET /healthz` on a loopback port.
 
 from __future__ import annotations
 
+import http.server
 import json
 import shutil
 import socket
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -391,6 +393,56 @@ def test_the_appliance_waits_for_healthz(root: RuntimePaths) -> None:
         run._await_ready(spec, owned)
     finally:
         run._shut_down(None)
+
+
+def _healthz_spec(port: int) -> appliance.ChildSpec:
+    return appliance.ChildSpec(
+        name=appliance.SEARXNG_CHILD,
+        argv=("true",),
+        env={},
+        log_name="fake-searxng",
+        port=port,
+        ready=appliance.READY_HEALTHZ,
+    )
+
+
+def _serve_one_status(status: int) -> tuple[http.server.HTTPServer, int]:
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 -- the handler name BaseHTTPRequestHandler calls
+            self.send_response(status)
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, int(server.server_address[1])
+
+
+def test_a_healthz_answering_400_reports_no_listener() -> None:
+    """The readiness contract is `curl -f`, which reports failure on 400 and above.
+
+    `health_answers` in `remote/searxng-launch.sh` runs that curl, so an
+    instance answering 4xx is one the search executor cannot use; admitting it
+    would put the gateway in front of a provider every approved query fails at
+    after spending its single-use grant.
+    """
+    server, port = _serve_one_status(400)
+    try:
+        assert not appliance.Appliance._listening(_healthz_spec(port))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_healthz_answering_200_reports_a_listener() -> None:
+    server, port = _serve_one_status(200)
+    try:
+        assert appliance.Appliance._listening(_healthz_spec(port))
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_the_record_carries_both_lane_children(root: RuntimePaths) -> None:
