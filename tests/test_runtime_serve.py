@@ -406,3 +406,27 @@ def test_the_daemon_wait_reports_a_launch_that_failed(tmp_path: Path) -> None:
         )
     )
     assert serving._await_ownership(paths, 5.0, 4242) == 1
+
+
+def test_the_built_in_ui_reaches_the_argv_as_ui_alone(fixture_tree: dict[str, Path]) -> None:
+    """`ui` adds `--ui` and names no `--path`.
+
+    `tools/server/server-http.cpp` mounts `public_path` at the server root
+    where `--path` names one and registers the embedded asset routes where it
+    names none, so the plain built-in surface is exactly the flag without the
+    directory. A request that leaves `ui` false keeps `--no-ui`.
+    """
+    paths = fixture_tree["paths"]
+    request = serving.ServeRequest(router=True, port=18080, require_radv_icd=False, ui=True)
+    plan = serving.build_plan(paths, request, active=_active(fixture_tree))
+    joined = " ".join(plan.argv)
+    assert "--ui" in plan.argv
+    assert "--no-ui" not in plan.argv
+    assert "--path" not in joined
+
+    plain = serving.build_plan(
+        paths,
+        serving.ServeRequest(router=True, port=18080, require_radv_icd=False),
+        active=_active(fixture_tree),
+    )
+    assert "--no-ui" in plain.argv

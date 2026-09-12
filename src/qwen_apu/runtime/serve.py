@@ -62,6 +62,11 @@ class ServeRequest:
     # single-use grant run; the appliance sets this when it owns the gateway
     # that serves them, and the bare serve leaves it off.
     web_authorizer_ready: bool = False
+    # llama.cpp's own built-in page, served at the router root. The argv carries
+    # `--ui` alone rather than `--path`, so the server answers from the asset
+    # table its build embedded and the staged page stays off this surface; the
+    # gateway reaches it through the loopback proxy rather than the browser.
+    ui: bool = False
 
 
 def _router_inputs(
@@ -136,6 +141,7 @@ def build_plan(
             request.context if request.context is not None else DEFAULT_ROUTER_CONTEXT,
             request.port,
             script_directory=script_directory,
+            ui=request.ui,
             qwen_router="1",
             qwen_router_presets=str(router.presets),
             qwen_router_max=str(request.router_max),
@@ -177,6 +183,7 @@ def build_plan(
         context,
         request.port,
         script_directory=script_directory,
+        ui=request.ui,
         qwen_model_root=str(model_root),
         qwen_ctx_checkpoint_ledger=ledger,
         qwen_webui_state_directory=state_directory,
