@@ -57,35 +57,34 @@ ends the worker's job by the identifier status reports and aborts the wait,
 and the gallery is `GET /api/artifacts`, with `POST /api/tools/image/remove`
 retracting one publication. The studio holds no state a reload loses.
 
-## Native tools in the chat pane: the open decision
+## Native tools in the chat pane: the approval gate
 
-The router's `web-open` section carries `LLAMA_ARG_MCP_SERVERS_CONFIG` naming
-`remote/web-mcp/server.py` and `remote/image-mcp/server.py` over stdio, and
-the deployed `llama-server` carries the tools proxy patch, so a chat on that
-model inside llama.cpp's page reaches the same search and image tools the
-legacy page did. The web MCP server runs with `QWEN_WEB_SEARCH_AUTH=required`:
-a search call carries an `authorization` grant an operator issued outside the
-session, and a model's own call is refused. The legacy page supplied that grant
-from its approval dialog. Inside llama.cpp's page there is no dialog, so a
-native search on `web-open` is refused at the tool boundary until one of these
-lands:
+llama.cpp's page runs the tool loop itself: `GET /tools?model=` lists the
+router's tools, the page offers them to the model, and each `tool_calls` entry
+executes through `POST /tools` with `tool`, `params`, and the model name. The
+router forwards the call to the child serving that model, whose MCP manager
+hands it over stdio to `remote/web-mcp/server.py` or
+`remote/image-mcp/server.py`. Both servers require an `authorization` grant
+signed with the gateway's token key over the exact arguments, which the model
+cannot produce, and the web server runs with `QWEN_WEB_SEARCH_AUTH=required`.
 
-1. `QWEN_WEB_SEARCH_AUTH=optional` on the `web-open` section admits the model's
-   own search under the paired session. This removes the one-human-approval
-   per network call the repository doctrine states for the LAN boundary and is
-   the operator's decision, recorded in `remote/web-profiles.tsv` where the
-   profile row admits it.
-2. An in-flight approval: the MCP server posts the proposed query to the
-   gateway's approval service and waits on its verdict up to `timeout_ms`; the
-   shell's rail shows the pending approval and the click issues the grant. The
-   approval stays with a human and the page stays llama.cpp's own.
-3. The gateway serves the web tools over MCP Streamable HTTP to the page's own
-   MCP client, with the approval carried as an MCP elicitation. The pinned
-   build's elicitation support is unverified.
+`src/qwen_apu/web/tool_gate.py` sits at the first link. The second listener's
+proxy admits `/tools` through the gate alone: the listing passes through, and
+a call whose tool name ends in `_search_exa` or `_generate_image` parks as a
+pending approval. The shell's rail polls `GET /api/tools/pending` and shows
+each parked call with its query or its frame; the operator's click posts
+`approve` or `deny` to `POST /api/tools/pending/<id>`. Approval signs the
+grant through the same `issue_search_grant` and `issue_image_grant` the custom
+page's grant routes use, with the same key and profile names, and injects it
+into `params` before the call goes to the router; denial, or a wait past 120
+seconds, answers the page `{"error": ...}` in the `/tools` shape, so the model
+reads why the call did not run. `fetch_exa` passes untouched under its
+result identifier. A listener assembled without a gate answers 404 on both
+`/tools` methods, so a page there is offered no tool it cannot run.
 
-The shell lands with none of the three. Search in the chat pane on `web-open`
-answers the refusal the tool boundary states; every other model chats without
-tools, which is the state the appliance served before the shell.
+The human approval therefore stays where the doctrine puts it, one click per
+network-reaching or device-reaching call, and llama.cpp's page, the MCP
+servers, and the router are unchanged.
 
 ## What moved and what stayed
 
@@ -96,3 +95,6 @@ tools, which is the state the appliance served before the shell.
   the two ports, and the legacy chain as recovery.
 - `GatewayConfig.frame_sources` and `LlamaUiSettings.frame_ancestors` are the
   two new fields; the assembly fills both from the bind host and the two ports.
+- `LlamaUiSettings.tool_gate` carries the approval gate the assembly builds
+  from the approval settings; `Gateway.tool_gate` hands it from the chat page's
+  gateway to the second listener.

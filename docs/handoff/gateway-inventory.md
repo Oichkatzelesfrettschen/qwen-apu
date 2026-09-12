@@ -320,3 +320,15 @@ bundle takes precedence and the API routes stay on the router.
 The router still runs `--ui` with no `--path`. It registers no route in this
 build, and it states which page the server would hold in a build that embeds
 its asset table.
+
+## The tool approval gate: `/api/tools/pending`
+
+`GET /api/tools/pending` lists the tool calls the second listener has parked
+from llama.cpp's page, each with `id`, `tool`, `kind` (`search` or `image`),
+`model`, the claim-bearing `params`, and `age_seconds`. `POST
+/api/tools/pending/<id>` with `{"decision": "approve" | "deny"}` settles one;
+an unknown id answers 404, a settled one 409. Both routes pass the session
+gate. The listener's `GET /tools` passes through to the router and its `POST
+/tools` parks a guarded call until a decision or the 120 second wait ends;
+`src/qwen_apu/web/tool_gate.py` carries the rule and
+`docs/handoff/gateway-shell.md` the seam it sits on.

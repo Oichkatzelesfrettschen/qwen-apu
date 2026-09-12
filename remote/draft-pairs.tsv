@@ -59,5 +59,5 @@
 # arm; `-` means no run has measured this pairing and the tier states that.
 #
 # pair_id	target_model_id	draft_model_id	tier	spec_draft_n_max	spec_draft_p_min	acceptance_floor	draft_context	draft_cache_type_k	draft_cache_type_v	validated_evidence	notes
-qwen38-2b-distill+qwen35-08b-draft	qwen38-2b-distill	qwen35-08b	candidate	2	0.00	0.896	24576	q8_0	q4_0	-	2B + 0.8B draft
-qwen38-4b-distill+qwen35-08b-draft	qwen38-4b-distill	qwen35-08b	candidate	2	0.00	0.896	24576	q8_0	q4_0	-	4B + 0.8B draft
+qwen38-2b-distill+qwen35-08b-draft	qwen38-2b-distill	qwen35-08b	candidate	2	0.00	0.896	32768	q8_0	q4_0	-	2B + 0.8B draft
+qwen38-4b-distill+qwen35-08b-draft	qwen38-4b-distill	qwen35-08b	candidate	2	0.00	0.896	32768	q8_0	q4_0	-	4B + 0.8B draft

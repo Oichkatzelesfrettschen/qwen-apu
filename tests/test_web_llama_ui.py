@@ -28,10 +28,12 @@ from qwen_apu.engines.llama import LlamaClient, binding_from_runtime
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import read_start_time
 from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
+from qwen_apu.tools import approvals
 from qwen_apu.web import assemble as assemble_module
-from qwen_apu.web import llama_ui
+from qwen_apu.web import llama_ui, tool_gate
 from qwen_apu.web.app import Gateway, GatewayConfig
 from qwen_apu.web.auth import SessionGate
+from qwen_apu.web.http import Route
 
 EXCHANGE_DEADLINE_SECONDS = 10.0
 STREAM_FRAME_INTERVAL_SECONDS = 0.05
@@ -61,11 +63,19 @@ class _FakeUpstream(BaseHTTPRequestHandler):
         if self.path == "/props":
             self._json({"model_path": "fixture.gguf"})
             return
+        if self.path == "/tools":
+            self._json([{"tool": "web_search_exa", "type": "mcp"}])
+            return
         self._json({"error": "no such asset"}, status=404)
 
     def do_POST(self) -> None:  # noqa: N802 -- BaseHTTPRequestHandler names the verb
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
+        if self.path == "/tools":
+            # The router's tool proxy, standing in: the call comes back as the
+            # child would have read it, so a test reads what was forwarded.
+            self._json({"forwarded": json.loads(body)})
+            return
         if self.path != "/v1/chat/completions":
             self._json({"error": "no such endpoint"}, status=404)
             return
@@ -134,6 +144,16 @@ def upstream() -> Iterator[ThreadingHTTPServer]:
         thread.join(timeout=EXCHANGE_DEADLINE_SECONDS)
 
 
+class _Provided:
+    """One provider over a fixed route tuple."""
+
+    def __init__(self, routes: tuple[Route, ...]) -> None:
+        self._routes = routes
+
+    def routes(self) -> tuple[Route, ...]:
+        return self._routes
+
+
 class _Listener:
     """One gateway running on a thread of this process."""
 
@@ -190,6 +210,7 @@ def _build(
     upstream: ThreadingHTTPServer,
     assets: Path | None,
     frame_ancestors: str = "'none'",
+    gate: tool_gate.ToolGate | None = None,
 ) -> Fixture:
     """Both listeners over one session gate, with the proxy holding `assets` or none."""
     static_root = tmp_path / "static"
@@ -207,12 +228,12 @@ def _build(
     def client_factory() -> LlamaClient:
         return LlamaClient(binding_from_runtime(record_path, fallback_port=port))
 
-    gate = SessionGate(state)
-    code = gate.start()
+    session_gate = SessionGate(state)
+    code = session_gate.start()
     page_gateway = Gateway(
         GatewayConfig(static_root=static_root, port=0, origins=()),
-        (gate,),
-        session_authority=gate,
+        (session_gate,) if gate is None else (session_gate, _Provided(gate.routes())),
+        session_authority=session_gate,
     )
     proxy_gateway = Gateway(
         GatewayConfig(static_root=assets or card.parent, port=0, origins=()),
@@ -220,15 +241,16 @@ def _build(
             llama_ui.LlamaUiProxy(
                 llama_ui.LlamaUiSettings(
                     client_factory=client_factory,
-                    require_session=gate.require_session,
+                    require_session=session_gate.require_session,
                     pairing_page=card,
                     assets=assets,
                     frame_ancestors=frame_ancestors,
+                    tool_gate=gate,
                 )
             ),
         ),
     )
-    return Fixture(_Listener(page_gateway), _Listener(proxy_gateway), gate, code)
+    return Fixture(_Listener(page_gateway), _Listener(proxy_gateway), session_gate, code)
 
 
 @pytest.fixture
@@ -608,5 +630,152 @@ def test_the_named_page_origin_is_the_one_framer(
             policy = response.getheader("content-security-policy") or ""
             assert f"frame-ancestors {shell_origin}" in policy, path
             assert "'none'" not in policy.split("frame-ancestors", 1)[1], path
+    finally:
+        running.stop()
+
+
+# ---------------------------------------------------------------------------
+# The tool approval gate on this listener
+# ---------------------------------------------------------------------------
+
+GATE_TOKEN_SECRET = "listener-gate-secret-3F9A"  # noqa: S105 -- a fixture key
+
+
+def _gate(tmp_path: Path) -> tool_gate.ToolGate:
+    key = tmp_path / "gate-token.key"
+    key.write_text(GATE_TOKEN_SECRET + "\n", encoding="utf-8")
+    key.chmod(0o600)
+    state = tmp_path / "gate-state"
+    state.mkdir(mode=0o700)
+    settings = approvals.build_settings(
+        state, key, "web-open", ("http://127.0.0.1:42069",), provider="searxng"
+    )
+    return tool_gate.ToolGate(settings, wait_seconds=5.0)
+
+
+def test_tools_stay_off_a_listener_assembled_without_a_gate(listeners: Fixture) -> None:
+    cookie = _pair(listeners)
+    for method in ("GET", "POST"):
+        response, body = _request(
+            listeners.proxy,
+            method,
+            "/tools",
+            body=b"{}" if method == "POST" else None,
+            headers={"Cookie": cookie},
+        )
+        assert response.status == 404, method
+        assert b"through this listener" in body
+
+
+def test_a_gated_listener_lists_tools_and_parks_a_call_until_the_page_decides(
+    tmp_path: Path, upstream: ThreadingHTTPServer
+) -> None:
+    """The page's own tool loop meets the operator's click on the chat page.
+
+    `GET /tools` passes through. `POST /tools` for a guarded tool holds until
+    a decision posted on the page listener's pending route settles it; the
+    approved call reaches the upstream with the grant signed into `params`.
+    """
+    running = _build(tmp_path, upstream, None, gate=_gate(tmp_path))
+    try:
+        cookie = _pair(running)
+        listing, body = _request(running.proxy, "GET", "/tools", headers={"Cookie": cookie})
+        assert listing.status == 200
+        assert json.loads(body)[0]["tool"] == "web_search_exa"
+
+        outcome: dict[str, object] = {}
+
+        def call() -> None:
+            response, answer = _request(
+                running.proxy,
+                "POST",
+                "/tools",
+                body=json.dumps(
+                    {"tool": "web_search_exa", "model": "web-open", "params": {"query": "fclk"}}
+                ).encode("utf-8"),
+                headers={"Cookie": cookie},
+            )
+            outcome["status"] = response.status
+            outcome["body"] = json.loads(answer)
+
+        thread = threading.Thread(target=call)
+        thread.start()
+        pending: list[dict[str, object]] = []
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not pending:
+            response, listed = _request(
+                running.page, "GET", tool_gate.PENDING_PATH, headers={"Cookie": cookie}
+            )
+            assert response.status == 200
+            pending = json.loads(listed)["pending"]
+            time.sleep(0.02)
+        assert pending and pending[0]["params"] == {"query": "fclk"}
+        decided, _ = _request(
+            running.page,
+            "POST",
+            f"{tool_gate.PENDING_PATH}/{pending[0]['id']}",
+            body=json.dumps({"decision": "approve"}).encode("utf-8"),
+            headers={"Cookie": cookie},
+        )
+        assert decided.status == 200
+        thread.join(timeout=5)
+        assert outcome["status"] == 200
+        forwarded = outcome["body"]["forwarded"]  # type: ignore[index]
+        assert forwarded["tool"] == "web_search_exa"
+        claim = approvals.verify_claim(
+            GATE_TOKEN_SECRET,
+            approvals.AUTHORIZATION_CLAIM_CONTEXT,
+            forwarded["params"]["authorization"],
+            time.time(),
+            "grant",
+        )
+        assert claim["query"] == "fclk"
+    finally:
+        running.stop()
+
+
+def test_a_denied_call_answers_the_page_the_refusal_in_the_tools_shape(
+    tmp_path: Path, upstream: ThreadingHTTPServer
+) -> None:
+    running = _build(tmp_path, upstream, None, gate=_gate(tmp_path))
+    try:
+        cookie = _pair(running)
+        outcome: dict[str, object] = {}
+
+        def call() -> None:
+            response, answer = _request(
+                running.proxy,
+                "POST",
+                "/tools",
+                body=json.dumps({"tool": "web_search_exa", "params": {"query": "x"}}).encode(
+                    "utf-8"
+                ),
+                headers={"Cookie": cookie},
+            )
+            outcome["status"] = response.status
+            outcome["body"] = json.loads(answer)
+
+        thread = threading.Thread(target=call)
+        thread.start()
+        pending: list[dict[str, object]] = []
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not pending:
+            _, listed = _request(
+                running.page, "GET", tool_gate.PENDING_PATH, headers={"Cookie": cookie}
+            )
+            pending = json.loads(listed)["pending"]
+            time.sleep(0.02)
+        _request(
+            running.page,
+            "POST",
+            f"{tool_gate.PENDING_PATH}/{pending[0]['id']}",
+            body=json.dumps({"decision": "deny"}).encode("utf-8"),
+            headers={"Cookie": cookie},
+        )
+        thread.join(timeout=5)
+        assert outcome["status"] == 200
+        assert outcome["body"] == {"error": "the operator denied this call"}
+        unpaired, _ = _request(running.page, "GET", tool_gate.PENDING_PATH)
+        assert unpaired.status in (401, 403), "the pending route answered without a session"
     finally:
         running.stop()

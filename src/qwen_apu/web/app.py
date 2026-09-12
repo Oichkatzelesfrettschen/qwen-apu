@@ -646,6 +646,9 @@ class Gateway:
             route for provider in providers for route in provider.routes()
         )
         self.session_authority = session_authority
+        # The approval gate the assembly hands to the second listener; None
+        # for a gateway assembled without approvals.
+        self.tool_gate: object | None = None
         self.static = StaticDirectory(config.static_root)
         self.admitted_hosts = config.admitted_hosts()
         self.content_security_policy = content_security_policy(

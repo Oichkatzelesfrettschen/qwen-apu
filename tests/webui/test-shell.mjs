@@ -28,6 +28,10 @@ const STATUS_REPORT = {
 async function bootShell(options = {}) {
   const harness = newHarness(options);
   install(harness);
+  // The rail's approval poll runs on an interval; the tests drive `pollApprovals`
+  // directly, so the interval is recorded rather than armed.
+  globalThis.setInterval = (callback, ms) => ({ callback, ms });
+  globalThis.clearInterval = () => {};
   shellCounter += 1;
   const page = shellCounter;
   const shell = await import(`../../static/js/shell.js?page=shell${page}`);
@@ -246,4 +250,45 @@ test('the shell markup carries no bearer, no inline block, and the legacy link',
   const legacy = fs.readFileSync(new URL('../../static/legacy/index.html', import.meta.url), 'utf8');
   assert.ok(legacy.includes('href="../app.css"') && legacy.includes('src="../js/status.js"'),
     'the legacy page does not resolve its assets from its subdirectory');
+});
+
+test('the rail shows a parked tool call and posts the click as its decision', async () => {
+  const page = await bootShell();
+  answer(await page.take(entry => entry.url === '/api/status', 'the status read'), STATUS_REPORT);
+  await flushPromises();
+  clearInterval(page.shell.approvalState.timer);
+
+  const poll = page.shell.pollApprovals();
+  const listing = await page.take(entry => entry.url === '/api/tools/pending', 'the pending read');
+  answer(listing, { pending: [
+    { id: 'c1', tool: 'web_search_exa', kind: 'search', model: 'web-open', age_seconds: 3,
+      params: { query: 'raven2 fclk states', max_results: 3, include_domains: ['kernel.org'] } },
+    { id: 'c2', tool: 'image_generate_image', kind: 'image', model: 'web-open', age_seconds: 1,
+      params: { prompt: 'a lighthouse', width: 512, height: 512, steps: 2, seed: 77 } }
+  ] });
+  await poll;
+  const host = page.element('#approvals');
+  const cards = host.children.filter(child => child.className === 'approval');
+  assert.equal(cards.length, 2, 'the two parked calls did not render');
+  assert.ok(cards[0].textContent.includes('search: raven2 fclk states / only kernel.org / 3 results'),
+    'the search card does not state the query and its bounds');
+  assert.ok(cards[1].textContent.includes('image: a lighthouse (512x512, 2 steps, seed 77)'),
+    'the image card does not state the frame');
+
+  const approve = cards[0].children[3].children[0];
+  assert.equal(approve.textContent, 'Approve once');
+  approve.onclick();
+  const decision = await page.take(entry => entry.url === '/api/tools/pending/c1', 'the decision post');
+  assert.equal(decision.options.method, 'POST');
+  assert.deepEqual(JSON.parse(decision.options.body), { decision: 'approve' });
+  answer(decision, { id: 'c1', decision: 'approve' });
+  await flushPromises();
+  assert.equal(host.children.filter(child => child.className === 'approval').length, 1,
+    'the decided card stayed on the rail');
+
+  // A call the gate no longer holds leaves the rail on the next read.
+  const again = page.shell.pollApprovals();
+  answer(await page.take(entry => entry.url === '/api/tools/pending', 'the second read'), { pending: [] });
+  await again;
+  assert.equal(host.children.filter(child => child.className === 'approval').length, 0);
 });

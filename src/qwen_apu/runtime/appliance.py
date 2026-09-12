@@ -467,7 +467,10 @@ class Appliance:
         gateway, session = gateway_assembly.assemble(self.paths, self.request.gateway)
         try:
             self._llama_ui = gateway_assembly.assemble_llama_ui(
-                self.paths, self.request.gateway, session=session
+                self.paths,
+                self.request.gateway,
+                session=session,
+                gate=getattr(gateway, "tool_gate", None),
             )
             return gateway, session, session.start()
         except BaseException:
