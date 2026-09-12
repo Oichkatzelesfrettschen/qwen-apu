@@ -1,7 +1,7 @@
 """A client for the image worker's Unix control socket.
 
 `remote/image-service.py` takes `image_generate`, `cancel`, and `status` as one
-JSON line per connection on `<state>/image-service.sock`, because a channel
+JSON line per connection on `<state>/images/image-service.sock`, because a channel
 that starts GPU work belongs to the filesystem permissions of the serving user
 rather than to a port. Native generation stays that worker's child process;
 this module carries the control plane and nothing else.
@@ -46,6 +46,11 @@ REMOTE_MODULES: tuple[tuple[str, str], ...] = (
 _LOAD_LOCK = threading.RLock()
 DEFAULT_EXCHANGE_TIMEOUT_SECONDS = 30.0
 SOCKET_FILE_NAME = "image-service.sock"
+# `image-service.py` derives its own socket path as `<--state-dir>/images/`,
+# and `remote/build-web-presets.sh` names the same path in
+# QWEN_IMAGE_SERVICE_SOCKET, so a client joining `<state>` to the leaf alone
+# looks one directory above where the worker binds.
+IMAGE_DIRECTORY_NAME = "images"
 ACTION_GENERATE = "image_generate"
 ACTION_CANCEL = "cancel"
 ACTION_STATUS = "status"
@@ -128,7 +133,7 @@ class ImageControlClient:
         cls, state_directory: Path, timeout: float = DEFAULT_EXCHANGE_TIMEOUT_SECONDS
     ) -> ImageControlClient:
         """The client for the socket `qwen-webui-session.sh` starts the worker on."""
-        return cls(state_directory / SOCKET_FILE_NAME, timeout)
+        return cls(state_directory / IMAGE_DIRECTORY_NAME / SOCKET_FILE_NAME, timeout)
 
     def generate(self, request: Mapping[str, object]) -> dict[str, object]:
         """Run one generation to its terminal reply.
