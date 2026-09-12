@@ -1119,8 +1119,6 @@ def test_research_roster_reports_a_withheld_checkpoint_as_quarantined() -> None:
     assert answer["qwen38-2b-distill"] == READY
 
 
-
-
 def test_the_approval_settings_admit_the_lan_bind_host(tmp_path: Path) -> None:
     """The session and grant routes check Host through their own settings."""
     paths = _assembly_root(tmp_path)
