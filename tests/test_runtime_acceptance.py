@@ -327,11 +327,13 @@ def test_a_whole_run_passes_every_reachable_check(gateway: Fixture) -> None:
     assert results["conversation_open"].status == PASS
 
     # Both lanes read the tool matrix first. The web lane reads its matrix under
-    # the launch's own approval profile, which resolves and admits the row, so
-    # the lane reaches the grant route this fixture leaves unapproved and skips
-    # there. No image profile is armed, so that item skips on the matrix row.
+    # the launch's own approval profile, which resolves and admits the row; the
+    # assembled service arms its own session secret, so the grant is issued and
+    # the search reaches a provider this fixture does not run, which the lane
+    # reports as a skip naming the provider. No image profile is armed, so that
+    # item skips on the matrix row.
     assert results["web_search_then_fetch"].status == SKIPPED
-    assert "approval" in results["web_search_then_fetch"].reason
+    assert "provider" in results["web_search_then_fetch"].reason
     assert results["image_generate"].status == SKIPPED
     assert "image_generation" in results["image_generate"].reason
     # No stop argv, so the two absence items name the argument they need.
