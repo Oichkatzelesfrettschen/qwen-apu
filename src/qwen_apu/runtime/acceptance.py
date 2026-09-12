@@ -60,6 +60,7 @@ from qwen_apu.tools.approvals import (
     canonical_aspect,
     prompt_digest,
 )
+from qwen_apu.tools.web import RETRIEVAL_FAILURE_TERMS
 from qwen_apu.web import browser_import
 from qwen_apu.web.auth import PAIRING_CODE_FILENAME
 from qwen_apu.web.history import DOCUMENT_VERSION, conversation_to_json
@@ -136,6 +137,10 @@ RESULT_ID_PREFIX = "Result ID: "
 DOCUMENT_CHARACTER_CAP = 131072
 EMPTY_WINDOW_START_INDEX = DOCUMENT_CHARACTER_CAP - 1
 EMPTY_WINDOW_CHARACTERS = 1
+# `remote/web-profiles.tsv` sets `max_fetches`, and a profile admitting one
+# document spends its whole allowance on the grounded read, so the probe meets
+# `Ledger.spend_fetch`'s budget refusal rather than a retrieval outcome.
+BUDGET_TERM = "budget_exhausted"
 
 # The generation the image lane approves. The seed is fixed rather than random
 # because the grant binds it and a report states what ran.
@@ -334,8 +339,13 @@ class Client:
         self.timeout_s = timeout_s
         self.cookie = ""
         # The per-launch approval secret, read once and held for the run the
-        # way `static/js/api.js` holds it for the life of the page.
+        # way `static/js/api.js` holds it for the life of the page, beside the
+        # route whose answer ended the last grant attempt: the session read and
+        # the signing route both refuse with 403 and a report that named the
+        # grant for a refused session read would send a reader to the wrong
+        # gate.
         self.session_secret = ""
+        self.grant_gate = ""
 
     def connection(self) -> HTTPConnection:
         return HTTPConnection(self.host, self.port, timeout=self.timeout_s)
@@ -404,9 +414,11 @@ class Client:
         flow the page performs. A second refusal is a genuine one and reaches
         the caller.
         """
+        self.grant_gate = route
         if not self.session_secret:
             session = self.approval_session()
             if not self.session_secret:
+                self.grant_gate = SESSION_ROUTE
                 return session
         headers = {SESSION_HEADER: self.session_secret}
         answer = self.post_json(route, dict(fields), headers=headers)
@@ -416,6 +428,7 @@ class Client:
             self.session_secret = ""
             session = self.approval_session()
             if not self.session_secret:
+                self.grant_gate = SESSION_ROUTE
                 return session
             answer = self.post_json(
                 route, dict(fields), headers={SESSION_HEADER: self.session_secret}
@@ -1357,6 +1370,37 @@ class AcceptanceRun:
         answer = self.client.exchange("GET", f"{MATRIX_ROUTE}?model={quote(model)}")
         return answer, answer.json()
 
+    def matrix_refused(self, names: Sequence[str], answer: Answer, payload: object) -> bool:
+        """Report a matrix that answered no rows, carrying its own sentence.
+
+        A 404 here is either a path the gateway does not mount or a selector no
+        registry or profile row carries, and both answer a JSON error, so the
+        item skips naming the route, the model it asked about, and the sentence
+        the answer stated rather than asserting which of the two it was.
+        """
+        del payload
+        if answer.status == 200:
+            return False
+        model = self.request.text_models[0] if self.request.text_models else ""
+        if answer.absent_route:
+            for name in names:
+                self.record(
+                    name,
+                    SKIPPED,
+                    f"GET {MATRIX_ROUTE} answered 404 for {model}, so no row states "
+                    f"whether this lane executes: {refusal_sentence(answer)}",
+                    {"route": MATRIX_ROUTE, "status": answer.status, "model": model},
+                )
+            return True
+        for name in names:
+            self.record(
+                name,
+                FAIL,
+                f"GET {MATRIX_ROUTE} answered {answer.status}: {refusal_sentence(answer)}",
+                {"status": answer.status},
+            )
+        return True
+
     def lane_unavailable(
         self, names: Sequence[str], offer: Mapping[str, object] | None, row: str
     ) -> bool:
@@ -1395,18 +1439,7 @@ class AcceptanceRun:
         started = time.monotonic()
         grounded, explicit = self.WEB_ITEMS
         matrix, payload = self.read_matrix()
-        if matrix.absent_route:
-            for name in self.WEB_ITEMS:
-                self.absent(name, MATRIX_ROUTE, matrix)
-            return
-        if matrix.status != 200:
-            for name in self.WEB_ITEMS:
-                self.record(
-                    name,
-                    FAIL,
-                    f"GET {MATRIX_ROUTE} answered {matrix.status}",
-                    {"status": matrix.status},
-                )
+        if self.matrix_refused(self.WEB_ITEMS, matrix, payload):
             return
         offer = tool_offer(payload, SEARCH_TOOL_ROW)
         if self.lane_unavailable(self.WEB_ITEMS, offer, SEARCH_TOOL_ROW):
@@ -1424,9 +1457,9 @@ class AcceptanceRun:
         token = grant_token(grant)
         if not token:
             reason = (
-                f"the search grant answered {grant.status}: {refusal_sentence(grant)}; "
-                "every network-reaching call in this lane passes one human approval "
-                "and a single-use grant"
+                f"{self.client.grant_gate} answered {grant.status}: "
+                f"{refusal_sentence(grant)}; every network-reaching call in this lane "
+                "passes one human approval and a single-use grant"
             )
             for name in self.WEB_ITEMS:
                 self.record(name, SKIPPED, reason, {"grant_status": grant.status})
@@ -1517,21 +1550,39 @@ class AcceptanceRun:
             },
         )
         probe_state, probe_term, probe_text = outcome_state(probe)
-        held = probe.status == 200 and probe_state == "incomplete"
+        evidence = {
+            "proved_by": "empty_window",
+            "start_index": EMPTY_WINDOW_START_INDEX,
+            "status": probe.status,
+            "state": probe_state,
+            "term": probe_term,
+        }
+        if probe_term == BUDGET_TERM:
+            # The approved search opens a fetch allowance `max_fetches` wide,
+            # so a profile admitting one document spends it on the read above
+            # and the probe reaches the ledger rather than the source.
+            self.record(
+                explicit,
+                SKIPPED,
+                "the approved search's own fetch allowance was spent by the grounded "
+                f"read, so no second retrieval ran: {probe_text[:200]}",
+                evidence,
+            )
+            return
+        held = (
+            probe.status == 200
+            and probe_state == "incomplete"
+            and probe_term in RETRIEVAL_FAILURE_TERMS
+        )
         self.record(
             explicit,
             PASS if held else FAIL,
             ""
             if held
             else f"a retrieval that returned no text answered {probe.status} in state "
-            f"{probe_state or 'none'}, so a failed retrieval is invisible: {probe_text[:200]}",
-            {
-                "proved_by": "empty_window",
-                "start_index": EMPTY_WINDOW_START_INDEX,
-                "status": probe.status,
-                "state": probe_state,
-                "term": probe_term,
-            },
+            f"{probe_state or 'none'} under the term {probe_term or 'none'}, so a failed "
+            f"retrieval is invisible: {probe_text[:200]}",
+            evidence,
         )
 
     IMAGE_ITEMS: tuple[str, ...] = (
@@ -1575,18 +1626,7 @@ class AcceptanceRun:
         """
         started = time.monotonic()
         matrix, payload = self.read_matrix()
-        if matrix.absent_route:
-            for name in self.IMAGE_ITEMS:
-                self.absent(name, MATRIX_ROUTE, matrix)
-            return
-        if matrix.status != 200:
-            for name in self.IMAGE_ITEMS:
-                self.record(
-                    name,
-                    FAIL,
-                    f"GET {MATRIX_ROUTE} answered {matrix.status}",
-                    {"status": matrix.status},
-                )
+        if self.matrix_refused(self.IMAGE_ITEMS, matrix, payload):
             return
         offer = tool_offer(payload, IMAGE_GENERATION_ROW)
         if self.lane_unavailable(self.IMAGE_ITEMS, offer, IMAGE_GENERATION_ROW):
@@ -1603,9 +1643,9 @@ class AcceptanceRun:
         token = grant_token(grant)
         if not token:
             reason = (
-                f"the image grant answered {grant.status}: {refusal_sentence(grant)}; "
-                "every device-reaching call in this lane passes one human approval "
-                "and a single-use grant"
+                f"{self.client.grant_gate} answered {grant.status}: "
+                f"{refusal_sentence(grant)}; every device-reaching call in this lane "
+                "passes one human approval and a single-use grant"
             )
             for name in self.IMAGE_ITEMS:
                 self.record(name, SKIPPED, reason, {"grant_status": grant.status})
@@ -1697,7 +1737,7 @@ class AcceptanceRun:
             self.record(
                 "image_review",
                 SKIPPED,
-                f"the review grant answered {grant.status}: {refusal_sentence(grant)}",
+                f"{self.client.grant_gate} answered {grant.status}: {refusal_sentence(grant)}",
                 {"grant_status": grant.status},
             )
             return

@@ -43,6 +43,7 @@ from qwen_apu.runtime.acceptance import (
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import read_start_time
 from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
+from qwen_apu.tools import approvals
 from qwen_apu.web import assemble as gateway_assembly
 from qwen_apu.web.auth import PAIRING_CODE_FILENAME
 from qwen_apu.web.history import DOCUMENT_VERSION
@@ -288,6 +289,10 @@ def _request(gateway: Fixture, **overrides: object) -> AcceptanceRequest:
 
 def _by_name(results: list[acceptance.CheckResult]) -> dict[str, acceptance.CheckResult]:
     return {result.name: result for result in results}
+
+
+def results_term(result: acceptance.CheckResult) -> str:
+    return str(result.evidence.get("term", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +650,15 @@ def _matrix(
     }
 
 
+def _declared(behavior: object, fallback: Mapping[str, object]) -> Answer:
+    """One declared answer: an `Answer` as itself, a document at 200, else the fallback."""
+    if isinstance(behavior, Answer):
+        return behavior
+    if isinstance(behavior, Mapping):
+        return _json_answer(200, dict(behavior))
+    return _json_answer(200, dict(fallback))
+
+
 class LaneGateway:
     """The routes both lanes travel, answered from declared behavior.
 
@@ -708,17 +722,14 @@ class LaneGateway:
         if tool == acceptance.SEARCH_TOOL:
             if str(params.get("authorization", "")) not in self.issued:
                 return _json_answer(403, _outcome("incomplete", kind="none", usable=False))
-            return _json_answer(200, self.behavior.get("search") or self._search_record())
+            return _declared(self.behavior.get("search"), self._search_record())
         if tool == acceptance.READ_URL_TOOL:
             if int(params.get("start_index", 0) or 0) >= acceptance.EMPTY_WINDOW_START_INDEX:
-                return _json_answer(
-                    200,
-                    self.behavior.get("probe")
-                    or _outcome("incomplete", kind="none", usable=False, text="no text at index"),
+                return _declared(
+                    self.behavior.get("probe"),
+                    _outcome("incomplete", kind="none", usable=False, text="no text at index"),
                 )
-            return _json_answer(
-                200, self.behavior.get("fetch") or _outcome("complete", text=PAGE_TEXT)
-            )
+            return _declared(self.behavior.get("fetch"), _outcome("complete", text=PAGE_TEXT))
         return _json_answer(400, _outcome("incomplete", kind="none", usable=False))
 
     def _search_record(self) -> dict[str, object]:
@@ -987,6 +998,81 @@ def test_a_review_the_router_refused_fails_the_review_alone(root: RuntimePaths) 
     assert results["image_remove"].status == PASS
 
 
+def test_both_grant_bodies_parse_under_the_broker_that_signs_them(root: RuntimePaths) -> None:
+    """The driver's field sets against the parsers, which refuse an unknown key by name.
+
+    `parse_image_request` carries a field allowlist and `parse_search_request`
+    its own required set, so this is what holds the driver's spelling to the
+    server's rather than to the fixture's.
+    """
+    run, _gateway = _lane_run(root)
+    image = approvals.parse_image_request(run.image_grant_fields(IMAGE_BOUNDS, "web-open"))
+    assert image.image_profile == IMAGE_BOUNDS["profile_id"]
+    assert image.aspect == "1:1"
+    assert image.max_steps == acceptance.IMAGE_STEPS
+    search = approvals.parse_search_request(
+        {
+            "profile_id": "web-open",
+            "query": acceptance.WEB_QUERY,
+            "include_domains": [],
+            "exclude_domains": [],
+        }
+    )
+    assert search.query == acceptance.WEB_QUERY
+    assert search.max_results == approvals.RESULT_COUNT_DEFAULT
+
+
+def test_a_spent_fetch_allowance_skips_the_explicit_item(root: RuntimePaths) -> None:
+    """A profile admitting one document spends it on the grounded read."""
+    spent = _outcome(
+        "incomplete",
+        kind="none",
+        usable=False,
+        status="budget_exhausted",
+        text="the approved search admits 1 fetch(es), and every one is spent",
+    )
+    run, _gateway = _lane_run(root, probe=Answer(429, json.dumps(spent).encode("utf-8"), {}))
+    run.check_web_lane()
+    result = _by_name(run.results)["web_retrieval_failure_explicit"]
+    assert result.status == SKIPPED
+    assert "fetch allowance" in result.reason
+    assert results_term(result) == "budget_exhausted"
+
+
+def test_an_incomplete_state_under_no_retrieval_term_fails(root: RuntimePaths) -> None:
+    """The term names the retrieval; a refusal wearing the state is not the claim."""
+    run, _gateway = _lane_run(
+        root,
+        probe=_outcome("incomplete", kind="none", usable=False, status="invalid_argument"),
+    )
+    run.check_web_lane()
+    result = _by_name(run.results)["web_retrieval_failure_explicit"]
+    assert result.status == FAIL
+    assert "invalid_argument" in result.reason
+
+
+def test_a_selector_the_matrix_does_not_carry_skips_naming_the_model(
+    root: RuntimePaths,
+) -> None:
+    refusal = _json_answer(404, {"error": "no row carries the id qwen35-08b"})
+    run, _gateway = _lane_run(root, matrix=refusal)
+    run.check_web_lane()
+    result = _by_name(run.results)["web_search_then_fetch"]
+    assert result.status == SKIPPED
+    assert "no row carries the id qwen35-08b" in result.reason
+    assert result.evidence["model"] == "qwen35-08b"
+
+
+def test_a_refused_session_read_names_the_session_route(root: RuntimePaths) -> None:
+    run, gateway = _lane_run(root)
+    gateway._session = lambda: _json_answer(403, {"error": "the Origin is outside the set"})  # type: ignore[method-assign]
+    run.check_image_lane()
+    result = _by_name(run.results)["image_generate"]
+    assert result.status == SKIPPED
+    assert acceptance.SESSION_ROUTE in result.reason
+    assert "Origin" in result.reason
+
+
 def test_an_absent_matrix_route_skips_both_lanes(root: RuntimePaths) -> None:
     run, _gateway = _lane_run(root, matrix=_json_answer(404, {"error": "no route"}))
     run.check_web_lane()
@@ -995,6 +1081,7 @@ def test_an_absent_matrix_route_skips_both_lanes(root: RuntimePaths) -> None:
     for name in (*acceptance.AcceptanceRun.WEB_ITEMS, *acceptance.AcceptanceRun.IMAGE_ITEMS):
         assert results[name].status == SKIPPED
         assert acceptance.MATRIX_ROUTE in results[name].reason
+        assert results[name].evidence["route"] == acceptance.MATRIX_ROUTE
 
 
 def test_a_held_lease_after_the_stop_fails(root: RuntimePaths) -> None:
