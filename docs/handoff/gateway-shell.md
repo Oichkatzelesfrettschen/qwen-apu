@@ -52,6 +52,25 @@ return every address a launch binds, and the Origin allowlist, the shell's
 a reader on 127.0.0.1 frames the loopback listener and a reader on the LAN
 address frames the LAN one.
 
+`--lan-open` states the second boundary, the one the credential answers to.
+Bare, it derives the bound interface's own network through
+`interface_network`, which reads `SIOCGIFADDR` and `SIOCGIFNETMASK` over
+`socket.if_nameindex()` and returns the prefix the machine carries rather
+than an assumed /24; a stated CIDR block replaces that derivation and may
+repeat. `SessionGate.admits_without_pairing` answers loopback from
+`loopback_open` and every other address from `open_networks`, so a peer
+inside one is served with no cookie and a peer outside pairs, including one
+routed in from another network whose address the Host set happened to admit.
+A derivation finding no interface ends the launch, because an open boundary
+this process cannot describe is one it refuses to guess.
+
+What the open boundary gives up is one thing: a peer on the named network
+chats and reads without presenting a code. `AGENTS.md` names this posture and
+what continues to carry the gate, and every item of it still stands here: the
+closed Host set, the Origin allowlist, the per-launch session secret, the
+single-use grant, and the one human approval each network-reaching and
+device-reaching call takes in the rail.
+
 Neither page holds a bearer. The router listens on loopback with no
 `--api-key`, so the proxy injects nothing and needs nothing; the gateway's
 credential is the pairing cookie. llama.cpp's page offers an API key field

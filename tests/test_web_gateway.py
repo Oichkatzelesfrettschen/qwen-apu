@@ -15,6 +15,7 @@ which carries IPv4 alone, so the fake upstream binds 127.0.0.1 explicitly.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import secrets
@@ -29,6 +30,7 @@ from pathlib import Path
 
 import pytest
 
+from qwen_apu import cli
 from qwen_apu.config import models as registry
 from qwen_apu.engines.llama import LlamaClient, UpstreamRefused, binding_from_runtime
 from qwen_apu.runtime import preflight
@@ -36,6 +38,7 @@ from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import read_start_time
 from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
 from qwen_apu.tools import approvals, matrix
+from qwen_apu.web import app as gateway_app
 from qwen_apu.web import assemble as gateway_assembly
 from qwen_apu.web import auth as auth_module
 from qwen_apu.web import roster
@@ -1447,3 +1450,87 @@ def _request_from(client_address: str) -> Request:
         body=b"",
         client_address=client_address,
     )
+
+
+# ---------------------------------------------------------------------------
+# An open network: who the appliance serves with no pairing code at all
+# ---------------------------------------------------------------------------
+
+
+def test_a_peer_inside_an_open_network_is_admitted_and_one_outside_pairs(
+    tmp_path: Path,
+) -> None:
+    """`--lan-open` states the boundary as a network, so membership decides."""
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    gate = SessionGate(state, open_networks=(ipaddress.IPv4Network("10.0.0.0/24"),))
+    gate.start()
+    gate.require_session(_request_from("10.0.0.51"))
+    gate.require_session(_request_from("10.0.0.170"))
+    for stranger in ("10.0.1.5", "192.168.1.9", "not-an-address"):
+        with pytest.raises(auth_module.RequestRefused, match="no live session"):
+            gate.require_session(_request_from(stranger))
+
+
+def test_an_open_network_leaves_loopback_to_its_own_flag(tmp_path: Path) -> None:
+    """The two boundaries are separate: a launch may open the network without
+    opening this host, and the loopback flag answers for this host alone."""
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    gate = SessionGate(state, open_networks=(ipaddress.IPv4Network("10.0.0.0/24"),))
+    gate.start()
+    assert gate.admits_without_pairing("10.0.0.4") is True
+    assert gate.admits_without_pairing("127.0.0.1") is False
+    opened = SessionGate(state, loopback_open=True)
+    opened.start()
+    assert opened.admits_without_pairing("127.0.0.1") is True
+    assert opened.admits_without_pairing("10.0.0.4") is False
+
+
+def test_a_launch_naming_no_open_network_pairs_every_peer(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    gate = SessionGate(state)
+    gate.start()
+    for peer in ("127.0.0.1", "10.0.0.51"):
+        assert gate.admits_without_pairing(peer) is False
+
+
+def test_the_assembly_parses_every_stated_block() -> None:
+    request = gateway_assembly.GatewayRequest(
+        port=42069, bind_host="10.0.0.170", open_networks=("10.0.0.0/24", "192.168.1.0/25")
+    )
+    assert gateway_assembly.open_networks(request) == (
+        ipaddress.IPv4Network("10.0.0.0/24"),
+        ipaddress.IPv4Network("192.168.1.0/25"),
+    )
+    assert gateway_assembly.open_networks(gateway_assembly.GatewayRequest()) == ()
+
+
+def test_a_network_comes_from_the_interface_prefix_rather_than_an_assumed_one() -> None:
+    """A /16 admits more than a /24 and a /28 admits less, so the netmask the
+    interface carries decides rather than a constant."""
+    assert gateway_app.network_of("10.0.0.170", "255.255.255.0") == ipaddress.IPv4Network(
+        "10.0.0.0/24"
+    )
+    assert gateway_app.network_of("10.0.0.170", "255.255.0.0") == ipaddress.IPv4Network(
+        "10.0.0.0/16"
+    )
+    assert gateway_app.network_of("10.0.0.170", "255.255.255.240") == ipaddress.IPv4Network(
+        "10.0.0.160/28"
+    )
+    # This host carries 127.0.0.1, so the derivation answers for it and finds
+    # no interface for an address another machine holds.
+    assert gateway_app.interface_network("127.0.0.1") == ipaddress.IPv4Network("127.0.0.0/8")
+    assert gateway_app.interface_network("203.0.113.7") is None
+    assert gateway_app.interface_network("not-an-address") is None
+
+
+def test_a_derivation_that_finds_no_interface_refuses_the_launch() -> None:
+    """An open boundary the operator asked for and this process cannot
+    describe is refused rather than guessed at."""
+    assert cli.resolve_open_networks(["10.0.0.0/24"], "10.0.0.170") == ("10.0.0.0/24",)
+    assert cli.resolve_open_networks([], "10.0.0.170") == ()
+    assert cli.resolve_open_networks([""], "127.0.0.1") == ("127.0.0.0/8",)
+    with pytest.raises(SystemExit, match="--lan-open derives the network"):
+        cli.resolve_open_networks([""], "203.0.113.7")

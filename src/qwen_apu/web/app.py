@@ -27,9 +27,12 @@ plus exactly its own blocks rather than under `'unsafe-inline'`.
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
+import ipaddress
 import mimetypes
 import socket
+import struct
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -132,6 +135,47 @@ def admitted_hosts(exposure: str = "", name: str = "") -> tuple[str, ...]:
             )
         admitted.append(name)
     return tuple(admitted)
+
+
+# The two ioctl numbers that read an interface's own IPv4 address and netmask.
+# `linux/sockios.h` fixes both, and the appliance runs one kernel family, so
+# reading them beats carrying a dependency for two integers.
+SIOCGIFADDR = 0x8915
+SIOCGIFNETMASK = 0x891B
+
+
+def network_of(address: str, netmask: str) -> ipaddress.IPv4Network:
+    """The network one interface address and netmask describe."""
+    return ipaddress.IPv4Network(f"{address}/{netmask}", strict=False)
+
+
+def interface_network(bind_host: str) -> ipaddress.IPv4Network | None:
+    """The network of the interface holding `bind_host`, or None for none.
+
+    A caller reads this to admit the peers that share the appliance's own
+    network, so the prefix comes from the interface rather than from an
+    assumed /24: a /16 admits more than a /24 and a /28 admits less, and
+    guessing either way states a boundary the machine does not have.
+    """
+    try:
+        parsed = ipaddress.ip_address(bind_host)
+    except ValueError:
+        return None
+    if not isinstance(parsed, ipaddress.IPv4Address):
+        return None
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        for _, name in socket.if_nameindex():
+            packed = struct.pack("256s", name.encode("utf-8")[:15])
+            try:
+                address = socket.inet_ntoa(fcntl.ioctl(probe.fileno(), SIOCGIFADDR, packed)[20:24])
+                netmask = socket.inet_ntoa(
+                    fcntl.ioctl(probe.fileno(), SIOCGIFNETMASK, packed)[20:24]
+                )
+            except OSError:
+                continue
+            if address == bind_host:
+                return network_of(address, netmask)
+    return None
 
 
 def host_header_names(header: str, admitted: Sequence[str]) -> str:

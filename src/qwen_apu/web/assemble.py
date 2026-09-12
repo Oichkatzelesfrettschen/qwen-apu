@@ -9,11 +9,13 @@ goes through that same ledger. The runtime root supplies every path.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
+from ipaddress import IPv4Network
 from pathlib import Path
 
 from qwen_apu.config import models as config_models
@@ -57,6 +59,10 @@ class GatewayRequest:
     # and admits it; `lan` binds the named address and pairs every peer;
     # `both` binds each and admits this host alone without pairing.
     exposure_mode: str = "lan"
+    # The networks whose peers this launch serves without a pairing code. The
+    # operator states them, `--lan-open` derives the bound interface's own
+    # network into them, and an empty tuple pairs every peer off this host.
+    open_networks: tuple[str, ...] = ()
     web_profile: str = DEFAULT_WEB_PROFILE
     image_profile: str = ""
     provider: str = "searxng"
@@ -264,6 +270,16 @@ def loopback_open(request: GatewayRequest) -> bool:
     return request.exposure_mode in ("local", "both")
 
 
+def open_networks(request: GatewayRequest) -> tuple[IPv4Network, ...]:
+    """The networks this launch admits without a pairing code.
+
+    Each entry is stated by the operator as a CIDR block and parsed here, so a
+    block the parser refuses ends the launch rather than silently admitting
+    nothing or everything.
+    """
+    return tuple(ipaddress.IPv4Network(block, strict=False) for block in request.open_networks)
+
+
 def page_origins(request: GatewayRequest) -> tuple[str, ...]:
     """Every origin the shell is reachable at, which is what may frame the page."""
     hosts = [request.bind_host]
@@ -412,7 +428,12 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
     # over HTTPS alone, so a Secure attribute would make the pairing cookie one
     # the browser never returns; the attribute follows a TLS front when one
     # exists rather than the bind address.
-    session = SessionGate(state, secure_cookie=False, loopback_open=loopback_open(request))
+    session = SessionGate(
+        state,
+        secure_cookie=False,
+        loopback_open=loopback_open(request),
+        open_networks=open_networks(request),
+    )
 
     def session_check(incoming: Request) -> approvals.SessionOrRefusal:
         try:

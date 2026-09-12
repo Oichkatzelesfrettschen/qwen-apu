@@ -26,9 +26,10 @@ import os
 import secrets
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
+from ipaddress import IPv4Network, ip_address
 from pathlib import Path
 
 from qwen_apu.web.app import LOOPBACK_HOSTS, RequestRefused
@@ -117,6 +118,7 @@ class SessionGate:
         lifetime_s: float = SESSION_LIFETIME_SECONDS,
         clock: Callable[[], float] = time.time,
         loopback_open: bool = False,
+        open_networks: Sequence[IPv4Network] = (),
     ) -> None:
         self.state_directory = state_directory
         self.secure_cookie = secure_cookie
@@ -126,6 +128,11 @@ class SessionGate:
         # directory the pairing code and the session store live in; requiring
         # a code from it buys nothing and costs the operator a paste.
         self.loopback_open = loopback_open
+        # The networks whose peers this launch admits without pairing, which
+        # the operator states rather than this module assuming. A peer outside
+        # every one of them pairs, so a request routed in from another network
+        # meets the code even where the Host set admitted its address.
+        self.open_networks = tuple(open_networks)
         self.lifetime_s = lifetime_s
         self.clock = clock
         self.attempts = 0
@@ -223,6 +230,24 @@ class SessionGate:
             attributes.append("Secure")
         return "; ".join(attributes)
 
+    def admits_without_pairing(self, client_address: str) -> bool:
+        """Whether this launch serves one peer address with no cookie at all.
+
+        Loopback answers to `loopback_open`; every other address answers to
+        `open_networks`, and an address outside every named network pairs. An
+        address the parser refuses is never admitted, so a malformed peer
+        reads as a stranger rather than as a match.
+        """
+        if self.loopback_open and client_address in LOOPBACK_HOSTS:
+            return True
+        if not self.open_networks:
+            return False
+        try:
+            peer = ip_address(client_address)
+        except ValueError:
+            return False
+        return any(peer in network for network in self.open_networks)
+
     def require_session(self, request: Request) -> None:
         """Admit a request carrying a live session cookie, and refuse every other.
 
@@ -234,9 +259,14 @@ class SessionGate:
 
         A launch that opened loopback admits a connection the kernel accepted
         from this host without a cookie, which is what makes the page usable
-        from the appliance's own browser with nothing to paste.
+        from the appliance's own browser with nothing to paste. A launch that
+        named open networks admits a peer inside one of them the same way, and
+        that is the whole of what it gives up: the closed Host set, the Origin
+        allowlist, the per-launch session secret, the single-use grant, and the
+        one human approval each network-reaching and device-reaching call takes
+        all stand.
         """
-        if self.loopback_open and request.client_address in LOOPBACK_HOSTS:
+        if self.admits_without_pairing(request.client_address):
             return
         token = self.presented_token(request)
         now = self.clock()

@@ -61,6 +61,25 @@ One flag states which peers a launch serves:
   on the network pairs once. Both addresses share one port and answer the
   same routes.
 
+`--lan-open` adds the other half: it serves the network this appliance sits
+on with no pairing code, so a browser anywhere on it opens the page and
+chats. Bare, it derives the network of the interface holding the bind
+address, so the prefix is the one the machine has; a CIDR block states one
+instead and may repeat. A derivation that finds no interface ends the launch
+rather than guessing at a boundary.
+
+```sh
+qwen-apu appliance serve --router --both --lan-open --bind-host <lan address> ...
+```
+
+That is the operator's explicit decision, and it gives up exactly one thing:
+a peer on that network chats and reads without presenting a code. Everything
+else still stands. The Host set admits the loopback names and that one
+address; the Origin allowlist admits the addresses this launch binds; a peer
+outside the named networks still pairs; and every network-reaching and
+device-reaching call still takes one human approval in the rail and spends a
+single-use signed grant.
+
 Open `http://<lan address>:42069/` in a browser. A peer on the network is
 asked for a pairing code once: `qwen-apu status` on the laptop prints it, the
 first browser that presents it receives an HttpOnly session cookie, and the
