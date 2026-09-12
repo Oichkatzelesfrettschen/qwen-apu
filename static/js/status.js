@@ -107,7 +107,12 @@ export async function probeHealth() {
   try {
     const response = await fetch('/api/health');
     if (!response.ok) {
-      line.textContent = `health returned HTTP ${response.status}`;
+      // 401 is the session gate rather than the model: the pairing card states
+      // what to do about it, so the status line names the state instead of the
+      // status code.
+      line.textContent = response.status === 401
+        ? 'not paired yet'
+        : `health returned HTTP ${response.status}`;
       return null;
     }
     const report = await response.json();
