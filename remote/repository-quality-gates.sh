@@ -139,8 +139,13 @@ if [ "$declaration_only" -eq 1 ]; then
     }
 fi
 
-shell_files=$(find remote -type f -name '*.sh' -print | sort)
-python_files=$(find remote -type f -name '*.py' -print | sort)
+shell_files=$(find remote -type f -name '*.sh' -print | LC_ALL=C sort)
+# LC_ALL=C fixes the collation: this list is the ruff-repository cell's input
+# specification, the declaration root covers it, and a glibc locale orders
+# `image_protocol.py` against `image-registry.py` differently from the C
+# locale, so an unpinned sort makes the root a property of the shell that ran
+# the gate rather than of the tree.
+python_files=$(find remote -type f -name '*.py' -print | LC_ALL=C sort)
 typed_python_files='remote/classify-sweep-coverage.py
 remote/test-classify-sweep-coverage.py
 remote/sanitize-capture.py
