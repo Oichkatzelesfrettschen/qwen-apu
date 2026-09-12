@@ -56,9 +56,7 @@ def main() -> None:
     if digest(acquisition / "acquisition-clock-validator.py") != digest(
         tools / "validate-clock-sidecar.py"
     ):
-        raise ValueError(
-            "baseline validator differs from the trusted runtime validator"
-        )
+        raise ValueError("baseline validator differs from the trusted runtime validator")
     completed = subprocess.run(
         [
             sys.executable,
@@ -112,9 +110,7 @@ def main() -> None:
     # the pinned natural-boundary build's registered 8192 default.
     argv = json.loads((acquisition / "arms/01-subject/server-argv.json").read_text())
     spacing = [
-        argv[index + 1]
-        for index, value in enumerate(argv[:-1])
-        if value == "--checkpoint-min-step"
+        argv[index + 1] for index, value in enumerate(argv[:-1]) if value == "--checkpoint-min-step"
     ]
     if len(spacing) > 1 or expected.pop("checkpoint_min_step") != (
         spacing[0] if spacing else "8192"
@@ -143,16 +139,9 @@ def main() -> None:
     for key, value in expected.items():
         if identity.get(key) != value:
             raise ValueError(f"baseline identity differs at {key}")
-    if (
-        digest(acquisition / "control-manifest.tsv")
-        != identity["control_manifest_sha256"]
-    ):
+    if digest(acquisition / "control-manifest.tsv") != identity["control_manifest_sha256"]:
         raise ValueError("baseline control manifest digest differs")
-    print(
-        digest(acquisition / "identity.tsv")
-        + "\t"
-        + digest(acquisition / "request-decode.json")
-    )
+    print(digest(acquisition / "identity.tsv") + "\t" + digest(acquisition / "request-decode.json"))
 
 
 if __name__ == "__main__":

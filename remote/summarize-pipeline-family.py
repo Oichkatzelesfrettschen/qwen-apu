@@ -199,9 +199,7 @@ def read_ledger(path: str) -> Arm:
                 raise FamilyError(f"{path}: missing required pipeline columns")
             pipeline_id = row[index["id"]]
             if not re.fullmatch(r"0|[1-9][0-9]{0,8}", pipeline_id):
-                raise FamilyError(
-                    f"{path}: pipeline id requires a canonical bounded count"
-                )
+                raise FamilyError(f"{path}: pipeline id requires a canonical bounded count")
             if pipeline_id in pipeline_ids:
                 raise FamilyError(f"{path}: duplicate pipeline id {pipeline_id}")
             pipeline_ids.add(pipeline_id)
@@ -234,12 +232,8 @@ def read_ledger(path: str) -> Arm:
                 "scratch",
                 "subgroups_per_simd",
             ):
-                if column in index and not re.fullmatch(
-                    r"0|[1-9][0-9]{0,8}", row[index[column]]
-                ):
-                    raise FamilyError(
-                        f"{path}: {column} requires a canonical nonnegative count"
-                    )
+                if column in index and not re.fullmatch(r"0|[1-9][0-9]{0,8}", row[index[column]]):
+                    raise FamilyError(f"{path}: {column} requires a canonical nonnegative count")
             quantiles = [
                 numeric[column]
                 for column in ("median_us", "p90_us", "p99_us", "max_us")
@@ -309,9 +303,7 @@ def read_ledger(path: str) -> Arm:
     if missing:
         raise FamilyError(f"{path}: the graphs row states no {', '.join(missing)}")
     if fields["ownership"] not in {"conclusive", "inconclusive"}:
-        raise FamilyError(
-            f"{path}: invalid whole-overlap ownership={fields['ownership']}"
-        )
+        raise FamilyError(f"{path}: invalid whole-overlap ownership={fields['ownership']}")
     try:
         threshold = float(fields["overlap_threshold"])
         cross = float(fields["cross_pipeline_overlap_fraction"])
@@ -319,15 +311,12 @@ def read_ledger(path: str) -> Arm:
         union = float(fields["bracket_union_ms_per_graph"])
         graph_exclusive = float(fields["exclusive_ms_per_graph"])
         if not re.fullmatch(r"[1-9][0-9]{0,8}", graphs_row[2]):
-            raise ValueError(
-                "graph count requires a bounded canonical positive integer"
-            )
+            raise ValueError("graph count requires a bounded canonical positive integer")
         graphs = int(graphs_row[2])
     except ValueError as error:
         raise FamilyError(f"{path}: the graphs row states {error}") from error
     if any(
-        not math.isfinite(value)
-        for value in (threshold, cross, raw_sum, union, graph_exclusive)
+        not math.isfinite(value) for value in (threshold, cross, raw_sum, union, graph_exclusive)
     ):
         raise FamilyError(f"{path}: graphs fields require finite numbers")
     if not 0 <= cross <= 1 or not 0 <= threshold <= 1:
@@ -340,9 +329,7 @@ def read_ledger(path: str) -> Arm:
         or graph_exclusive > union + 0.002
     ):
         raise FamilyError(f"{path}: graph time bounds conflict")
-    if any(
-        not math.isfinite(value * graphs) for value in (raw_sum, union, graph_exclusive)
-    ):
+    if any(not math.isfinite(value * graphs) for value in (raw_sum, union, graph_exclusive)):
         raise FamilyError(f"{path}: graph totals overflow")
     for attribute in (
         "bracket_upper_bound_ms",
@@ -356,40 +343,25 @@ def read_ledger(path: str) -> Arm:
         if not math.isfinite(total):
             raise FamilyError(f"{path}: pipeline totals overflow")
     for attribute in ("bracket_upper_bound_ms", "exclusive_ms"):
-        share = sum(getattr(pipeline, attribute) for pipeline in pipelines) / (
-            raw_sum * graphs
-        )
+        share = sum(getattr(pipeline, attribute) for pipeline in pipelines) / (raw_sum * graphs)
         if not math.isfinite(share):
             raise FamilyError(f"{path}: derived family share overflows")
     rounding_slack = 0.0005 * (graphs + len(pipelines)) + 1e-9
     if (
-        abs(
-            sum(pipeline.bracket_upper_bound_ms for pipeline in pipelines)
-            - raw_sum * graphs
-        )
+        abs(sum(pipeline.bracket_upper_bound_ms for pipeline in pipelines) - raw_sum * graphs)
         > rounding_slack
     ):
-        raise FamilyError(
-            f"{path}: pipeline upper totals disagree with the raw denominator"
-        )
+        raise FamilyError(f"{path}: pipeline upper totals disagree with the raw denominator")
     if (
-        abs(
-            sum(pipeline.exclusive_ms for pipeline in pipelines)
-            - graph_exclusive * graphs
-        )
+        abs(sum(pipeline.exclusive_ms for pipeline in pipelines) - graph_exclusive * graphs)
         > rounding_slack
     ):
-        raise FamilyError(
-            f"{path}: pipeline exclusive totals disagree with the graph total"
-        )
+        raise FamilyError(f"{path}: pipeline exclusive totals disagree with the graph total")
     pipeline_union_total = sum(pipeline.union_ms for pipeline in pipelines)
     if (
         pipeline_union_total < union * graphs - rounding_slack
         or pipeline_union_total > raw_sum * graphs + rounding_slack
-        or any(
-            pipeline.union_ms > union * graphs + rounding_slack
-            for pipeline in pipelines
-        )
+        or any(pipeline.union_ms > union * graphs + rounding_slack for pipeline in pipelines)
     ):
         raise FamilyError(f"{path}: pipeline unions conflict with graph bounds")
     if cross > threshold:

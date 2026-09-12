@@ -66,9 +66,7 @@ def run_helper(
     *command: str,
     normalize_legacy_mode: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    normalization_arguments = (
-        ["--normalize-legacy-mode"] if normalize_legacy_mode else []
-    )
+    normalization_arguments = ["--normalize-legacy-mode"] if normalize_legacy_mode else []
     return subprocess.run(
         [
             str(helper_path),
@@ -105,9 +103,7 @@ def main() -> None:
         temporary_directory = Path(temporary_text)
 
         new_lock = temporary_directory / "new.lock"
-        new_result = run_helper(
-            helper_path, new_lock, "/usr/bin/true", normalize_legacy_mode=True
-        )
+        new_result = run_helper(helper_path, new_lock, "/usr/bin/true", normalize_legacy_mode=True)
         if new_result.returncode != 0 or stat.S_IMODE(new_lock.stat().st_mode) != 0o600:
             raise AssertionError(f"new private lock failed: {new_result.stderr}")
         checks_run += 1
@@ -167,9 +163,7 @@ def main() -> None:
         checks_run += 1
 
         for unadmitted_mode in (0o664, 0o622, 0o666, 0o777):
-            unadmitted_lock = (
-                temporary_directory / f"unadmitted-{unadmitted_mode:o}.lock"
-            )
+            unadmitted_lock = temporary_directory / f"unadmitted-{unadmitted_mode:o}.lock"
             unadmitted_lock.write_bytes(b"unadmitted mode bytes\n")
             unadmitted_lock.chmod(unadmitted_mode)
             unadmitted_result = run_helper(
@@ -214,9 +208,7 @@ def main() -> None:
             normalize_legacy_mode=True,
         )
         if private_result.returncode != 0:
-            raise AssertionError(
-                f"existing private mode failed: {private_result.stderr}"
-            )
+            raise AssertionError(f"existing private mode failed: {private_result.stderr}")
         if stat.S_IMODE(private_lock.stat().st_mode) != 0o700:
             raise AssertionError("existing private mode changed")
         checks_run += 1

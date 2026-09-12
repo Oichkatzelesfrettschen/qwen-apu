@@ -158,9 +158,7 @@ def main() -> int:
         # A file the tree independently holds carries no row at all.
         report(
             "independently_held_file_carries_no_row",
-            "ok"
-            if "campaigns/partial/independent.log" not in by_path
-            else "row emitted",
+            "ok" if "campaigns/partial/independent.log" not in by_path else "row emitted",
         )
 
         # The recovery copy must not read as independent coverage. This is the
@@ -178,9 +176,7 @@ def main() -> int:
         # file, so coverage passes it while it reconstructs nothing.
         report(
             "empty_file_reads_empty_rather_than_covered",
-            "ok"
-            if by_path.get("campaigns/partial/empty.log") == "empty"
-            else "read as covered",
+            "ok" if by_path.get("campaigns/partial/empty.log") == "empty" else "read as covered",
         )
 
         producers = read_rows(root / "evidence/home-directory-sweep-producers.tsv")
@@ -188,8 +184,7 @@ def main() -> int:
         report(
             "producer_document_covers_every_directory",
             "ok"
-            if set(rows)
-            == {"campaigns/partial", "campaigns/whole", "campaigns/unmatched"}
+            if set(rows) == {"campaigns/partial", "campaigns/whole", "campaigns/unmatched"}
             else str(sorted(rows)),
         )
         partial = rows["campaigns/partial"]
@@ -198,8 +193,7 @@ def main() -> int:
             "ok"
             if partial[8] == "mixed"
             and partial[9]
-            == "artifact:clock-sidecar.tsv"
-            + ",receipt:campaigns/partial/campaign-inputs.tsv"
+            == "artifact:clock-sidecar.tsv" + ",receipt:campaigns/partial/campaign-inputs.tsv"
             else f"{partial[8]} / {partial[9]}",
         )
         report(
@@ -212,15 +206,12 @@ def main() -> int:
         report(
             "a_silent_receipt_attributes_nothing",
             "ok"
-            if rows["campaigns/unmatched"][8] == "unknown"
-            and rows["campaigns/unmatched"][9] == "-"
+            if rows["campaigns/unmatched"][8] == "unknown" and rows["campaigns/unmatched"][9] == "-"
             else str(rows["campaigns/unmatched"][8:10]),
         )
         report(
             "storage_role_is_stated_not_derived",
-            "ok"
-            if all(row[10] == "raven2-appliance" for row in producers)
-            else "varies",
+            "ok" if all(row[10] == "raven2-appliance" for row in producers) else "varies",
         )
         # Bytes count once per distinct digest: the duplicated pair is 400
         # bytes of population rather than 800, beside 500 and 600 alone.
@@ -262,9 +253,7 @@ def main() -> int:
         )
 
     if failures:
-        print(
-            f"test-classify-sweep-coverage: {failures} check(s) failed", file=sys.stderr
-        )
+        print(f"test-classify-sweep-coverage: {failures} check(s) failed", file=sys.stderr)
         return 1
     print("test-classify-sweep-coverage: all checks passed")
     return 0

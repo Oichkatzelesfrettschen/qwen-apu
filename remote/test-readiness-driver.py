@@ -62,9 +62,7 @@ class ReadinessDriverTest(unittest.TestCase):
         self.assertEqual(record["restoration"], "not_applicable")
         self.assertIsInstance(record["started_monotonic_ns"], int)
         self.assertEqual(self.result_directory.stat().st_mode & 0o777, 0o700)
-        self.assertEqual(
-            (self.result_directory / "stdout.log").stat().st_mode & 0o777, 0o600
-        )
+        self.assertEqual((self.result_directory / "stdout.log").stat().st_mode & 0o777, 0o600)
         parsed = json.loads((self.result_directory / "terminal.json").read_text())
         self.assertEqual(parsed, record)
 
@@ -87,9 +85,7 @@ class ReadinessDriverTest(unittest.TestCase):
         results_root.parent.mkdir()
         results_root.symlink_to(external, target_is_directory=True)
         with (
-            mock.patch.object(
-                readiness_driver.qwen_home, "path", return_value=results_root
-            ),
+            mock.patch.object(readiness_driver.qwen_home, "path", return_value=results_root),
             self.assertRaisesRegex(
                 readiness_driver.DriverError,
                 "results authority must be a directory",
@@ -198,9 +194,7 @@ class ReadinessDriverTest(unittest.TestCase):
                 "read_process_session",
                 side_effect=PermissionError("hidden"),
             ),
-            mock.patch.object(
-                readiness_driver, "process_owner_uid", return_value=os.getuid()
-            ),
+            mock.patch.object(readiness_driver, "process_owner_uid", return_value=os.getuid()),
         ):
             census = readiness_driver.session_census(41)
         self.assertEqual(census["unreadable_owned"], [42])
@@ -423,9 +417,7 @@ class ReadinessDriverTest(unittest.TestCase):
 
         runtime = readiness_driver.Runtime(publish=fail_final)
         with self.assertRaisesRegex(OSError, "injected final publication failure"):
-            self.run_probe(
-                "print('launch_readiness=accepted scope=test')", runtime=runtime
-            )
+            self.run_probe("print('launch_readiness=accepted scope=test')", runtime=runtime)
         retained = json.loads((self.result_directory / "terminal.json").read_text())
         self.assertEqual(retained["record_state"], "incomplete")
 

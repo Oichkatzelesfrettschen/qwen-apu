@@ -120,9 +120,7 @@ if waited_pid != probe_child_pid:
 
 def process_state(process_id: int) -> str:
     try:
-        stat_text = (Path("/proc") / str(process_id) / "stat").read_text(
-            encoding="ascii"
-        )
+        stat_text = (Path("/proc") / str(process_id) / "stat").read_text(encoding="ascii")
     except FileNotFoundError:
         return "absent"
     command_end = stat_text.rfind(")")
@@ -183,9 +181,7 @@ def require_nonleader_refusal(helper: Path) -> None:
             or process_state(candidate_pid) in {"absent", "Z"}
             or process_state(sibling_pid) in {"absent", "Z"}
         ):
-            raise AssertionError(
-                "nonleader refusal signaled the session leader or a sibling"
-            )
+            raise AssertionError("nonleader refusal signaled the session leader or a sibling")
     finally:
         stop_group(process, leader_pid)
 
@@ -201,9 +197,7 @@ def main() -> int:
         timeout=5,
     )
     if check.returncode != 0 or check.stdout.strip() != "pidfd_process_group=available":
-        raise AssertionError(
-            f"pidfd process-group check failed: {check.returncode} {check.stderr}"
-        )
+        raise AssertionError(f"pidfd process-group check failed: {check.returncode} {check.stderr}")
 
     for failure_errno, expected_message in (
         (errno.EINVAL, "kernel lacks pidfd process-group signaling"),
@@ -273,23 +267,13 @@ def main() -> int:
             text=True,
             timeout=5,
         )
-        if (
-            accepted.returncode != 0
-            or "pidfd_process_group=signaled" not in accepted.stdout
-        ):
-            raise AssertionError(
-                f"matching process identity was not signaled: {accepted.stderr}"
-            )
+        if accepted.returncode != 0 or "pidfd_process_group=signaled" not in accepted.stdout:
+            raise AssertionError(f"matching process identity was not signaled: {accepted.stderr}")
         return_code = process.wait(timeout=5)
         if return_code != -signal.SIGTERM:
-            raise AssertionError(
-                f"group leader exited with {return_code}, expected SIGTERM"
-            )
+            raise AssertionError(f"group leader exited with {return_code}, expected SIGTERM")
         deadline = time.monotonic() + 5
-        while (
-            process_state(child_pid) not in {"absent", "Z"}
-            and time.monotonic() < deadline
-        ):
+        while process_state(child_pid) not in {"absent", "Z"} and time.monotonic() < deadline:
             time.sleep(0.02)
         if process_state(child_pid) not in {"absent", "Z"}:
             raise AssertionError("foreground child survived process-group signaling")
@@ -303,10 +287,7 @@ def main() -> int:
         text=True,
         timeout=5,
     )
-    if (
-        invalid.returncode != 1
-        or "signal must be HUP, INT, or TERM" not in invalid.stderr
-    ):
+    if invalid.returncode != 1 or "signal must be HUP, INT, or TERM" not in invalid.stderr:
         raise AssertionError("unsupported signal was not refused")
     print("test_signal_process_group=accepted")
     return 0

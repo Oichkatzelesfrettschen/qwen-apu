@@ -128,9 +128,7 @@ def start_program(
     ready_line = process.stdout.readline()
     if not ready_line:
         _, stderr = process.communicate(timeout=5)
-        raise RuntimeError(
-            f"descriptor process failed: {stderr.decode(errors='replace')}"
-        )
+        raise RuntimeError(f"descriptor process failed: {stderr.decode(errors='replace')}")
     return process, json.loads(ready_line)
 
 
@@ -218,9 +216,7 @@ def main() -> int:
             except verifier.LeaseError:
                 pass
             else:
-                raise AssertionError(
-                    "verifier accepted contention from a replacement lock inode"
-                )
+                raise AssertionError("verifier accepted contention from a replacement lock inode")
             if not replacement_started:
                 raise AssertionError("inode-replacement interleaving did not execute")
 

@@ -132,17 +132,13 @@ def token_digest(path: Path) -> str:
     if not path.is_file() or path.is_symlink():
         raise SummaryError(f"token record is absent or linked: {path}")
     ids: list[str] = []
-    for number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line:
             continue
         try:
             ids.append(str(int(line)))
         except ValueError:
-            raise SummaryError(
-                f"token record line {number} is not an integer: {path}"
-            ) from None
+            raise SummaryError(f"token record line {number} is not an integer: {path}") from None
     if not ids:
         raise SummaryError(f"token record holds no token: {path}")
     return hashlib.sha256(("\n".join(ids) + "\n").encode("utf-8")).hexdigest()
@@ -159,9 +155,7 @@ def count_samples(path: Path) -> int:
     if not path.is_file() or path.is_symlink():
         raise SummaryError(f"clock sidecar record is absent or linked: {path}")
     samples = [
-        line
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line and line[0].isdigit()
+        line for line in path.read_text(encoding="utf-8").splitlines() if line and line[0].isdigit()
     ]
     if not samples:
         raise SummaryError(f"clock sidecar record holds no sample: {path}")
@@ -189,9 +183,7 @@ def read_json(path: Path) -> dict[str, object]:
     return value
 
 
-def response_values(
-    document: dict[str, object], predict: int
-) -> tuple[str, float, float, int]:
+def response_values(document: dict[str, object], predict: int) -> tuple[str, float, float, int]:
     tokens = document.get("tokens")
     if (
         not isinstance(tokens, list)
@@ -218,21 +210,15 @@ def response_values(
         numbers.append(positive_float(str(value), name, Path("response.json")))
     rate, elapsed = numbers
     # The pinned ordinary completion times predicted_n - 1 decode transitions.
-    if not math.isclose(
-        rate * elapsed / 1000, predict - 1, rel_tol=0.002, abs_tol=0.002
-    ):
-        raise SummaryError(
-            "raw decode rate, elapsed time and transition count disagree"
-        )
+    if not math.isclose(rate * elapsed / 1000, predict - 1, rel_tol=0.002, abs_tol=0.002):
+        raise SummaryError("raw decode rate, elapsed time and transition count disagree")
     return "".join(f"{token}\n" for token in tokens), rate, elapsed, timings["prompt_n"]
 
 
 def summarize_arm(directory: Path) -> ArmSummary:
     identity = read_key_value(directory.parent.parent / "identity.tsv")
     repeats = integer(require(identity, "repeats", directory), "repeats", 2, 16)
-    predict = integer(
-        require(identity, "generate_tokens", directory), "generate_tokens", 2, 32768
-    )
+    predict = integer(require(identity, "generate_tokens", directory), "generate_tokens", 2, 32768)
     terminal = read_key_value(directory / "terminal.tsv")
     if any(
         terminal.get(key) != value
@@ -252,9 +238,7 @@ def summarize_arm(directory: Path) -> ArmSummary:
         or "clock_invariant=held" not in validation
         or "sclk_source=sclk_actual_mhz" not in validation
     ):
-        raise SummaryError(
-            f"clock validation refused or has another source: {directory}"
-        )
+        raise SummaryError(f"clock validation refused or has another source: {directory}")
     count_samples(directory / "clock-samples.tsv")
     contract = read_key_value(directory.parent.parent / "sampler-contract.tsv")
     window_record = read_key_value(directory / "decode-window.tsv")
@@ -284,13 +268,8 @@ def summarize_arm(directory: Path) -> ArmSummary:
         arguments.extend([f"--{flag}", contract[key]])
     arguments.extend(["--allow-unavailable", contract["allowed_unavailable"]])
     # The current validator reprocesses raw telemetry; acquired code stays evidence.
-    validation_run = subprocess.run(
-        arguments, capture_output=True, text=True, timeout=15
-    )
-    if (
-        validation_run.returncode
-        or "sclk_source=sclk_actual_mhz" not in validation_run.stdout
-    ):
+    validation_run = subprocess.run(arguments, capture_output=True, text=True, timeout=15)
+    if validation_run.returncode or "sclk_source=sclk_actual_mhz" not in validation_run.stdout:
         raise SummaryError(
             f"raw clock admission failed: {validation_run.stdout} {validation_run.stderr}"
         )
@@ -355,34 +334,22 @@ def summarize_arm(directory: Path) -> ArmSummary:
         for line in stream.splitlines()
         if line.startswith("data: ") and line[6:] != "[DONE]"
     ]
-    if (
-        not events
-        or events[-1] != warmup
-        or not any(event.get("content") for event in events)
-    ):
+    if not events or events[-1] != warmup or not any(event.get("content") for event in events):
         raise SummaryError("retained stream disagrees with its terminal response")
     warmup_tokens = [token for event in events for token in event.get("tokens", [])]
     reconstructed = dict(warmup)
     reconstructed["tokens"] = warmup_tokens
     response_values(reconstructed, predict)
     begin = integer(require(ttft, "request_begin_ns", directory), "request_begin_ns", 1)
-    first = integer(
-        require(ttft, "first_content_ns", directory), "first_content_ns", begin
-    )
-    complete = integer(
-        require(ttft, "response_end_ns", directory), "response_end_ns", first
-    )
+    first = integer(require(ttft, "first_content_ns", directory), "first_content_ns", begin)
+    complete = integer(require(ttft, "response_end_ns", directory), "response_end_ns", first)
     if complete <= first or ttft.get("status") != "completed":
         raise SummaryError("warmup completion chronology failed")
     ttft_ms = positive_float(require(ttft, "ttft_ms", directory), "ttft_ms", directory)
     if abs(ttft_ms - (first - begin) / 1e6) > 0.002:
         raise SummaryError("first-content timing disagrees with monotonic timestamps")
-    load_ms = positive_float(
-        require(load, "load_wall_ms", directory), "load_wall_ms", directory
-    )
-    launch_begin = integer(
-        require(load, "launch_begin_ns", directory), "launch_begin_ns", 1
-    )
+    load_ms = positive_float(require(load, "load_wall_ms", directory), "load_wall_ms", directory)
+    launch_begin = integer(require(load, "launch_begin_ns", directory), "launch_begin_ns", 1)
     ready = integer(
         require(load, "health_ready_ns", directory), "health_ready_ns", launch_begin + 1
     )
@@ -402,9 +369,7 @@ def summarize_arm(directory: Path) -> ArmSummary:
         ):
             raise SummaryError("token digest differs from raw response or retained row")
         for key, value in (("decode_tok_per_second", rate), ("decode_ms", elapsed)):
-            if not math.isclose(
-                positive_float(row[key], key, directory), value, rel_tol=1e-9
-            ):
+            if not math.isclose(positive_float(row[key], key, directory), value, rel_tol=1e-9):
                 raise SummaryError(f"derived {key} differs from raw response")
         if (
             integer(row["predicted_n"], "predicted_n") != predict
@@ -412,12 +377,8 @@ def summarize_arm(directory: Path) -> ArmSummary:
         ):
             raise SummaryError("derived counts differ from raw response")
         request_time = read_key_value(repeat_directory / "request-time.tsv")
-        request_begin = integer(
-            require(request_time, "begin_ns", directory), "begin_ns", complete
-        )
-        complete = integer(
-            require(request_time, "end_ns", directory), "end_ns", request_begin + 1
-        )
+        request_begin = integer(require(request_time, "begin_ns", directory), "begin_ns", complete)
+        complete = integer(require(request_time, "end_ns", directory), "end_ns", request_begin + 1)
         # Server decode time is contained in the completed HTTP request interval.
         if elapsed > (complete - request_begin) / 1e6 + 2:
             raise SummaryError("server decode time exceeds request elapsed time")
@@ -432,11 +393,7 @@ def summarize_arm(directory: Path) -> ArmSummary:
         for line in (directory / "clock-samples.tsv").read_text().splitlines()
         if line and line[0].isdigit()
     ]
-    if (
-        not sample_times
-        or min(sample_times) > window_begin
-        or max(sample_times) < window_end
-    ):
+    if not sample_times or min(sample_times) > window_begin or max(sample_times) < window_end:
         raise SummaryError("sampler requires covering samples before and after decode")
     return ArmSummary(
         slot=require(load, "slot", directory),
@@ -479,9 +436,9 @@ def summarize(output_directory: Path) -> str:
         "sampler-contract.tsv",
     ):
         path = output_directory / name
-        if path.is_symlink() or hashlib.sha256(
-            path.read_bytes()
-        ).hexdigest() != identity.get(f"{name}_sha256"):
+        if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != identity.get(
+            f"{name}_sha256"
+        ):
             raise SummaryError(f"acquisition input digest differs: {name}")
     for role in ("control", "candidate"):
         if identity.get(f"{role}_manifest_sha256") != "-":
@@ -508,9 +465,7 @@ def summarize(output_directory: Path) -> str:
         raise SummaryError("arm terminal ledger population differs")
     for index, (role, line) in enumerate(zip(roles, arm_rows[1:], strict=True), 1):
         letter = "B" if mode == "single" else ("K" if role == "candidate" else "C")
-        digest = identity.get(
-            f"{'candidate' if role == 'candidate' else 'control'}_server_sha256"
-        )
+        digest = identity.get(f"{'candidate' if role == 'candidate' else 'control'}_server_sha256")
         if line.split("\t") != [f"{index:02d}", letter, role, digest, "completed", "-"]:
             raise SummaryError(
                 "arm terminal ledger disagrees with registered order/identity/status"
@@ -518,9 +473,7 @@ def summarize(output_directory: Path) -> str:
     for name, stream in (("ttft", True), ("decode", False)):
         path = output_directory / f"request-{name}.json"
         request = read_json(path)
-        if hashlib.sha256(path.read_bytes()).hexdigest() != identity.get(
-            f"{name}_request_sha256"
-        ):
+        if hashlib.sha256(path.read_bytes()).hexdigest() != identity.get(f"{name}_request_sha256"):
             raise SummaryError("request digest differs")
         for key, value in {
             "n_predict": int(identity["generate_tokens"]),
@@ -577,9 +530,7 @@ def summarize(output_directory: Path) -> str:
     by_role: dict[str, set[str]] = {}
     for arm in arms:
         by_role.setdefault(arm.role, set()).update(arm.token_digests)
-    repeatability = (
-        "held" if all(len(digests) == 1 for digests in by_role.values()) else "diverged"
-    )
+    repeatability = "held" if all(len(digests) == 1 for digests in by_role.values()) else "diverged"
     lines.append("")
     lines.append(f"schema\t{SCHEMA}")
     lines.append(f"arms\t{len(arms)}")
@@ -597,12 +548,8 @@ def summarize(output_directory: Path) -> str:
     lines.append("acquisition_completeness\tcompleted")
     lines.append("instrument_admission\taccepted")
     eligible = repeatability == "held" and cross in ("not_applicable", "identical")
-    lines.append(
-        f"performance_result\t{'descriptive' if eligible else 'withheld_correctness'}"
-    )
-    lines.append(
-        f"reader_sha256\t{hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}"
-    )
+    lines.append(f"performance_result\t{'descriptive' if eligible else 'withheld_correctness'}")
+    lines.append(f"reader_sha256\t{hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}")
     lines.append(f"candidate_over_control\t{paired_delta(arms) if eligible else '-'}")
     return "\n".join(lines) + "\n"
 
@@ -614,9 +561,7 @@ def main(argv: list[str]) -> int:
         write = True
         arguments.pop()
     if len(arguments) != 1:
-        sys.stderr.write(
-            "usage: summarize-checkpoint-baseline.py OUTPUT_DIRECTORY [--write]\n"
-        )
+        sys.stderr.write("usage: summarize-checkpoint-baseline.py OUTPUT_DIRECTORY [--write]\n")
         return 2
     output_directory = Path(arguments[0])
     try:
@@ -642,9 +587,7 @@ def main(argv: list[str]) -> int:
             archived.write_bytes(previous)
         summary_path.write_text(text, encoding="utf-8")
     elif summary_path.is_file() and summary_path.read_text(encoding="utf-8") != text:
-        sys.stderr.write(
-            f"retained summary differs from the recomputation: {summary_path}\n"
-        )
+        sys.stderr.write(f"retained summary differs from the recomputation: {summary_path}\n")
         return 1
     sys.stdout.write(text)
     return 0

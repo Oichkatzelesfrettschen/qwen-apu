@@ -200,15 +200,11 @@ def exact_string(value: Any, name: str, path: Path) -> str:
 
 
 def is_sha256(value: str) -> bool:
-    return len(value) == 64 and all(
-        character in "0123456789abcdef" for character in value
-    )
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def is_git_object_id(value: str) -> bool:
-    return len(value) in {40, 64} and all(
-        character in "0123456789abcdef" for character in value
-    )
+    return len(value) in {40, 64} and all(character in "0123456789abcdef" for character in value)
 
 
 def is_canonical_nonnegative_integer(value: str) -> bool:
@@ -237,9 +233,7 @@ def validate_campaign_inputs(path: Path) -> dict[str, str]:
         raise CampaignError(f"{path} keys differ: missing={missing} extra={extra}")
     expected_policy = {
         "schema": "fixed64-served-campaign-v2",
-        "execution_path": (
-            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        ),
+        "execution_path": ("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"),
         "execution_surface": "hp14-ssh",
         "host_shortname": "hp14-dk1xxx",
         "ssh_session": "present",
@@ -297,9 +291,7 @@ def validate_campaign_inputs(path: Path) -> dict[str, str]:
     return values
 
 
-def index_identity_rows(
-    rows: list[dict[str, str]], path: Path
-) -> dict[str, dict[str, str]]:
+def index_identity_rows(rows: list[dict[str, str]], path: Path) -> dict[str, dict[str, str]]:
     indexed: dict[str, dict[str, str]] = {}
     for row in rows:
         subject = row["subject"]
@@ -309,9 +301,7 @@ def index_identity_rows(
     return indexed
 
 
-def read_identity_before(
-    path: Path, latency_probe_mode: str
-) -> dict[str, dict[str, str]]:
+def read_identity_before(path: Path, latency_probe_mode: str) -> dict[str, dict[str, str]]:
     rows = read_tsv(path, ("subject", "path", "bytes", "sha256"))
     indexed = index_identity_rows(rows, path)
     expected_subjects = set(BASE_IDENTITY_SUBJECTS)
@@ -320,9 +310,7 @@ def read_identity_before(
     if set(indexed) != expected_subjects:
         missing = sorted(expected_subjects - set(indexed))
         extra = sorted(set(indexed) - expected_subjects)
-        raise CampaignError(
-            f"{path} subject set differs: missing={missing} extra={extra}"
-        )
+        raise CampaignError(f"{path} subject set differs: missing={missing} extra={extra}")
     for subject, row in indexed.items():
         if not Path(row["path"]).is_absolute():
             raise CampaignError(f"{path} subject {subject} path must be absolute")
@@ -353,8 +341,7 @@ def validate_identity_check(before_path: Path, check_path: Path) -> None:
         missing = sorted(set(before_by_subject) - set(check_by_subject))
         extra = sorted(set(check_by_subject) - set(before_by_subject))
         raise CampaignError(
-            f"{check_path} differs from {before_path.name}: "
-            f"missing={missing} extra={extra}"
+            f"{check_path} differs from {before_path.name}: missing={missing} extra={extra}"
         )
     for subject, before in before_by_subject.items():
         expected_check = {
@@ -367,9 +354,7 @@ def validate_identity_check(before_path: Path, check_path: Path) -> None:
             "state": "accepted",
         }
         if check_by_subject[subject] != expected_check:
-            raise CampaignError(
-                f"{check_path} differs from {before_path.name}: subject {subject}"
-            )
+            raise CampaignError(f"{check_path} differs from {before_path.name}: subject {subject}")
 
 
 def read_model_artifact_ledger(path: Path) -> dict[str, dict[str, str]]:
@@ -382,9 +367,7 @@ def read_model_artifact_ledger(path: Path) -> dict[str, dict[str, str]]:
         "source_revision",
     )
     rows: dict[str, dict[str, str]] = {}
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line or line.startswith("#"):
             continue
         values = line.split("\t")
@@ -399,9 +382,7 @@ def read_model_artifact_ledger(path: Path) -> dict[str, dict[str, str]]:
 
 
 def require_arm_artifacts(arm_directory: Path) -> dict[str, Path]:
-    artifacts = {
-        filename: arm_directory / filename for _, filename in ARM_ARTIFACT_DIGEST_FIELDS
-    }
+    artifacts = {filename: arm_directory / filename for _, filename in ARM_ARTIFACT_DIGEST_FIELDS}
     for filename, path in artifacts.items():
         if not path.is_file() or path.is_symlink():
             raise CampaignError(f"required arm artifact is absent or linked: {path}")
@@ -523,8 +504,7 @@ def validate_runtime_inputs(
         "artifact_model_file": model["model_file"],
     }
     observed_model_strings = {
-        key: exact_string(model_identity[key], key, path)
-        for key in expected_model_strings
+        key: exact_string(model_identity[key], key, path) for key in expected_model_strings
     }
     if observed_model_strings != expected_model_strings:
         raise CampaignError(f"{path} model identity differs from models-resolved.tsv")
@@ -550,10 +530,7 @@ def validate_runtime_inputs(
         "bytes",
         "sha256",
     }
-    if (
-        not isinstance(executable_identity, dict)
-        or set(executable_identity) != executable_keys
-    ):
+    if not isinstance(executable_identity, dict) or set(executable_identity) != executable_keys:
         raise CampaignError(f"{path} executable identity key set differs")
     expected_executable_strings = {
         "path": expected_server,
@@ -569,9 +546,7 @@ def validate_runtime_inputs(
         executable_identity["descriptor_path"], "executable.descriptor_path", path
     )
     if require_proc_descriptor(executable_descriptor, "6", path) != runner_pid:
-        raise CampaignError(
-            f"{path} model and executable descriptors use different PIDs"
-        )
+        raise CampaignError(f"{path} model and executable descriptors use different PIDs")
     for field in ("device", "inode", "bytes"):
         value = exact_integer(executable_identity[field], f"executable.{field}", path)
         if value < 0 or (field != "device" and value == 0):
@@ -624,8 +599,7 @@ def validate_server_process(
         "ssh_session": ssh_session,
     }
     observed_execution_contract = {
-        key: exact_string(document[key], key, path)
-        for key in expected_execution_contract
+        key: exact_string(document[key], key, path) for key in expected_execution_contract
     }
     if observed_execution_contract != expected_execution_contract:
         raise CampaignError(f"{path} execution-surface contract differs")
@@ -638,17 +612,13 @@ def validate_server_process(
     executable = exact_string(document["executable"], "executable", path)
     if not Path(executable).is_absolute() or executable != expected_server:
         raise CampaignError(f"{path} executable differs from server_resolved")
-    executable_sha256 = exact_string(
-        document["executable_sha256"], "executable_sha256", path
-    )
+    executable_sha256 = exact_string(document["executable_sha256"], "executable_sha256", path)
     if not is_sha256(executable_sha256) or executable_sha256 != expected_server_sha256:
         raise CampaignError(f"{path} executable_sha256 differs from identity-before")
     runtime_executable = cast(dict[str, Any], runtime_inputs["executable"])
     observed_executable_identity = {
         "path": executable,
-        "device": exact_integer(
-            document["executable_device"], "executable_device", path
-        ),
+        "device": exact_integer(document["executable_device"], "executable_device", path),
         "inode": exact_integer(document["executable_inode"], "executable_inode", path),
         "bytes": exact_integer(document["executable_bytes"], "executable_bytes", path),
         "sha256": executable_sha256,
@@ -702,18 +672,14 @@ def validate_server_process(
         mismatch_index = next(
             (
                 index
-                for index, (observed, expected) in enumerate(
-                    zip(argv, expected_argv, strict=False)
-                )
+                for index, (observed, expected) in enumerate(zip(argv, expected_argv, strict=False))
                 if observed != expected
             ),
             min(len(argv), len(expected_argv)),
         )
         observed_argument = argv[mismatch_index] if mismatch_index < len(argv) else None
         expected_argument = (
-            expected_argv[mismatch_index]
-            if mismatch_index < len(expected_argv)
-            else None
+            expected_argv[mismatch_index] if mismatch_index < len(expected_argv) else None
         )
         raise CampaignError(
             f"{path} server-process argv differs from the canonical launch "
@@ -741,9 +707,7 @@ def parse_status_fields(line: str, prefix: str, path: Path) -> dict[str, str]:
     for token in line.split():
         key, separator, value = token.partition("=")
         if not separator or not key or not value or key in fields:
-            raise CampaignError(
-                f"{path} contains a malformed {prefix or 'state'} field"
-            )
+            raise CampaignError(f"{path} contains a malformed {prefix or 'state'} field")
         fields[key] = value
     return fields
 
@@ -793,16 +757,12 @@ def validate_session_status(path: Path, model: dict[str, str]) -> int:
     }
     present_lan_keys = set(state_fields) & lan_state_keys
     if present_lan_keys and present_lan_keys != lan_state_keys:
-        raise CampaignError(
-            f"{path} carries a partial LAN key set: {sorted(present_lan_keys)}"
-        )
+        raise CampaignError(f"{path} carries a partial LAN key set: {sorted(present_lan_keys)}")
     core_fields = set(state_fields) - lan_state_keys
     if core_fields != expected_state_keys:
         missing = sorted(expected_state_keys - core_fields)
         extra = sorted(core_fields - expected_state_keys)
-        raise CampaignError(
-            f"{path} state keys differ: missing={missing} extra={extra}"
-        )
+        raise CampaignError(f"{path} state keys differ: missing={missing} extra={extra}")
     if present_lan_keys and (
         state_fields["lan_exposure"] != "0" or state_fields["lan_open"] != "0"
     ):
@@ -903,8 +863,7 @@ def validate_arm_server_identity(
     )
     if captured_server_pid != canonical_server_pid:
         raise CampaignError(
-            f"{server_process_path} pid differs from canonical server_pid "
-            f"in {session_status_path}"
+            f"{server_process_path} pid differs from canonical server_pid in {session_status_path}"
         )
     return canonical_server_pid
 
@@ -915,9 +874,7 @@ def positive_decimal(value: Any, name: str, path: Path) -> Decimal:
     try:
         finite_value = float(value)
     except (OverflowError, ValueError) as error:
-        raise CampaignError(
-            f"{path} field {name} must be finite and positive"
-        ) from error
+        raise CampaignError(f"{path} field {name} must be finite and positive") from error
     if not math.isfinite(finite_value) or finite_value <= 0:
         raise CampaignError(f"{path} field {name} must be finite and positive")
     try:
@@ -961,18 +918,14 @@ def expected_schedule() -> list[tuple[int, int, str, str]]:
     rows: list[tuple[int, int, str, str]] = []
     slot = 0
     for block, direction in enumerate(BLOCK_DIRECTIONS, start=1):
-        model_ids = (
-            MODEL_ORDER if direction == "forward" else tuple(reversed(MODEL_ORDER))
-        )
+        model_ids = MODEL_ORDER if direction == "forward" else tuple(reversed(MODEL_ORDER))
         for model_id in model_ids:
             slot += 1
             rows.append((slot, block, direction, model_id))
     return rows
 
 
-def summarize(
-    campaign_directory: Path, summary_path: Path, model_summary_path: Path
-) -> str:
+def summarize(campaign_directory: Path, summary_path: Path, model_summary_path: Path) -> str:
     schedule_fields = (
         "slot",
         "block",
@@ -1015,14 +968,10 @@ def summarize(
             after_path = after_path.with_suffix(".txt")
         if before_path.read_bytes() != after_path.read_bytes():
             raise CampaignError(f"{witness_name} changed during the campaign")
-    campaign_inputs = validate_campaign_inputs(
-        campaign_directory / "campaign-inputs.tsv"
-    )
+    campaign_inputs = validate_campaign_inputs(campaign_directory / "campaign-inputs.tsv")
     source_revision = campaign_inputs["source_revision"]
     source_head = (
-        (campaign_directory / "source-head-before.txt")
-        .read_text(encoding="ascii")
-        .strip()
+        (campaign_directory / "source-head-before.txt").read_text(encoding="ascii").strip()
     )
     source_status_bytes = (campaign_directory / "source-status-before.txt").read_bytes()
     observed_source_state = "clean" if not source_status_bytes else "modified"
@@ -1031,10 +980,7 @@ def summarize(
         or not is_git_object_id(source_revision)
         or campaign_inputs["source_tracked_state"] != observed_source_state
         or campaign_inputs["require_clean_source"] not in {"0", "1"}
-        or (
-            campaign_inputs["require_clean_source"] == "1"
-            and observed_source_state != "clean"
-        )
+        or (campaign_inputs["require_clean_source"] == "1" and observed_source_state != "clean")
     ):
         raise CampaignError("campaign source identity or tracked-state policy differs")
     expected_server = campaign_inputs["server_resolved"]
@@ -1045,14 +991,10 @@ def summarize(
     server_identity = identity_before["server"]
     expected_server_sha256 = server_identity["sha256"]
     if server_identity["path"] != expected_server:
-        raise CampaignError(
-            "identity-before.tsv server identity differs from server_resolved"
-        )
+        raise CampaignError("identity-before.tsv server identity differs from server_resolved")
     radv_identity = identity_before["radv_icd"]
     if radv_identity["path"] != campaign_inputs["radv_icd"]:
-        raise CampaignError(
-            "campaign-inputs.tsv radv_icd differs from identity-before.tsv"
-        )
+        raise CampaignError("campaign-inputs.tsv radv_icd differs from identity-before.tsv")
     if len(schedule) != 12 or len(statuses) != 12:
         raise CampaignError("the campaign requires twelve schedule and status rows")
 
@@ -1074,9 +1016,7 @@ def summarize(
         models_directory = campaign_inputs["models_directory"]
         expected_model_path = str(Path(models_directory) / model["model_file"])
         expected_artifact_identity = artifact_rows[model_id]
-        observed_artifact_identity = {
-            field: model[field] for field in expected_artifact_identity
-        }
+        observed_artifact_identity = {field: model[field] for field in expected_artifact_identity}
         if (
             model["model_path"] != expected_model_path
             or model["publisher_bytes"] != model["model_bytes"]
@@ -1088,9 +1028,7 @@ def summarize(
             or not is_git_object_id(model["source_revision"])
             or observed_artifact_identity != expected_artifact_identity
         ):
-            raise CampaignError(
-                f"models-resolved.tsv publisher identity differs for {model_id}"
-            )
+            raise CampaignError(f"models-resolved.tsv publisher identity differs for {model_id}")
         model_identity = identity_before[f"model:{model_id}"]
         if model_identity != {
             "subject": f"model:{model_id}",
@@ -1098,9 +1036,7 @@ def summarize(
             "bytes": model["model_bytes"],
             "sha256": model["model_sha256"],
         }:
-            raise CampaignError(
-                f"identity-before.tsv model identity differs for {model_id}"
-            )
+            raise CampaignError(f"identity-before.tsv model identity differs for {model_id}")
     if campaign_inputs["require_clean_source"] == "1":
         for relative_configuration in (
             "models.tsv",
@@ -1110,18 +1046,12 @@ def summarize(
             "validated-tuples.tsv",
             "ctx-checkpoints.tsv",
         ):
-            retained_path = (
-                campaign_directory / "configuration" / relative_configuration
-            )
+            retained_path = campaign_directory / "configuration" / relative_configuration
             archived_path = (
-                campaign_directory
-                / "configuration/runtime-source/remote"
-                / relative_configuration
+                campaign_directory / "configuration/runtime-source/remote" / relative_configuration
             )
             if retained_path.read_bytes() != archived_path.read_bytes():
-                raise CampaignError(
-                    f"retained and Git-archived {relative_configuration} differ"
-                )
+                raise CampaignError(f"retained and Git-archived {relative_configuration} differ")
     status_by_slot = {row["slot"]: row for row in statuses}
     if len(status_by_slot) != len(statuses):
         raise CampaignError("arm-status.tsv contains duplicate slots")
@@ -1166,12 +1096,8 @@ def summarize(
         "arm_directory",
     )
     summary_rows: list[dict[str, str]] = []
-    rates_by_model: dict[str, list[Decimal]] = {
-        model_id: [] for model_id in MODEL_ORDER
-    }
-    prompt_counts_by_model: dict[str, set[int]] = {
-        model_id: set() for model_id in MODEL_ORDER
-    }
+    rates_by_model: dict[str, list[Decimal]] = {model_id: [] for model_id in MODEL_ORDER}
+    prompt_counts_by_model: dict[str, set[int]] = {model_id: set() for model_id in MODEL_ORDER}
 
     for schedule_row, expected_row in zip(schedule, expected_rows, strict=True):
         expected_slot, expected_block, expected_direction, expected_model = expected_row
@@ -1188,9 +1114,7 @@ def summarize(
             expected_model,
         )
         if observed_shape != expected_shape:
-            raise CampaignError(
-                f"schedule slot {expected_slot} differs: {observed_shape!r}"
-            )
+            raise CampaignError(f"schedule slot {expected_slot} differs: {observed_shape!r}")
 
         model = model_by_id[expected_model]
         if schedule_row["role"] != model["role"]:
@@ -1273,33 +1197,25 @@ def summarize(
         prompt_n = exact_integer(timings.get("prompt_n"), "prompt_n", response_path)
         if prompt_n <= 0:
             raise CampaignError(f"{response_path} field prompt_n must be positive")
-        prompt_ms = positive_decimal(
-            timings.get("prompt_ms"), "prompt_ms", response_path
-        )
+        prompt_ms = positive_decimal(timings.get("prompt_ms"), "prompt_ms", response_path)
         prompt_rate = positive_decimal(
             timings.get("prompt_per_second"),
             "prompt_per_second",
             response_path,
         )
         recomputed_prompt_rate = Decimal(1000) * Decimal(prompt_n) / prompt_ms
-        prompt_rate_error = (
-            abs(prompt_rate - recomputed_prompt_rate) / recomputed_prompt_rate
-        )
+        prompt_rate_error = abs(prompt_rate - recomputed_prompt_rate) / recomputed_prompt_rate
         if prompt_rate_error > RATE_RELATIVE_TOLERANCE:
             raise CampaignError(
                 f"{response_path} prompt rate differs from elapsed time: "
                 f"{prompt_rate} versus {recomputed_prompt_rate}"
             )
-        predicted_n = exact_integer(
-            timings.get("predicted_n"), "predicted_n", response_path
-        )
+        predicted_n = exact_integer(timings.get("predicted_n"), "predicted_n", response_path)
         if predicted_n != EXPECTED_TOKENS:
             raise CampaignError(
                 f"{response_path} predicted_n is {predicted_n}, expected {EXPECTED_TOKENS}"
             )
-        predicted_ms = positive_decimal(
-            timings.get("predicted_ms"), "predicted_ms", response_path
-        )
+        predicted_ms = positive_decimal(timings.get("predicted_ms"), "predicted_ms", response_path)
         reported_rate = positive_decimal(
             timings.get("predicted_per_second"),
             "predicted_per_second",
@@ -1342,9 +1258,7 @@ def summarize(
             child_summary.get("prompt_tokens"), "prompt_tokens", child_summary_path
         )
         if child_prompt_tokens != prompt_n:
-            raise CampaignError(
-                f"{child_summary_path} prompt count differs from the response"
-            )
+            raise CampaignError(f"{child_summary_path} prompt count differs from the response")
         if request_status != 0 or teardown_status != 0 or child_tokens != predicted_n:
             raise CampaignError(f"{child_summary_path} carries a failed child status")
         if child_summary.get("valid") is not True:
@@ -1362,9 +1276,7 @@ def summarize(
             child_summary_path,
         )
         if abs(child_prompt_rate - prompt_rate) > Decimal("0.000000001"):
-            raise CampaignError(
-                f"{child_summary_path} prompt rate differs from the response"
-            )
+            raise CampaignError(f"{child_summary_path} prompt rate differs from the response")
         child_prompt_ms = positive_decimal(
             child_summary.get("prefill_ms"), "prefill_ms", child_summary_path
         )
@@ -1493,22 +1405,16 @@ def summarize(
     return "met" if all_models_meet_target else "unmet"
 
 
-def verify_sealed(
-    campaign_directory: Path, selected_manifest: Path | None = None
-) -> None:
+def verify_sealed(campaign_directory: Path, selected_manifest: Path | None = None) -> None:
     campaign_resolved = campaign_directory.resolve(strict=True)
     if selected_manifest is None:
         manifest_path = campaign_directory / "SHA256SUMS"
     else:
         manifest_candidate = (
-            selected_manifest
-            if selected_manifest.is_absolute()
-            else Path.cwd() / selected_manifest
+            selected_manifest if selected_manifest.is_absolute() else Path.cwd() / selected_manifest
         )
         if manifest_candidate.parent.resolve(strict=True) != campaign_resolved:
-            raise CampaignError(
-                "--manifest-path must name a file directly under the campaign"
-            )
+            raise CampaignError("--manifest-path must name a file directly under the campaign")
         manifest_path = campaign_directory / manifest_candidate.name
     if not manifest_path.is_file() or manifest_path.is_symlink():
         raise CampaignError(f"selected manifest is absent or linked: {manifest_path}")
@@ -1554,8 +1460,7 @@ def verify_sealed(
             f"sealed manifest differs: missing={missing} extra={extra} changed={changed}"
         )
     expected_manifest_bytes = "".join(
-        f"{digest}  {relative_path}\n"
-        for relative_path, digest in sorted(observed_entries.items())
+        f"{digest}  {relative_path}\n" for relative_path, digest in sorted(observed_entries.items())
     ).encode("utf-8")
     if manifest_bytes != expected_manifest_bytes:
         raise CampaignError("sealed manifest serialization or ordering differs")
@@ -1569,10 +1474,7 @@ def verify_sealed(
         recomputed_target_state = summarize(
             campaign_directory, recomputed_summary, recomputed_model_summary
         )
-        if (
-            recomputed_summary.read_bytes()
-            != (campaign_directory / "summary.tsv").read_bytes()
-        ):
+        if recomputed_summary.read_bytes() != (campaign_directory / "summary.tsv").read_bytes():
             raise CampaignError("sealed summary differs from full recomputation")
         if (
             recomputed_model_summary.read_bytes()
@@ -1580,9 +1482,7 @@ def verify_sealed(
         ):
             raise CampaignError("sealed model summary differs from full recomputation")
 
-    with (campaign_directory / "summary.tsv").open(
-        newline="", encoding="utf-8"
-    ) as handle:
+    with (campaign_directory / "summary.tsv").open(newline="", encoding="utf-8") as handle:
         summary_rows = list(csv.DictReader(handle, delimiter="\t"))
     if len(summary_rows) != 12:
         raise CampaignError("sealed summary does not contain twelve arms")
@@ -1591,13 +1491,9 @@ def verify_sealed(
         for field, filename in ARM_ARTIFACT_DIGEST_FIELDS:
             manifest_key = f"./{arm_directory}/{filename}"
             if row.get(field) != manifest_entries.get(manifest_key):
-                raise CampaignError(
-                    f"sealed summary field {field} differs for {arm_directory}"
-                )
+                raise CampaignError(f"sealed summary field {field} differs for {arm_directory}")
     canonical_request_sha256 = sha256_file(campaign_directory / "request.json")
-    if any(
-        row.get("request_sha256") != canonical_request_sha256 for row in summary_rows
-    ):
+    if any(row.get("request_sha256") != canonical_request_sha256 for row in summary_rows):
         raise CampaignError("sealed summary request identity differs")
 
     validate_identity_check(
@@ -1645,10 +1541,7 @@ def main() -> int:
     arguments = parse_arguments()
     try:
         if arguments.verify_sealed:
-            if (
-                arguments.summary_path is not None
-                or arguments.model_summary_path is not None
-            ):
+            if arguments.summary_path is not None or arguments.model_summary_path is not None:
                 raise CampaignError("--verify-sealed accepts only a campaign directory")
             verify_sealed(arguments.campaign_directory, arguments.manifest_path)
             print("fixed64_campaign_seal=accepted")

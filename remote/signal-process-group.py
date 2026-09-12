@@ -32,9 +32,7 @@ def parse_positive_integer(value: str, name: str) -> int:
 
 def read_process_identity(process_id: int) -> tuple[int, int, int]:
     try:
-        stat_text = (Path("/proc") / str(process_id) / "stat").read_text(
-            encoding="ascii"
-        )
+        stat_text = (Path("/proc") / str(process_id) / "stat").read_text(encoding="ascii")
     except (FileNotFoundError, ProcessLookupError) as error:
         raise SignalProcessGroupError("process leader is absent") from error
     command_end = stat_text.rfind(")")
@@ -48,9 +46,7 @@ def read_process_identity(process_id: int) -> tuple[int, int, int]:
         session_id = int(fields[3])
         start_time_ticks = int(fields[19])
     except ValueError as error:
-        raise SignalProcessGroupError(
-            "process leader stat has malformed integers"
-        ) from error
+        raise SignalProcessGroupError("process leader stat has malformed integers") from error
     return process_group_id, session_id, start_time_ticks
 
 
@@ -62,9 +58,7 @@ def signal_process_group(
     except ProcessLookupError as error:
         raise SignalProcessGroupError("process leader is absent") from error
     try:
-        process_group_id, session_id, observed_start_time_ticks = read_process_identity(
-            process_id
-        )
+        process_group_id, session_id, observed_start_time_ticks = read_process_identity(process_id)
         if observed_start_time_ticks != expected_start_time_ticks:
             raise SignalProcessGroupError(
                 "process leader start time differs from the recorded identity"
@@ -81,17 +75,13 @@ def signal_process_group(
                 PIDFD_SIGNAL_PROCESS_GROUP,
             )
         except ProcessLookupError as error:
-            raise SignalProcessGroupError(
-                "process group exited before signaling"
-            ) from error
+            raise SignalProcessGroupError("process group exited before signaling") from error
         except OSError as error:
             if error.errno == errno.EINVAL:
                 raise SignalProcessGroupError(
                     "kernel lacks pidfd process-group signaling"
                 ) from error
-            raise SignalProcessGroupError(
-                f"pidfd process-group signal failed: {error}"
-            ) from error
+            raise SignalProcessGroupError(f"pidfd process-group signal failed: {error}") from error
     finally:
         os.close(process_descriptor)
 
@@ -122,9 +112,7 @@ def check_kernel_support() -> None:
         signal.pidfd_send_signal(process_descriptor, signal.SIGTERM)
     except OSError as error:
         if error.errno == errno.EINVAL:
-            raise SignalProcessGroupError(
-                "kernel lacks pidfd process-group signaling"
-            ) from error
+            raise SignalProcessGroupError("kernel lacks pidfd process-group signaling") from error
         raise SignalProcessGroupError(
             f"pidfd process-group support probe failed: {error}"
         ) from error

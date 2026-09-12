@@ -23,9 +23,7 @@ MODULE_PATH = Path(__file__).resolve().parent / "summarize-stage-timing.py"
 
 
 def load_module() -> ModuleType:
-    specification = importlib.util.spec_from_file_location(
-        "summarize_stage_timing", MODULE_PATH
-    )
+    specification = importlib.util.spec_from_file_location("summarize_stage_timing", MODULE_PATH)
     assert specification is not None
     assert specification.loader is not None
     module = importlib.util.module_from_spec(specification)
@@ -93,8 +91,7 @@ def test_stage_reader(directory: Path) -> None:
         "the header names the clock the durations came from",
     )
     check(
-        summarizer.read_header_field(complete, "boot_id")
-        == "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+        summarizer.read_header_field(complete, "boot_id") == "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
         "the header names the boot the monotonic origin belongs to",
     )
     check(
@@ -188,8 +185,7 @@ def test_switch_reader(directory: Path) -> None:
     # A failed request records `-` and contributes no sample rather than a zero.
     failed = write(
         directory / "switch-failed.tsv",
-        "switch\t1\tmodel-a\t-\t0\tslice-1.log\n"
-        "switch\t2\tmodel-b\t5000000000\t3\tslice-2.log\n",
+        "switch\t1\tmodel-a\t-\t0\tslice-1.log\nswitch\t2\tmodel-b\t5000000000\t3\tslice-2.log\n",
     )
     check(
         summarizer.read_switch_first_token(failed) == [5_000_000_000],
