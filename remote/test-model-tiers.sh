@@ -123,9 +123,26 @@ for reason_id in $(awk -F'\t' '!/^#/ && NF { print $1 }' "$quarantine"); do
         reason_failures=$((reason_failures + 1))
     fi
 done
+# A quarantined subject the builder still reads reaches the quarantine link
+# tree beside its deployed reason record. A subject whose registry tier is
+# archive or rejected is skipped before the link step, which is the stronger
+# exclusion: the builder never links it into any tier, so the link tree carries
+# nothing for it and the tree-side reason record checked above is its whole
+# declaration.
 for subject in $("$reader" quarantine-subjects); do
     model_file=$("$reader" id "$subject" model_file)
     model_directory=$(basename -- "$(dirname -- "$model_file")")
+    subject_tier=$("$reader" id "$subject" tier)
+    case $subject_tier in
+        archive | rejected)
+            if [ -e "$model_root/quarantine/$model_directory" ]; then
+                printf 'withheld subject %s is linked into quarantine/\n' \
+                    "$subject" >&2
+                reason_failures=$((reason_failures + 1))
+            fi
+            continue
+            ;;
+    esac
     if [ ! -L "$model_root/quarantine/$model_directory" ]; then
         printf 'quarantined subject %s is not linked into quarantine/\n' \
             "$subject" >&2

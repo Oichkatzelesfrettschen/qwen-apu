@@ -98,6 +98,12 @@ QUARANTINE_RUNTIME_MODE_VALUES: frozenset[str] = frozenset({"any", "router-child
 # remote/quarantine.tsv's own header comment names the closed failure_class
 # vocabulary; a scope `model` row carries `-` here in every observed row, so
 # the field types as a plain str that also accepts the sentinel.
+#
+# The vocabulary carries two kinds of claim. The first six members name what
+# the driver or the runtime reported. `rejected-low-bit-ladder`,
+# `archive-capacity-experiment`, and `archive-decode-rate` name a withholding
+# decision over a checkpoint that executes: its weights are absent from the
+# appliance disk and the ledger row is the placeholder that refuses a fetch.
 FailureClass = Literal[
     "ring-timeout-only",
     "gfxhub-page-fault",
@@ -106,6 +112,9 @@ FailureClass = Literal[
     "post-reset-control-failure",
     "no-validated-safe-tuple",
     "graph-assert-abort",
+    "rejected-low-bit-ladder",
+    "archive-capacity-experiment",
+    "archive-decode-rate",
 ]
 FAILURE_CLASS_VALUES: frozenset[str] = frozenset(
     {
@@ -116,6 +125,9 @@ FAILURE_CLASS_VALUES: frozenset[str] = frozenset(
         "post-reset-control-failure",
         "no-validated-safe-tuple",
         "graph-assert-abort",
+        "rejected-low-bit-ladder",
+        "archive-capacity-experiment",
+        "archive-decode-rate",
     }
 )
 

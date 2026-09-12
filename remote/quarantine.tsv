@@ -21,6 +21,17 @@
 # one rejected graph. `no-validated-safe-tuple` carries no device failure and
 # states that no depth has been filled and decoded on this subject.
 #
+# The vocabulary carries two kinds of claim. The six classes above name what the
+# driver or the runtime reported, and three further classes name a withholding
+# decision over a checkpoint that executes: `rejected-low-bit-ladder` is a rung
+# measured to decode below the row it was fetched to beat,
+# `archive-capacity-experiment` is a capacity probe whose weights exceed what
+# this machine serves interactively, and `archive-decode-rate` is a valid
+# artifact whose measured decode puts it below the class that replaced it. A row
+# in those three states the checkpoint is absent from the appliance disk by
+# decision; the registry row and this row together are its placeholder, and
+# docs/doctrine/models-and-projectors.md carries the rule.
+#
 # depth, batch, ubatch, cache_type_k, cache_type_v, and flash_attention name the
 # affected tuple; `-` in a scope `model` row means the quarantine is not bounded
 # to one geometry. reason_record points at the retained record under evidence/,
@@ -41,3 +52,9 @@
 nanbeige42-3b	model	nanbeige42-3b	no-validated-safe-tuple	-	-	-	-	-	-	evidence/kv-cache-policy-factorial.md	evidence/model-admission/nanbeige42-3b-admission.md	evidence/quarantine/nanbeige42-3b.md	any
 qwen38-4b-distill-d16384-b2048-ub512	profile	qwen38-4b-distill	ring-timeout-only	16384	2048	512	q8_0	q4_0	on	evidence/kv-cache-policy-factorial.md	evidence/depth-versus-submission-geometry.md	evidence/quarantine/qwen38-4b-distill-d16384-b2048-ub512.md	any
 ministral3-3b	model	ministral3-3b	graph-assert-abort	-	-	-	-	-	-	evidence/model-admission/universal-candidate-ladder.md	evidence/model-admission/universal-candidate-ladder.md	evidence/quarantine/ministral3-3b.md	router-child
+qwen38-4b-i1-q2k	model	qwen38-4b-i1-q2k	rejected-low-bit-ladder	-	-	-	-	-	-	evidence/model-admission/qwen38-4b-low-bit-ladder.md	evidence/decode-bound-analysis.md	evidence/quarantine/qwen38-4b-i1-q2k.md	any
+qwen38-4b-i1-q5km	model	qwen38-4b-i1-q5km	rejected-low-bit-ladder	-	-	-	-	-	-	evidence/model-admission/qwen38-4b-low-bit-ladder.md	evidence/decode-bound-analysis.md	evidence/quarantine/qwen38-4b-i1-q5km.md	any
+qwen38-4b-i1-q6k	model	qwen38-4b-i1-q6k	rejected-low-bit-ladder	-	-	-	-	-	-	evidence/model-admission/qwen38-4b-low-bit-ladder.md	evidence/decode-bound-analysis.md	evidence/quarantine/qwen38-4b-i1-q6k.md	any
+qwen38-9b-distill	model	qwen38-9b-distill	archive-decode-rate	-	-	-	-	-	-	evidence/model-admission/qwen38-9b-4k-preflight.log	evidence/qwen38-9b-distill-admission.md	evidence/quarantine/qwen38-9b-distill.md	any
+qwen38-27b-q2kxl	model	qwen38-27b-q2kxl	archive-capacity-experiment	-	-	-	-	-	-	evidence/model-admission/qwen38-27b-q2-4k-preflight.log	evidence/qwen38-27b-4k-admission.md	evidence/quarantine/qwen38-27b-q2kxl.md	any
+qwen38-27b-iq3xxs	model	qwen38-27b-iq3xxs	archive-capacity-experiment	-	-	-	-	-	-	evidence/model-admission/qwen38-27b-iq3xxs-4k-preflight.log	evidence/qwen38-27b-4k-admission.md	evidence/quarantine/qwen38-27b-iq3xxs.md	any
