@@ -645,9 +645,54 @@ alone. A driver that let the first `ConnectionRefusedError` leave the process
 would write no report at all, which is the one outcome an acceptance run cannot
 have.
 
-The image lane skips on a refused grant rather than failing, because every
-device-reaching call there passes one human approval and a single-use grant the
-driver holds none of; the web lane skips on its absent routes; and a PDF upload
+Both tool lanes travel the routes the served page travels, which is what makes
+a device run prove them rather than skip them. `GET /api/tools` is read first:
+its row state decides whether the lane executes at all, so a launch whose image
+worker bound no control socket reports `temporarily_unavailable` naming that
+socket and a checkpoint no row of `remote/web-profiles.tsv` names reports
+`not_installed`, each skip carrying the matrix's own sentence. The `launch`
+block names the profile a grant is signed for and the image row's `bounds`
+names the geometry it is signed over. Every grant then posts under the
+`X-Qwen-Web-Session` header the driver reads from `GET /api/tools/session`,
+with one retry against a freshly read secret where a refusal carries
+`stale_session_secret`, because a gateway restarted on the same port signs a
+new per-launch secret and the held one is stale rather than wrong.
+
+The web lane is `POST /api/tools`, one path carrying `web_search` and then
+`read_url`: the search runs behind a `search-authorization` grant covering the
+exact arguments and the fetch redeems one signed Result ID that search issued,
+so the grounded item passes on a record in state `complete` whose evidence
+kind is `fetched_page`. The explicit-incomplete item reads one character at the
+last admitted offset of that same document, where `run_read_url` returns an
+empty window and with it the 200 carrying `state: incomplete` that keeps a
+failed retrieval from reading as a turn that went quiet; a search that itself
+answers incomplete proves the same item and the report names the instance
+instead, leaving the grounded item skipped.
+
+The image lane generates, reads the PNG over the credentialed artifact route,
+reviews the artifact behind a second grant signed over the same prompt digest
+the provenance record retained, cancels a job identifier the worker is not
+running, and retracts the publication marker last. The second grant is the one
+constraint the lane states about itself: `POST /api/tools/grant-image` admits
+one unexpired grant per client address and the quota decays with that grant's
+own term rather than with its spend, so the review waits where `Retry-After`
+names a term inside the 30-second bound the driver declares and reports
+`image_review` skipped naming the limit otherwise.
+
+Three further contracts close gaps a second run over one root exposed. The
+browser import draws `uuid.uuid4().hex` per run, because
+`ConversationStore.import_document` refuses a conversation the store already
+holds and a fixed identifier reports a working route as a 400 on every run
+after the first. `--previous-report` reads the saved conversation a previous
+run's `conversation_open` evidence names and proves it is still listed and
+readable here, which states survival across whatever restart separated the two
+runs; `--restart-command` stays the argument that also proves the temporary one
+ended. A `--vision-model` is checked against `remote/models.tsv` before an
+image is sent: a row reading `projector none` runs text-only, so the item fails
+naming the column rather than sending a text row image parts and reporting the
+server's 500.
+
+A PDF upload
 that meets an absent `pypdf` skips naming the distribution, since
 `tools/document_worker.py` imports it at call time and a venv without it
 extracts every other format. Both report destinations resolve through
@@ -657,7 +702,11 @@ outside it. The suite runs
 the driver against a gateway assembled over a temporary runtime root in front of
 a `_FakeUpstream` subclass carrying a configurable roster, a model-naming
 switch, and an image-sensitive answer, and a scripted client reaches the
-branches a device-free gateway cannot produce.
+branches a device-free gateway cannot produce. A lane gateway answers the
+session, grant, executor, and image routes in process behind the driver's own
+`Client`, so the session read, the header, and the stale-secret retry are the
+driver's code under test rather than the fixture's, and every pass and fail
+branch of both lanes runs without a device.
 
 ### The canary alternates, and the rule is declared before the launch
 
@@ -692,7 +741,9 @@ an absent timings block refuses rather than reading as a zero.
   populated model store, and the `verify-application` that follows it.
 - One `acceptance run` against a live `appliance serve`, which is where the
   vision, image, and web items answer something other than skipped, and where
-  the served-model field of the deployed server is read for the first time.
+  the served-model field of the deployed server is read for the first time. The
+  run that follows it names the first run's report as `--previous-report`,
+  which is where the history item answers across two processes.
 - One `canary run` inside a device window, which is the measurement the cutover
   decision rests on; every rate in the report until then comes from a fixture.
 
