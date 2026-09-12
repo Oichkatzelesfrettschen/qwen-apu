@@ -83,6 +83,11 @@ export function applySessionModeToUi() {
   $('#pair-code').hidden = !wants;
   $('#pair').hidden = !wants;
   $('#pair-hint').hidden = !wants;
+  // The card is the surface the three controls sit in, so it follows the same
+  // fact. A page that carries the controls without the card leaves the card
+  // lookup empty, and the guard keeps that page working.
+  const card = $('#pair-card');
+  if (card) card.hidden = !wants;
 }
 
 export async function pairWithCode(code) {
