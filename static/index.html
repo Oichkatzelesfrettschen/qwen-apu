@@ -19,6 +19,13 @@
 <meta name="qwen-lan-max-prompt-tokens" content="">
 <meta name="qwen-lan-max-output-tokens" content="">
 <!--
+  Three regions carry the page: the conversation rail, the main column, and the
+  composer docked at the foot of that column. The rail lists what the
+  conversation store holds, the `#/c/<id>` route names one of them, and the log
+  renders the record the route selects, so a reload returns to the transcript
+  the reader left. An empty log centers the greeting and the composer, which is
+  the state a reader opens a new conversation into.
+
   Reasoning is shown, folded, beside the answer. A model can spend a whole small
   token budget reasoning and return empty answer content. The separate display
   distinguishes that result from a dead server.
@@ -38,24 +45,39 @@
 
 <body>
 
-<header>
-  <b>qwen-apu</b>
-  <span id="model">connecting</span>
-  <select class="model-picker" id="model-picker" aria-label="Model" hidden></select>
-  <span class="tier-badge" id="model-tier" hidden></span>
-  <span id="ctx">context pending</span>
-  <span id="health">health pending</span>
-  <span>Raven2 UMA | LOW-priority Vulkan | service-latency guarded</span>
-  <input class="key" type="password" id="pair-code" placeholder="pairing code" autocomplete="off" hidden>
-  <button class="act" id="pair" hidden>pair</button>
-  <span class="hint" id="pair-hint" hidden>this gateway wants one pairing: read the code `qwen-apu status` prints and enter it here</span>
-  <label class="chip"><input type="checkbox" id="reasoning"> reasoning</label>
-  <label class="chip"><input type="checkbox" id="web-tools"> web</label>
-  <label class="chip"><input type="checkbox" id="image-tools"> image</label>
-  <button class="act" id="clear">New conversation</button>
-</header>
+<!--
+  The rail holds one conversation per row and the four actions that create and
+  dispose of them. A Temporary conversation is the exception the banner names:
+  it lives in a memory store for the life of the tab, so the rail lists it
+  nowhere and the reload that returns to a durable transcript returns to none of
+  it.
+-->
+<aside id="conversation-panel">
+  <div id="rail-brand">qwen-apu</div>
+  <div id="conversation-actions">
+    <button class="rail-action" id="conversation-new">New conversation</button>
+    <button class="rail-action" id="conversation-temporary">Temporary</button>
+  </div>
+  <p class="rail-heading">Recent conversations</p>
+  <div id="conversation-list"></div>
+  <div id="rail-footer">
+    <p class="meta" id="conversation-storage-status"></p>
+    <div class="rail-footer-actions">
+      <button class="act small" id="conversation-export">Export</button>
+      <button class="act small" id="conversation-delete-all">Delete all</button>
+    </div>
+    <p class="meta" id="conversation-export-status"></p>
+  </div>
+</aside>
+
+<main id="main">
 
 <!--
+  One status line and one segmented control. `#health`, `#model`, and `#ctx`
+  are error channels as much as labels -- a refused pairing and an unreachable
+  gateway both write their reason into them -- so the line wraps rather than
+  truncating.
+
   Two tabs name two launches of one binary rather than two routes of one
   listener. `server_http_context::init` mounts a `--path` directory at
   `api_prefix + "/"` when `public_path` carries a value (tools/server/
@@ -69,64 +91,117 @@
   rather than two routes of one listener, and this tab states that rather than
   linking to an address nothing answers.
 -->
-<nav class="tabs" id="tab-bar">
-  <button id="tab-chat" aria-selected="true">Chat</button>
-  <button id="tab-llama" aria-selected="false">llama.cpp UI</button>
-</nav>
+<header id="topbar">
+  <nav class="tabs" id="tab-bar" aria-label="Page">
+    <button id="tab-chat" aria-selected="true">Chat</button>
+    <button id="tab-llama" aria-selected="false">llama.cpp UI</button>
+  </nav>
+  <p class="status" id="status-line">
+    <span id="health">health pending</span>
+    <span id="model">connecting</span>
+    <span class="tier-badge" id="model-tier" hidden></span>
+    <span id="ctx">context pending</span>
+  </p>
+  <button class="act round" id="clear" aria-label="New conversation" title="New conversation">+</button>
+</header>
 
 <!--
-  A conversation is a durable record with a URL. The side panel lists what the
-  conversation store holds, the `#/c/<id>` route names one of them, and the log
-  renders the record the route selects, so a reload returns to the transcript
-  the reader left rather than to an empty page. The model picker and the Web
-  and image toggles stay per turn, and the record states which model answered
-  each message so a reader sees where a switch landed.
-
-  A Temporary conversation is the exception the banner names: it lives in a
-  memory store for the life of the tab, so the panel lists it nowhere and the
-  reload that returns to a durable transcript returns to none of it.
+  The pairing card is the one surface a 401 from a guarded route reveals, and
+  `applySessionModeToUi` in js/api.js hides the card with the three controls
+  inside it, so a paired reader meets the chat alone.
 -->
+<div id="pair-card" hidden>
+  <h2>Enter the pairing code</h2>
+  <p class="hint" id="pair-hint" hidden>The appliance prints the code in `qwen-apu status`; it is spent once for this browser's session.</p>
+  <div class="pair-row">
+    <label class="visually-hidden" for="pair-code">Pairing code</label>
+    <input class="key" type="password" id="pair-code" placeholder="pairing code" autocomplete="off" hidden>
+    <button class="act" id="pair" hidden>Pair</button>
+  </div>
+</div>
+
 <div id="workspace">
-  <aside id="conversation-panel">
-    <div id="conversation-actions">
-      <button class="act" id="conversation-new">new conversation</button>
-      <button class="act" id="conversation-temporary">temporary conversation</button>
-      <button class="act" id="conversation-export">export history</button>
-      <button class="act" id="conversation-delete-all">delete all saved</button>
-    </div>
-    <p class="meta" id="conversation-storage-status"></p>
-    <p class="meta" id="conversation-export-status"></p>
-    <div id="conversation-list"></div>
-  </aside>
   <div id="chat-column">
-    <p class="temporary-banner" id="temporary-banner" hidden>Temporary conversation:
-      this transcript stays in memory for the life of this tab and reaches no
-      browser store. Closing the tab ends it.</p>
-    <!--
-      The support matrix reports what remote/feature-claims.tsv claims for the
-      ids GET /api/models returned, so a reader sees the tier and the
-      per-feature status of the row the picker is about to route to. The gateway
-      serves this directory, and evidence/ is a repository surface, so a cell
-      names its evidence path for a reader to open in the tree.
-    -->
-    <details class="roster" id="roster-matrix" hidden>
-      <summary id="roster-summary">feature support</summary>
-      <div id="roster-matrix-body"></div>
-    </details>
+    <div id="chat-band">
+      <p class="temporary-banner" id="temporary-banner" hidden>Temporary conversation: this transcript stays in memory for the life of this tab and reaches no browser store. Closing the tab ends it.</p>
+      <!--
+        The support matrix reports what remote/feature-claims.tsv claims for the
+        ids GET /api/models returned, so a reader sees the tier and the
+        per-feature status of the row the picker is about to route to. The
+        gateway serves this directory, and evidence/ is a repository surface, so
+        a cell names its evidence path for a reader to open in the tree.
+      -->
+      <details class="roster" id="roster-matrix" hidden>
+        <summary id="roster-summary">feature support</summary>
+        <div id="roster-matrix-body"></div>
+      </details>
+      <!--
+        What each tool answers for the selected model. The feature roster above
+        states a claim the ledgers retain; this panel states what a call would
+        meet right now, which the launch, the approval profile, and the worker
+        socket decide beside those ledgers. A refused row names its authority
+        here rather than at the call.
+      -->
+      <details class="roster" id="tool-matrix" hidden>
+        <summary id="tool-matrix-summary">tool support</summary>
+        <div id="tool-matrix-body"></div>
+      </details>
+    </div>
 
-    <!--
-      What each tool answers for the selected model. The feature roster above
-      states a claim the ledgers retain; this panel states what a call would
-      meet right now, which the launch, the approval profile, and the worker
-      socket decide beside those ledgers. A refused row names its authority
-      here rather than at the call.
-    -->
-    <details class="roster" id="tool-matrix" hidden>
-      <summary id="tool-matrix-summary">tool support</summary>
-      <div id="tool-matrix-body"></div>
-    </details>
+    <div id="thread">
+      <div id="greeting"><h1>What should we work on?</h1></div>
+      <div id="log"></div>
 
-    <div id="log"></div>
+      <footer id="composer">
+        <div id="attached"></div>
+        <div class="composer-shell">
+          <label class="visually-hidden" for="input">Message</label>
+          <textarea id="input" rows="1" placeholder="Ask. Shift+Enter for a newline."></textarea>
+          <div class="composer-controls">
+            <!--
+              The plus menu is a `details` element, so it opens from the
+              keyboard and closes on a second activation with no script. The
+              file input sits inside it and the label opens the picker.
+            -->
+            <details class="plus-menu">
+              <summary aria-label="Add to this turn" title="Add to this turn">+</summary>
+              <div class="plus-sheet">
+                <label class="menu-item" for="file">Add files</label>
+                <input type="file" id="file" multiple accept="image/*,text/*,.md,.txt,.log,.csv,.json,.py,.c,.h,.rs,.sh">
+                <p class="menu-note">An image reaches the model where the selected checkpoint pairs with a projector; a text file is tokenized by the gateway before it is attached.</p>
+              </div>
+            </details>
+            <label class="toggle"><input type="checkbox" role="switch" id="reasoning"> reasoning</label>
+            <label class="toggle"><input type="checkbox" role="switch" id="web-tools"> web</label>
+            <label class="toggle"><input type="checkbox" role="switch" id="image-tools"> image</label>
+            <span class="composer-spacer"></span>
+            <select class="model-picker" id="model-picker" aria-label="Model" hidden></select>
+            <button class="send" id="send" aria-label="Send" title="Send">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                <path d="M12 19V5M12 5l-6 6M12 5l6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </footer>
+    </div>
+  </div>
+</div>
+
+<section class="notice" id="llama-ui-panel" hidden>
+  <h2>The llama.cpp UI is served by the ordinary router launch</h2>
+  <p>The qwen-apu gateway passes chat through <code>/api/chat</code> and serves
+    this page from its own static root, and the llama.cpp UI answers at the
+    router's own address and port instead. The approved web search, the approved
+    image generation with its artifact cards and vision review, and the feature
+    roster exist on this page alone.</p>
+  <p>
+    <a id="llama-ui-link" href="/">open the root of this listener</a>
+    <span class="hint" id="llama-ui-origin"></span>
+  </p>
+</section>
+
+</main>
 
 <!--
   The approval dialog is the boundary the web search tool is built around. The
@@ -146,7 +221,7 @@
   <dl class="args" id="approval-args"></dl>
   <div class="approval-actions">
     <button class="act" id="approve-deny">deny</button>
-    <button class="act" id="approve-once">approve once</button>
+    <button class="act primary" id="approve-once">approve once</button>
   </div>
 </dialog>
 
@@ -168,39 +243,9 @@
   <dl class="args" id="image-approval-args"></dl>
   <div class="approval-actions">
     <button class="act" id="image-approve-deny">deny</button>
-    <button class="act" id="image-approve-once">approve once</button>
+    <button class="act primary" id="image-approve-once">approve once</button>
   </div>
 </dialog>
-
-<footer>
-  <div id="attached"></div>
-  <div class="row">
-    <label class="file chip">attach
-      <input type="file" id="file" multiple accept="image/*,text/*,.md,.txt,.log,.csv,.json,.py,.c,.h,.rs,.sh">
-    </label>
-    <textarea id="input" rows="1" placeholder="Ask. Shift+Enter for a newline."></textarea>
-    <button class="act" id="send">send</button>
-  </div>
-</footer>
-  </div>
-</div>
-
-<section class="notice" id="llama-ui-panel" hidden>
-  <h2>The llama.cpp UI is served by the ordinary router launch</h2>
-  <p>llama-server serves one page at the root of one listener. This appliance
-    reaches that server through the qwen-apu gateway, which passes chat through
-    <code>/api/chat</code> and serves this page from its own static root, and
-    the llama.cpp UI answers at the router's own address and port instead.</p>
-  <p>Three surfaces exist on this page alone, because each one is built here
-    rather than in the served binary: the approved web search, the approved
-    image generation with its artifact cards and vision review, and the feature
-    roster this page reads beside itself. A turn run in the llama.cpp UI reaches
-    the model and reaches none of them.</p>
-  <p>
-    <a id="llama-ui-link" href="/">open the root of this listener</a>
-    <span class="hint" id="llama-ui-origin"></span>
-  </p>
-</section>
 
 <script type="module" src="js/status.js"></script>
 </body>
