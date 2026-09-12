@@ -1538,31 +1538,57 @@ class AcceptanceRun:
             self.record(grounded, FAIL, reason, {"status": search.status}, started)
             self.record(explicit, SKIPPED, reason, {"status": search.status})
             return
-        self.check_web_fetch(grounded, explicit, model, issued[0], started)
+        self.check_web_fetch(grounded, explicit, model, issued, started)
 
     def check_web_fetch(
-        self, grounded: str, explicit: str, model: str, result_id: str, started: float
+        self,
+        grounded: str,
+        explicit: str,
+        model: str,
+        issued: Sequence[str],
+        started: float,
     ) -> None:
-        """Read one page through its Result ID, then read a window that holds no text."""
-        fetch = self.client.post_json(
-            TOOLS_ROUTE,
-            {
-                "model": model,
-                "tool": READ_URL_TOOL,
-                "params": {"result_id": result_id},
-                "stream": False,
-            },
-        )
-        state, term, text = outcome_state(fetch)
-        usable = usable_page(fetch)
+        """Read a page through its Result ID, then read a window that holds no text.
+
+        A live search answers with sources the appliance did not choose, and a
+        source that refuses or carries no text answers `incomplete` honestly;
+        the grounded item therefore reads the issued results in order until
+        one carries a page, bounded by the profile's own fetch allowance, and
+        fails only where none does.
+        """
+        result_id = issued[0]
+        attempts: list[dict[str, object]] = []
+        grounded_now = False
+        for candidate in issued:
+            fetch = self.client.post_json(
+                TOOLS_ROUTE,
+                {
+                    "model": model,
+                    "tool": READ_URL_TOOL,
+                    "params": {"result_id": candidate},
+                    "stream": False,
+                },
+            )
+            state, term, text = outcome_state(fetch)
+            usable = usable_page(fetch)
+            attempts.append(
+                {"status": fetch.status, "state": state, "term": term, "characters": len(text)}
+            )
+            result_id = candidate
+            if fetch.status == 200 and state == "complete" and usable and text:
+                grounded_now = True
+                break
+            if term == BUDGET_TERM:
+                break
+        last = attempts[-1]
         self.record(
             grounded,
-            PASS if fetch.status == 200 and state == "complete" and usable and text else FAIL,
+            PASS if grounded_now else FAIL,
             ""
-            if fetch.status == 200 and state == "complete" and usable and text
-            else f"the fetch answered {fetch.status} in state {state or 'none'} "
-            f"carrying {'a' if usable else 'no'} page window: {text[:200]}",
-            {"status": fetch.status, "state": state, "term": term, "characters": len(text)},
+            if grounded_now
+            else f"no issued result carried a page within the fetch allowance; the last "
+            f"answered {last['status']} in state {last['state'] or 'none'}: {text[:200]}",
+            {"attempts": attempts, "results_issued": len(issued)},
             started,
         )
         probe = self.client.post_json(

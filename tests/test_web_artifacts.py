@@ -650,12 +650,12 @@ class SpendRecorder:
     """A ledger stand-in: the first spend of a grant succeeds, a replay refuses."""
 
     def __init__(self) -> None:
-        self.spent: list[tuple[str, float]] = []
+        self.spent: list[tuple[str, float, str]] = []
 
-    def __call__(self, grant_id: str, expiry: float) -> None:
-        if any(seen == grant_id for seen, _ in self.spent):
+    def __call__(self, grant_id: str, expiry: float, client: str = "") -> None:
+        if any(seen == grant_id for seen, _, _ in self.spent):
             raise RuntimeError(f"grant {grant_id} was already spent")
-        self.spent.append((grant_id, expiry))
+        self.spent.append((grant_id, expiry, client))
 
 
 def test_generate_spends_the_grant_once_and_refuses_the_replay(
