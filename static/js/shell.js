@@ -191,7 +191,7 @@ function describeCall(call) {
 }
 
 async function decideCall(id, decision) {
-  const response = await fetch(`${PENDING_ROUTE}/${encodeURIComponent(id)}`, {
+  const response = await fetch('/api/tools/pending/' + encodeURIComponent(id), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ decision })
