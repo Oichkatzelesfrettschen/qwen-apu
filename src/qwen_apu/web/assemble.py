@@ -20,7 +20,7 @@ from qwen_apu.config import models as config_models
 from qwen_apu.config.loader import RegistryError
 from qwen_apu.config.schema import WebProfile
 from qwen_apu.engines import llama as llama_engine
-from qwen_apu.engines.image import SOCKET_FILE_NAME, ImageControlClient
+from qwen_apu.engines.image import IMAGE_DIRECTORY_NAME, SOCKET_FILE_NAME, ImageControlClient
 from qwen_apu.engines.llama import LlamaClient, binding_from_runtime
 from qwen_apu.runtime import deployment, preflight
 from qwen_apu.runtime.paths import RuntimePaths
@@ -278,17 +278,27 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         config.origins,
         provider=request.provider,
         image_profile=request.image_profile,
+        exposure=lan_exposure(request.bind_host),
     )
     approval_service = approvals.ApprovalService(approval_settings, session_check)
+    # The per-launch secret every grant post presents is minted here, at the
+    # one place this launch's service exists, and its file is what the
+    # teardown proves absent; a service left unarmed compares every presented
+    # secret against an empty string and admits none.
+    approval_service.arm_session_secret()
 
     def ledger() -> Ledger:
         return Ledger(state)
 
-    def spend_grant(grant_id: str, expiry: float) -> None:
+    def spend_grant(grant_id: str, expiry: float, client: str) -> None:
         with closing(ledger()) as open_ledger:
             open_ledger.consume_grant(
                 grant_id, approval_settings.profile, "image", expiry=expiry, now=time.time()
             )
+        # The reservation counted the grant until its expiry; the spend is
+        # the moment it stops being outstanding, so the client's slot frees
+        # for the review grant that follows a generation.
+        approval_service.outstanding_image_grants.release(client, expiry)
 
     web_settings = build_web_tool_settings(
         resolve_web_profile(request.web_profile),
@@ -297,8 +307,11 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
         session_admits=session_admits,
         ledger=ledger,
     )
-    artifact_directory = state / "artifacts"
-    image_socket = state / SOCKET_FILE_NAME
+    # The image worker publishes each verified pair and its publication
+    # marker under `images/artifacts/` of the state directory it is given, so
+    # the artifact routes read that directory rather than a sibling.
+    artifact_directory = state / "images" / "artifacts"
+    image_socket = state / IMAGE_DIRECTORY_NAME / SOCKET_FILE_NAME
 
     def route_review(payload: Mapping[str, object]) -> object:
         """One `/v1/chat/completions` round trip against the router on loopback.
@@ -408,7 +421,10 @@ def assemble(paths: RuntimePaths, request: GatewayRequest) -> tuple[Gateway, Ses
             config,
             providers,
             session_authority=session,
-            on_shutdown=(conversation_settings.temporary.shutdown,),
+            on_shutdown=(
+                conversation_settings.temporary.shutdown,
+                approval_service.disarm_session_secret,
+            ),
         ),
         session,
     )

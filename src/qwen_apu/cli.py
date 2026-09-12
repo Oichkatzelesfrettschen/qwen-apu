@@ -199,6 +199,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="one text model to take a turn on; repeat to name the class ladder",
     )
     acceptance_run.add_argument(
+        "--web-model",
+        default="",
+        metavar="ID",
+        help="the selector the web lane reads its matrix under; the launch's own "
+        "approval profile is the default, and its model column names the checkpoint",
+    )
+    acceptance_run.add_argument(
         "--vision-model",
         action="append",
         default=[],
@@ -482,8 +489,15 @@ def cmd_appliance(paths: RuntimePaths, args: argparse.Namespace) -> int:
         print(f"signalled={','.join(str(pid) for pid in signalled) or '-'}")
         record = appliance.status(paths)
         return 0 if record is None or record.state == "stopped" else 1
+    gateway_origin = f"http://{args.bind_host}:{args.gateway_port}"
     image, searxng = appliance.child_specs_from_request(
-        paths, image_service=args.image_service, searxng=args.searxng
+        paths,
+        image_service=args.image_service,
+        searxng=args.searxng,
+        image_profile=args.image_profile,
+        web_profile=args.web_profile,
+        origin=gateway_origin,
+        bind_host=args.bind_host,
     )
     return appliance.serve(
         paths,
@@ -582,6 +596,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     report=args.report,
                     text_models=tuple(args.model) or acceptance.DEFAULT_TEXT_MODELS,
                     vision_models=tuple(args.vision_model) or acceptance.DEFAULT_VISION_MODELS,
+                    web_model=args.web_model,
                     restart_command=tuple(args.restart_command),
                     stop_command=tuple(args.stop_command),
                     previous_report=args.previous_report,

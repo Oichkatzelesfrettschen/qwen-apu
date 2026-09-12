@@ -91,6 +91,7 @@ ASCII_LABEL_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 SESSION_SECRET_FILE_NAME = "authorize-session.secret"  # noqa: S105 -- a file name
 SESSION_SECRET_BYTES = 32
 SESSION_HEADER = "X-Qwen-Web-Session"
+RELEASE_TOLERANCE_SECONDS = 2.0
 STALE_SESSION_SECRET_CODE = "stale_session_secret"  # noqa: S105 -- a refusal term
 
 REQUEST_BODY_BYTE_CAP = 16384
@@ -1061,11 +1062,18 @@ class OutstandingImageGrants:
             self.expiries[client] = live
 
     def release(self, client: str, expiry: float) -> None:
-        """Give back a reservation whose grant was never actually issued."""
+        """Give back a reservation: one never issued, or one whose grant was spent.
+
+        The reservation stores the float start plus the lifetime while the
+        signed claim carries the integer issue time plus the same lifetime,
+        so the two name one grant a fraction of a second apart; the release
+        takes the stored expiry nearest the given one within that bound.
+        """
         with self.lock:
             live = self.expiries.get(client, [])
-            if expiry in live:
-                live.remove(expiry)
+            nearest = min(live, key=lambda stored: abs(stored - expiry), default=None)
+            if nearest is not None and abs(nearest - expiry) <= RELEASE_TOLERANCE_SECONDS:
+                live.remove(nearest)
 
 
 class ApprovalService:

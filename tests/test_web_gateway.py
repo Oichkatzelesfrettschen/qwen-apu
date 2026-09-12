@@ -35,7 +35,7 @@ from qwen_apu.runtime import preflight
 from qwen_apu.runtime.paths import RuntimePaths
 from qwen_apu.runtime.process import read_start_time
 from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
-from qwen_apu.tools import matrix
+from qwen_apu.tools import approvals, matrix
 from qwen_apu.web import assemble as gateway_assembly
 from qwen_apu.web import auth as auth_module
 from qwen_apu.web import roster
@@ -1117,3 +1117,18 @@ def test_research_roster_reports_a_withheld_checkpoint_as_quarantined() -> None:
     ):
         assert answer[withheld] == roster.QUARANTINED, withheld
     assert answer["qwen38-2b-distill"] == READY
+
+
+def test_the_approval_settings_admit_the_lan_bind_host(tmp_path: Path) -> None:
+    """The session and grant routes check Host through their own settings."""
+    paths = _assembly_root(tmp_path)
+    _write_key(paths, b"c0ffee\n")
+    settings = approvals.build_settings(
+        paths["qwen_home_state"],
+        paths["qwen_home_web_token_key"],
+        "web-open",
+        ("http://10.0.0.170:42069",),
+        exposure=gateway_assembly.lan_exposure("10.0.0.170"),
+    )
+    assert "10.0.0.170" in settings.admitted_hosts
+    assert "127.0.0.1" in settings.admitted_hosts

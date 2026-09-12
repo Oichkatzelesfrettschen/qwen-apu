@@ -218,6 +218,11 @@ class AcceptanceRequest:
     report: Path
     text_models: tuple[str, ...] = DEFAULT_TEXT_MODELS
     vision_models: tuple[str, ...] = DEFAULT_VISION_MODELS
+    # The selector the web lane reads its matrix under. An empty value takes the
+    # launch's own `approval_profile`, which is the profile the broker signs
+    # for, so the lane runs on the checkpoint that profile's model column names
+    # rather than on the first `--model` of the class ladder.
+    web_model: str = ""
     # The argv that ends and restarts the gateway between the two history
     # phases, and the argv that ends it before the teardown phase. Each is a
     # list because nothing here reaches a shell.
@@ -519,6 +524,18 @@ def bound_value(bounds: Mapping[str, object], key: str, fallback: int = 0) -> in
     """One integer of a matrix row's `bounds` block, or the stated fallback."""
     value = bounds.get(key, fallback)
     return int(value) if isinstance(value, int) and not isinstance(value, bool) else fallback
+
+
+def selection_field(payload: object, key: str) -> str:
+    """One field of the matrix's `selection` block, which names the row the selector resolved.
+
+    The web lane reads `model_id` from here because the selector it sends is the
+    launch's web profile id: the profile carries its checkpoint in a column of
+    its own, so the matrix answers the served model without the driver joining
+    the ledger itself.
+    """
+    selection = payload.get("selection") if isinstance(payload, dict) else None
+    return str(selection.get(key, "")) if isinstance(selection, dict) else ""
 
 
 def launch_field(payload: object, key: str) -> str:
@@ -1359,18 +1376,24 @@ class AcceptanceRun:
 
     WEB_ITEMS: tuple[str, str] = ("web_search_then_fetch", "web_retrieval_failure_explicit")
 
-    def read_matrix(self) -> tuple[Answer, object]:
-        """`GET /api/tools?model=ID` for the first text model this run names.
+    def read_matrix(self, selector: str = "") -> tuple[Answer, object]:
+        """`GET /api/tools?model=ID` for one selector this run names.
 
         The matrix states what each lane answers for one selection, so a lane
         that no launch armed is read from the row's own state rather than
-        inferred from a refusal the driver provoked.
+        inferred from a refusal the driver provoked. The selector defaults to
+        the first text model; a web profile id is the other selector
+        `qwen_apu.tools.matrix.resolve_selection` carries, and it is the one the
+        web lane reads, since a model id alone resolves to a selection carrying
+        no profile.
         """
-        model = self.request.text_models[0] if self.request.text_models else ""
+        model = selector or (self.request.text_models[0] if self.request.text_models else "")
         answer = self.client.exchange("GET", f"{MATRIX_ROUTE}?model={quote(model)}")
         return answer, answer.json()
 
-    def matrix_refused(self, names: Sequence[str], answer: Answer, payload: object) -> bool:
+    def matrix_refused(
+        self, names: Sequence[str], answer: Answer, payload: object, selector: str = ""
+    ) -> bool:
         """Report a matrix that answered no rows, carrying its own sentence.
 
         A 404 here is either a path the gateway does not mount or a selector no
@@ -1381,7 +1404,7 @@ class AcceptanceRun:
         del payload
         if answer.status == 200:
             return False
-        model = self.request.text_models[0] if self.request.text_models else ""
+        model = selector or (self.request.text_models[0] if self.request.text_models else "")
         if answer.absent_route:
             for name in names:
                 self.record(
@@ -1438,13 +1461,19 @@ class AcceptanceRun:
         """
         started = time.monotonic()
         grounded, explicit = self.WEB_ITEMS
-        matrix, payload = self.read_matrix()
-        if self.matrix_refused(self.WEB_ITEMS, matrix, payload):
+        opening, opening_payload = self.read_matrix()
+        if self.matrix_refused(self.WEB_ITEMS, opening, opening_payload):
+            return
+        selector = self.request.web_model or launch_field(opening_payload, "approval_profile")
+        matrix, payload = self.read_matrix(selector)
+        if self.matrix_refused(self.WEB_ITEMS, matrix, payload, selector):
             return
         offer = tool_offer(payload, SEARCH_TOOL_ROW)
         if self.lane_unavailable(self.WEB_ITEMS, offer, SEARCH_TOOL_ROW):
             return
-        model = self.request.text_models[0] if self.request.text_models else ""
+        model = selection_field(payload, "model_id") or (
+            self.request.text_models[0] if self.request.text_models else ""
+        )
         grant = self.client.post_grant(
             GRANT_ROUTE,
             {
@@ -1509,33 +1538,81 @@ class AcceptanceRun:
             self.record(grounded, FAIL, reason, {"status": search.status}, started)
             self.record(explicit, SKIPPED, reason, {"status": search.status})
             return
-        self.check_web_fetch(grounded, explicit, model, issued[0], started)
+        self.check_web_fetch(grounded, explicit, model, issued, started)
 
     def check_web_fetch(
-        self, grounded: str, explicit: str, model: str, result_id: str, started: float
+        self,
+        grounded: str,
+        explicit: str,
+        model: str,
+        issued: Sequence[str],
+        started: float,
     ) -> None:
-        """Read one page through its Result ID, then read a window that holds no text."""
-        fetch = self.client.post_json(
-            TOOLS_ROUTE,
-            {
-                "model": model,
-                "tool": READ_URL_TOOL,
-                "params": {"result_id": result_id},
-                "stream": False,
-            },
-        )
-        state, term, text = outcome_state(fetch)
-        usable = usable_page(fetch)
+        """Read a page through its Result ID, then read a window that holds no text.
+
+        A live search answers with sources the appliance did not choose, and a
+        source that refuses or carries no text answers `incomplete` honestly;
+        the grounded item therefore reads the issued results in order until
+        one carries a page, bounded by the profile's own fetch allowance, and
+        fails only where none does.
+        """
+        result_id = issued[0]
+        attempts: list[dict[str, object]] = []
+        grounded_now = False
+        for candidate in issued:
+            fetch = self.client.post_json(
+                TOOLS_ROUTE,
+                {
+                    "model": model,
+                    "tool": READ_URL_TOOL,
+                    "params": {"result_id": candidate},
+                    "stream": False,
+                },
+            )
+            state, term, text = outcome_state(fetch)
+            usable = usable_page(fetch)
+            attempts.append(
+                {"status": fetch.status, "state": state, "term": term, "characters": len(text)}
+            )
+            result_id = candidate
+            if fetch.status == 200 and state == "complete" and usable and text:
+                grounded_now = True
+                break
+            if term == BUDGET_TERM:
+                break
+        last = attempts[-1]
         self.record(
             grounded,
-            PASS if fetch.status == 200 and state == "complete" and usable and text else FAIL,
+            PASS if grounded_now else FAIL,
             ""
-            if fetch.status == 200 and state == "complete" and usable and text
-            else f"the fetch answered {fetch.status} in state {state or 'none'} "
-            f"carrying {'a' if usable else 'no'} page window: {text[:200]}",
-            {"status": fetch.status, "state": state, "term": term, "characters": len(text)},
+            if grounded_now
+            else f"no issued result carried a page within the fetch allowance; the last "
+            f"answered {last['status']} in state {last['state'] or 'none'}: {text[:200]}",
+            {"attempts": attempts, "results_issued": len(issued)},
             started,
         )
+        # A live source that refused or carried no text already answered
+        # `incomplete` with a retrieval term inside a 200, which is the whole
+        # claim the explicit item makes; the empty-window probe below spends a
+        # fetch, so it runs only where no attempt proved the item already.
+        refused = next(
+            (
+                attempt
+                for attempt in attempts
+                if attempt["status"] == 200
+                and attempt["state"] == "incomplete"
+                and attempt["term"] in RETRIEVAL_FAILURE_TERMS
+            ),
+            None,
+        )
+        if refused is not None:
+            self.record(
+                explicit,
+                PASS,
+                "",
+                {"proved_by": "refusing_source", **refused},
+            )
+            return
         probe = self.client.post_json(
             TOOLS_ROUTE,
             {
@@ -2034,6 +2111,7 @@ def report_document(
         "schema": "qwen-apu-acceptance-report-v1",
         "base": request.base,
         "text_models": list(request.text_models),
+        "web_model": request.web_model,
         "vision_models": list(request.vision_models),
         "restart_command": list(request.restart_command),
         "stop_command": list(request.stop_command),

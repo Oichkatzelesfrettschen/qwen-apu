@@ -1371,3 +1371,16 @@ def test_the_scoped_file_search_names_the_gateway_as_its_executor() -> None:
     assert row.execution_path == "src/qwen_apu/tools/files.py"
     assert row.availability is registry.Availability.SERVED
     assert row.approval is registry.Approval.USER_EXPLICIT
+
+
+def test_a_released_reservation_frees_the_client_slot() -> None:
+    """A spent generation grant releases its slot for the review grant that follows."""
+    grants = approvals.OutstandingImageGrants(limit=1)
+    grants.reserve("10.0.0.7", 100.0, 1000.0)
+    with pytest.raises(approvals.OutstandingImageGrantExhausted):
+        grants.reserve("10.0.0.7", 101.0, 1001.0)
+    grants.release("10.0.0.7", 1000.6)
+    grants.reserve("10.0.0.7", 102.0, 1002.0)
+    grants.release("10.0.0.7", 1500.0)
+    with pytest.raises(approvals.OutstandingImageGrantExhausted):
+        grants.reserve("10.0.0.7", 103.0, 1003.0)
