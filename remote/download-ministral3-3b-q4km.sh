@@ -4,6 +4,19 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=remote/qwen-home.sh
 . "$script_directory/qwen-home.sh"
 
+# remote/quarantine.tsv withholds this checkpoint: its weights are absent
+# from the appliance disk by decision and the ledger row is the placeholder.
+# model-registry.sh validates the whole ledger before it answers, which a
+# grep over the file does not.
+for withheld_subject in ministral3-3b; do
+    if "$script_directory/model-registry.sh" quarantine-subjects |
+        grep -qx -- "$withheld_subject"; then
+        printf '%s is withheld by remote/quarantine.tsv; no copy is fetched\n' \
+            "$withheld_subject" >&2
+        exit 1
+    fi
+done
+
 # The ceiling of the ladder, 3.4B language plus 0.4B vision. At 2.146 GB it
 # streams 20% fewer bytes per token than the served 4B distill's 2.698 GB, so
 # the largest rung is predicted to decode faster than the incumbent rather than

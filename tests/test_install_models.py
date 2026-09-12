@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import http.server
 import re
+import subprocess
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -591,3 +592,41 @@ def test_verify_reports_withheld_rather_than_absent(tmp_path: Path) -> None:
     assert {outcome.status for outcome in outcomes} == {"withheld"}
     core = verify(runtime, ["core"])
     assert {outcome.status for outcome in core} == {"absent"}
+
+
+WITHHELD_FETCH_SCRIPTS = {
+    "download-ministral3-3b-q4km.sh",
+    "download-ministral3-3b-mmproj.sh",
+    "download-nanbeige42-3b-q4km.sh",
+    "download-qwen38-4b-distill-i1-q2k.sh",
+    "download-qwen38-4b-distill-i1-q5km.sh",
+    "download-qwen38-4b-distill-i1-q6k.sh",
+    "download-qwen38-9b-distill-q4km.sh",
+    "download-qwen38-27b-ladder.sh",
+}
+
+
+def test_every_withheld_row_names_a_guarded_fetch_script() -> None:
+    """The registry's own fetch_script columns are exactly the guarded set."""
+    named: set[str] = set()
+    for row in load_models():
+        if row.id not in WITHHELD_MODEL_IDS:
+            continue
+        named.add(row.fetch_script)
+        if row.projector_fetch_script is not None:
+            named.add(row.projector_fetch_script)
+    assert named == WITHHELD_FETCH_SCRIPTS
+
+
+@pytest.mark.parametrize("script_name", sorted(WITHHELD_FETCH_SCRIPTS))
+def test_withheld_fetch_script_refuses_at_its_top(script_name: str, tmp_path: Path) -> None:
+    """The guard runs before the destination is resolved, so no byte is written."""
+    completed = subprocess.run(
+        [str(TREE / "remote" / script_name), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert "withheld by remote/quarantine.tsv" in completed.stderr
+    assert not any(tmp_path.iterdir())

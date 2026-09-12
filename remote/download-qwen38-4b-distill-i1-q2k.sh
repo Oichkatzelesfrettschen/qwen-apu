@@ -4,6 +4,19 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=remote/qwen-home.sh
 . "$script_directory/qwen-home.sh"
 
+# remote/quarantine.tsv withholds this checkpoint: its weights are absent
+# from the appliance disk by decision and the ledger row is the placeholder.
+# model-registry.sh validates the whole ledger before it answers, which a
+# grep over the file does not.
+for withheld_subject in qwen38-4b-i1-q2k; do
+    if "$script_directory/model-registry.sh" quarantine-subjects |
+        grep -qx -- "$withheld_subject"; then
+        printf '%s is withheld by remote/quarantine.tsv; no copy is fetched\n' \
+            "$withheld_subject" >&2
+        exit 1
+    fi
+done
+
 # The lowest published quantization of the balanced-text checkpoint, fetched to
 # test whether fewer streamed bytes convert to proportional decode on this APU.
 # The imatrix build is chosen over the static one because the two differ by 256
