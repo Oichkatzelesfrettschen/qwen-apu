@@ -741,16 +741,15 @@ sweeps at about 20%, and the report states both numbers. A window of one
 alternation refuses outright, each metric carries its own ratio and verdict, and
 an absent timings block refuses rather than reading as a zero.
 
-## Phase 10: the two lane children the launch derives
+## The two lane children the launch derives
 
-The cutover rehearsal passed every item its launch armed and skipped both tool
-lanes, each for a reason on the launch side rather than in the driver. The image
-lane read `this launch armed no image lane`, because `appliance serve` took the
-worker as `--image-service ARG` alone and the rehearsal supplied none. The web
-lane read `no row of remote/web-profiles.tsv names qwen35-08b`, because
+Both tool lanes were unreachable from a launch that named no argv for them. The
+image lane answered `this launch armed no image lane`, because `appliance serve`
+took the worker as `--image-service ARG` alone. The web lane answered `no row of
+remote/web-profiles.tsv names qwen35-08b`, because
 `qwen_apu.tools.matrix.resolve_selection` attaches a `WebProfile` only where the
-selector equals a `profile_id` and the driver asked the matrix about its first
-`--model`. Both are closed here, device-free.
+selector equals a `profile_id` and the driver asks the matrix about its first
+`--model`. The derivation below closes both without a device.
 
 `qwen_apu.runtime.lanes` holds the derivation. `--image-profile ID` reads
 remote/image-profiles.tsv, remote/image-models.tsv, and
@@ -797,9 +796,13 @@ reaches this decision.
 `ChildSpec.ready` carries what proves each child reached its listener, since the
 router's own 240 second readiness deadline would otherwise absorb a worker that
 never binds and report `router_not_ready` against the wrong child. `socket`
-waits for the bound Unix socket, the observable the session reads off the
-worker's `socket` line; `healthz` waits for `GET /healthz`, the route
-`searxng-launch.sh start` waits on. Each names itself, its deadline, and its
+connects to the Unix socket rather than reading its node type, because a worker
+killed before it unlinked `state/images/image-service.sock` leaves a node a type
+test admits: the stale node answers ECONNREFUSED and a bound listener queues the
+probe into its backlog, which is the probe `bind_control_socket` in
+`image-service.py` already runs. `healthz` requires a `GET /healthz` answer below
+400, the `curl -f` verdict `health_answers` in `searxng-launch.sh` applies, so an
+instance serving 4xx reads as one the search executor cannot use. Each names itself, its deadline, and its
 listener in the refusal, and `state/appliance.json` records both children with
 their pid, process group, start time, and listener identity.
 
@@ -820,7 +823,7 @@ An image profile reading `execution_policy refused` arms no worker: the row
 admits a shape and spends no device time, and the matrix answers
 `policy_refused` for it whether or not a process exists.
 
-Three refusals keep the derivation from making a launch worse than the one it
+Five refusals keep the derivation from making a launch worse than the one it
 replaces. `--web-profile` defaults to `web-open` and every row of
 remote/web-profiles.tsv names `http://127.0.0.1:8888`, so an unguarded
 derivation would make SearXNG mandatory on every `appliance serve`; the launch
@@ -833,9 +836,18 @@ port decide where that child listens and a wait bound to the derived path would
 expire against a worker that is up. The argv test compares flag by flag and
 value by value against the session's composition rather than word order, so it
 proves the pairing the worker's argparse reads rather than the sequence the
-shell writes.
+shell writes. A root holding no executable `qwen_home_image_runtime` or no
+installed model directory refuses the image derivation before the parameter
+document is written, the rule `image-launch-lib.sh` applies to `runtime_path`,
+since `image-service.py` checks those paths for absoluteness alone and binds its
+control socket regardless, which would put `image_generate` in the matrix and
+spend an approved generation's single-use grant against an absent binary. A root
+that derives no SearXNG child for a profile naming a loopback instance carries
+`searxng_armed` false into the gateway, which leaves the web executor unmounted
+and both web rows `temporarily_unavailable` rather than advertising a lane whose
+first approved query fails at the provider.
 
-### What Phase 10's three surfaces leave to the device
+### What the three surfaces leave to the device
 
 - One `build-application` on the laptop against an activated native bundle and a
   populated model store, and the `verify-application` that follows it.
