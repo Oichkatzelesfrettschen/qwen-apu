@@ -46,7 +46,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from qwen_apu.config import models as config_models
-from qwen_apu.config.schema import ImageProfile, ModelRow, WebProfile
+from qwen_apu.config.schema import ImageProfile, ModelRow, QuarantineRow, WebProfile
 from qwen_apu.tools import registry
 from qwen_apu.tools.registry import ToolEntry, WebDefinitions
 from qwen_apu.web.http import Request, Response, Route
@@ -110,11 +110,12 @@ _EXECUTING_STATES = (ToolState.AVAILABLE, ToolState.AVAILABLE_THROUGH_HELPER)
 
 @dataclass(frozen=True, slots=True)
 class Ledgers:
-    """The three ledgers a derivation reads, loaded whole before any row answers."""
+    """The four ledgers a derivation reads, loaded whole before any row answers."""
 
     models: tuple[ModelRow, ...]
     web_profiles: tuple[WebProfile, ...]
     image_profiles: tuple[ImageProfile, ...]
+    quarantine: tuple[QuarantineRow, ...] = ()
 
     @classmethod
     def load(
@@ -123,12 +124,14 @@ class Ledgers:
         models_path: Path | str | None = None,
         web_profiles_path: Path | str | None = None,
         image_profiles_path: Path | str | None = None,
+        quarantine_path: Path | str | None = None,
     ) -> Ledgers:
         models = config_models.load_models(models_path)
         return cls(
             models=models,
             web_profiles=config_models.load_web_profiles(web_profiles_path, models=models),
             image_profiles=config_models.load_image_profiles(image_profiles_path),
+            quarantine=config_models.load_quarantine(quarantine_path),
         )
 
 
@@ -568,21 +571,43 @@ _DERIVATIONS = {
 }
 
 
+def quarantine_refusal(ledgers: Ledgers, model: ModelRow) -> str:
+    """The sentence a quarantined checkpoint refuses every row with, or `` for none.
+
+    remote/quarantine.tsv's own header states that a reader derives the
+    excluded state from the ledger rather than from the tier field alone,
+    because a quarantine carries two scopes: a `model` row excludes the
+    checkpoint whatever tier its registry row reads, and a `profile` row
+    excludes one tuple of a checkpoint the picker still serves. A tier that
+    reads `quarantine` refuses on its own as well, so a ledger row removed
+    without its tier still refuses here.
+    """
+    for row in ledgers.quarantine:
+        if row.scope == "model" and row.subject == model.id:
+            return (
+                f"remote/quarantine.tsv excludes {model.id} at model scope for "
+                f"{row.failure_class}, recorded in {row.reason_record}"
+            )
+    if model.tier == "quarantine":
+        return (
+            f"remote/models.tsv reads tier quarantine for {model.id}, and "
+            "remote/quarantine.tsv carries the reset, fault, or correctness hazard behind it"
+        )
+    return ""
+
+
 def offers(settings: MatrixSettings, selection: Selection) -> tuple[ToolOffer, ...]:
     """Every registry row with the state it carries for one selection.
 
     A quarantined checkpoint refuses every row at once, because
-    `remote/build-router-presets.sh` keeps a `quarantine` tier out of the
+    `remote/build-router-presets.sh` keeps a quarantined checkpoint out of the
     picker and a selector that names one has reached this route around that
     filter.
     """
     entries = registry.table(web_definitions=settings.web_definitions)
-    if selection.model.tier == "quarantine":
-        reason = (
-            f"remote/models.tsv reads tier quarantine for {selection.model.id}, and "
-            "remote/quarantine.tsv carries the reset, fault, or correctness hazard behind it"
-        )
-        return tuple(_offer(entry, ToolState.POLICY_REFUSED, reason) for entry in entries)
+    excluded = quarantine_refusal(settings.tables(), selection.model)
+    if excluded:
+        return tuple(_offer(entry, ToolState.POLICY_REFUSED, excluded) for entry in entries)
     built: list[ToolOffer] = []
     for entry in entries:
         derive = _DERIVATIONS.get(entry.tool_id)
