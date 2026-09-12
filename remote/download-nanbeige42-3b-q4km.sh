@@ -8,14 +8,13 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # from the appliance disk by decision and the ledger row is the placeholder.
 # model-registry.sh validates the whole ledger before it answers, which a
 # grep over the file does not.
-for withheld_subject in nanbeige42-3b; do
-    if "$script_directory/model-registry.sh" quarantine-subjects |
-        grep -qx -- "$withheld_subject"; then
-        printf '%s is withheld by remote/quarantine.tsv; no copy is fetched\n' \
-            "$withheld_subject" >&2
-        exit 1
-    fi
-done
+withheld_subject=nanbeige42-3b
+if "$script_directory/model-registry.sh" quarantine-subjects |
+    grep -qx -- "$withheld_subject"; then
+    printf '%s is withheld by remote/quarantine.tsv; no copy is fetched\n' \
+        "$withheld_subject" >&2
+    exit 1
+fi
 
 renice -n 19 -p $$ >/dev/null
 taskset -pc 0 $$ >/dev/null

@@ -8,14 +8,13 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # from the appliance disk by decision and the ledger row is the placeholder.
 # model-registry.sh validates the whole ledger before it answers, which a
 # grep over the file does not.
-for withheld_subject in qwen38-4b-i1-q6k; do
-    if "$script_directory/model-registry.sh" quarantine-subjects |
-        grep -qx -- "$withheld_subject"; then
-        printf '%s is withheld by remote/quarantine.tsv; no copy is fetched\n' \
-            "$withheld_subject" >&2
-        exit 1
-    fi
-done
+withheld_subject=qwen38-4b-i1-q6k
+if "$script_directory/model-registry.sh" quarantine-subjects |
+    grep -qx -- "$withheld_subject"; then
+    printf '%s is withheld by remote/quarantine.tsv; no copy is fetched\n' \
+        "$withheld_subject" >&2
+    exit 1
+fi
 
 # The extreme point of the unpacking-cost ladder. Q6_K carries 28% more bytes
 # than the served Q4_K_M and unpacks with a flat six-bit-plus-scale layout
