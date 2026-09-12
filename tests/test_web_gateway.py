@@ -1284,3 +1284,44 @@ def test_a_lan_bound_pairing_cookie_travels_over_plain_http(tmp_path: Path) -> N
     cookie = response.headers.get("set-cookie") or response.headers.get("Set-Cookie", "")
     assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
     assert "Secure" not in cookie
+
+
+def test_the_policy_frames_the_named_origin_alone() -> None:
+    """`frame-src` names the second listener the shell frames, or `'none'`.
+
+    The shell page frames llama.cpp's own page from the sibling listener, and
+    a launch that binds none leaves the page framing nothing, which is the
+    directive a browser reads before it loads any frame.
+    """
+    page = b'<!doctype html><html><body><iframe src="x"></iframe></body></html>'
+    assert "frame-src 'none'" in content_security_policy(page)
+    assert "frame-src 'none'" in content_security_policy(page, ("",))
+    framed = content_security_policy(page, ("http://127.0.0.1:42072",))
+    assert "frame-src http://127.0.0.1:42072;" in framed
+    assert "frame-ancestors 'none'" in framed
+
+
+def test_the_served_page_carries_the_configured_frame_source(tmp_path: Path) -> None:
+    static_root = tmp_path / "static"
+    static_root.mkdir()
+    (static_root / "index.html").write_text("<!doctype html><p>shell</p>", encoding="utf-8")
+    gateway = Gateway(
+        GatewayConfig(
+            static_root=static_root, port=0, origins=(), frame_sources=("http://127.0.0.1:42072",)
+        ),
+        (),
+    )
+    thread = threading.Thread(target=gateway.serve_forever)
+    thread.start()
+    try:
+        connection = HTTPConnection("127.0.0.1", gateway.port, timeout=5)
+        connection.request("GET", "/", headers={"Host": f"127.0.0.1:{gateway.port}"})
+        response = connection.getresponse()
+        response.read()
+        assert response.status == 200
+        assert "frame-src http://127.0.0.1:42072;" in (
+            response.getheader("content-security-policy") or ""
+        )
+    finally:
+        gateway.shutdown()
+        thread.join(timeout=5)

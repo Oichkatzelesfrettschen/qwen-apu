@@ -199,18 +199,22 @@ def hash_source(block: bytes) -> str:
     return f"'sha256-{digest}'"
 
 
-def content_security_policy(page: bytes) -> str:
+def content_security_policy(page: bytes, frame_sources: Sequence[str] = ()) -> str:
     """The page's own policy: `'self'` plus the hash of each inline block.
 
     `connect-src 'self'` names this gateway alone, which is the phase's whole
     claim -- one origin carries chat, approvals, artifacts, and images -- and
     refuses a page that still derives a broker origin on a sibling port.
+    `frame-src` names the origins the page may frame: the shell frames the
+    second listener that serves llama.cpp's own page, and a launch that binds
+    none leaves the directive at `'none'`, so the page frames nothing.
     """
     reader = _InlineBlockReader()
     reader.feed(page.decode("utf-8", "replace"))
     reader.close()
     scripts = " ".join(hash_source(block) for block in reader.scripts)
     styles = " ".join(hash_source(block) for block in reader.styles)
+    frames = " ".join(source for source in frame_sources if source) or "'none'"
     return "; ".join(
         (
             "default-src 'none'",
@@ -219,6 +223,7 @@ def content_security_policy(page: bytes) -> str:
             "img-src 'self' data: blob:",
             "connect-src 'self'",
             "font-src 'self'",
+            f"frame-src {frames}",
             "form-action 'none'",
             "base-uri 'none'",
             "frame-ancestors 'none'",
@@ -267,6 +272,9 @@ class GatewayConfig:
     exposure: str = ""
     exposure_name: str = ""
     origins: tuple[str, ...] = ()
+    # The origins the served page may frame; the shell names the second
+    # listener here, and the empty tuple leaves `frame-src 'none'`.
+    frame_sources: tuple[str, ...] = ()
 
     def admitted_hosts(self) -> tuple[str, ...]:
         return admitted_hosts(self.exposure, self.exposure_name)
@@ -640,7 +648,9 @@ class Gateway:
         self.session_authority = session_authority
         self.static = StaticDirectory(config.static_root)
         self.admitted_hosts = config.admitted_hosts()
-        self.content_security_policy = content_security_policy(self.static.index())
+        self.content_security_policy = content_security_policy(
+            self.static.index(), config.frame_sources
+        )
         self._server = _GatewayServer((config.bind_host, config.port), _Handler, self)
         self._lock = threading.Lock()
         self._on_shutdown = tuple(on_shutdown)
