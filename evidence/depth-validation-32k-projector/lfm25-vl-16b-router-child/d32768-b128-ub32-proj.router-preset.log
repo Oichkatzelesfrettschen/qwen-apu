@@ -1,0 +1,5 @@
+router_presets=written path=$HOME/worktrees/qwen-apu/depth-32k/evidence/depth-validation-32k/lfm25-vl-16b-router-child/d32768-b128-ub32-proj.router-preset.ini models=1 unlisted=0 quarantined=0 absent=0
+draft_pairs=written pairs=0 unlisted=0 quarantined=0 absent=0
+tier_directories production=$HOME/worktrees/qwen-apu/depth-32k/evidence/depth-validation-32k/lfm25-vl-16b-router-child/d32768-b128-ub32-proj.router-staging/model-root/production candidates=$HOME/worktrees/qwen-apu/depth-32k/evidence/depth-validation-32k/lfm25-vl-16b-router-child/d32768-b128-ub32-proj.router-staging/model-root/candidates quarantine=$HOME/worktrees/qwen-apu/depth-32k/evidence/depth-validation-32k/lfm25-vl-16b-router-child/d32768-b128-ub32-proj.router-staging/model-root/quarantine reasons=$HOME/worktrees/qwen-apu/depth-32k/evidence/depth-validation-32k/lfm25-vl-16b-router-child/d32768-b128-ub32-proj.router-staging/model-root/quarantine-reasons
+web_sections=withheld reason=authorizer_absent ledger=$HOME/Github/qwen-apu/remote/web-profiles.tsv
+QWEN_WEB_AUTHORIZER_READY=1 admits the ledger validator-gated rows as tool-bearing sections

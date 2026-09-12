@@ -220,3 +220,38 @@ subdirectory of the standalone arms' own directory because both share the
 generated `.router-preset.ini`/`.router-preset.log` the arm served under. The
 row copied into `remote/validated-tuples.tsv` carries this directory as its
 `evidence` field.
+
+## The router-child arm the review-model rule requires
+
+`remote/check-validated-tuples.sh` joins `remote/image-profiles.tsv`'s
+`review_model` against this ledger on `runtime_mode=router-child` with
+`projector_state=loaded` at the registry tuple, because
+`build-web-presets.sh` generates a review-only vision section from that join
+and a standalone row leaves the section ungenerated. Every arm in
+`lfm25-vl-16b/` ran standalone, so the review model's registry depth could
+not rise above 8192 while that row was the only evidence: raising it refused
+the ledger check rather than passing silently.
+
+`lfm25-vl-16b-router-child/` carries the arm that closes it, measured through
+one generated router preset section at the row's own tuple with the projector
+attached. The prediction under test was the same one the standalone arms
+answered, and the falsifier was the same: a wedge, a reset, a fault, a fill
+outside the acceptance window, or a control answer missing "JUN" would have
+left the registry depth where it stood.
+
+| field | value |
+| --- | --- |
+| depth | 32768 |
+| prompt tokens filled | 32616 |
+| prefill seconds | 1138.551 |
+| decode tok/s | 3.867 |
+| ring resets | 0 |
+| GPU faults | 0 |
+| control answer | JUN |
+| health | healthy |
+
+The fill matches the standalone arm's 32616 prompt tokens at the same depth,
+so routing the request through a preset section moves the served geometry
+onto the section and leaves the measured fill where the standalone arm put
+it.
+
