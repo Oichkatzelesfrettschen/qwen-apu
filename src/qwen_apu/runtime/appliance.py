@@ -33,6 +33,7 @@ import http.client
 import json
 import os
 import signal
+import socket
 import sys
 import tempfile
 import threading
@@ -68,6 +69,9 @@ HEALTHZ_PATH = "/healthz"
 SAMPLE_INTERVAL_SECONDS = 0.5
 READINESS_DEADLINE_SECONDS = 240.0
 TERMINATION_GRACE_SECONDS = 2.0
+# The probe reaches a listener on the same machine, so a second is ample and
+# a wedged peer costs the readiness loop one sample rather than its deadline.
+SOCKET_PROBE_TIMEOUT_SECONDS = 1.0
 
 
 class ApplianceRefused(RuntimeError):
@@ -90,9 +94,10 @@ class ChildSpec:
     port: int | None = None
     socket_path: str = "-"
     # What proves this child reached its listener before the appliance reports
-    # ready. `socket` waits for `socket_path` to be a bound Unix socket, the
-    # observable `qwen-webui-session.sh` reads off the worker's own `socket`
-    # line; `healthz` waits for `GET /healthz` on `port`, the route
+    # ready. `socket` waits for `socket_path` to accept a connection, which is
+    # the worker's own `socket` line turned into an observable this process can
+    # read and which a stale node left by a killed predecessor fails;
+    # `healthz` waits for `GET /healthz` on `port`, the route
     # `remote/searxng-launch.sh start` waits on. `-` starts the child and
     # watches it for exit alone, which is what the router supervisor needs
     # since it publishes its readiness through `state/runtime.json`.
@@ -409,7 +414,7 @@ class Appliance:
     def _listening(spec: ChildSpec) -> bool:
         """The one observable the child's readiness state names."""
         if spec.ready == READY_SOCKET:
-            return Path(spec.socket_path).is_socket()
+            return _socket_answers(Path(spec.socket_path))
         if spec.ready == READY_HEALTHZ and spec.port:
             connection = http.client.HTTPConnection("127.0.0.1", spec.port, timeout=2.0)
             try:
@@ -581,6 +586,30 @@ def stop(paths: RuntimePaths, *, grace_s: float = TERMINATION_GRACE_SECONDS) -> 
         )
     )
     return tuple(signalled)
+
+
+def _socket_answers(path: Path) -> bool:
+    """Whether a Unix socket at `path` accepts a connection.
+
+    `Path.is_socket` reads the filesystem node type alone, and a worker killed
+    before it unlinked `state/images/image-service.sock` leaves that node in
+    place, so a node test admits the predecessor's socket and the gateway mounts
+    its image routes against nothing. `connect` is what separates the two: the
+    stale node answers ECONNREFUSED, and a bound listener queues the connection
+    into its backlog. `image-service.py` runs the same probe in
+    `bind_control_socket` before it takes the path over.
+    """
+    if not path.is_socket():
+        return False
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(SOCKET_PROBE_TIMEOUT_SECONDS)
+    try:
+        probe.connect(str(path))
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
 
 
 def _disarm_session_secret(paths: RuntimePaths) -> None:

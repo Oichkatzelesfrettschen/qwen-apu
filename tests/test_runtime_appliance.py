@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -229,6 +230,40 @@ def test_stop_on_a_root_carrying_no_session_secret_is_quiet(root: RuntimePaths) 
     """An ordinary teardown after the gateway disarmed finds nothing to unlink."""
     assert appliance.stop(root) == ()
     assert not (root["qwen_home_state"] / approvals.SESSION_SECRET_FILE_NAME).exists()
+
+
+def test_a_stale_socket_node_reports_no_listener(tmp_path: Path) -> None:
+    """A node a killed worker left behind fails the readiness probe.
+
+    The node outlives the process, so `Path.is_socket` admits the predecessor's
+    socket and the gateway would mount its image routes before the replacement
+    worker bound. The closed listener answers ECONNREFUSED, which is what the
+    probe reads.
+    """
+    node = tmp_path / "image-service.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(node))
+    listener.listen(1)
+    listener.close()
+
+    assert node.is_socket()
+    assert not appliance._socket_answers(node)
+
+
+def test_a_bound_listener_reports_a_listener(tmp_path: Path) -> None:
+    """The worker's own bound socket queues the probe into its backlog."""
+    node = tmp_path / "image-service.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        listener.bind(str(node))
+        listener.listen(1)
+        assert appliance._socket_answers(node)
+    finally:
+        listener.close()
+
+
+def test_an_absent_socket_path_reports_no_listener(tmp_path: Path) -> None:
+    assert not appliance._socket_answers(tmp_path / "absent.sock")
 
 
 def test_render_states_every_child_and_the_readiness(root: RuntimePaths) -> None:
