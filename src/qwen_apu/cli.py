@@ -199,6 +199,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="one text model to take a turn on; repeat to name the class ladder",
     )
     acceptance_run.add_argument(
+        "--web-model",
+        default="",
+        metavar="ID",
+        help="the selector the web lane reads its matrix under; the launch's own "
+        "approval profile is the default, and its model column names the checkpoint",
+    )
+    acceptance_run.add_argument(
         "--vision-model",
         action="append",
         default=[],
@@ -578,6 +585,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     report=args.report,
                     text_models=tuple(args.model) or acceptance.DEFAULT_TEXT_MODELS,
                     vision_models=tuple(args.vision_model) or acceptance.DEFAULT_VISION_MODELS,
+                    web_model=args.web_model,
                     restart_command=tuple(args.restart_command),
                     stop_command=tuple(args.stop_command),
                     previous_report=args.previous_report,

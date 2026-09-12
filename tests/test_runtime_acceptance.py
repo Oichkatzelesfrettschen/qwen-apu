@@ -19,6 +19,7 @@ how many frames a stream writes.
 
 from __future__ import annotations
 
+import dataclasses
 import fcntl
 import json
 import os
@@ -325,11 +326,12 @@ def test_a_whole_run_passes_every_reachable_check(gateway: Fixture) -> None:
     assert results["browser_history_import"].status == PASS
     assert results["conversation_open"].status == PASS
 
-    # Both lanes read the tool matrix first, and this launch arms neither: no
-    # row of remote/web-profiles.tsv names the selected checkpoint and no image
-    # profile is armed, so every item skips carrying the matrix's own sentence.
+    # Both lanes read the tool matrix first. The web lane reads its matrix under
+    # the launch's own approval profile, which resolves and admits the row, so
+    # the lane reaches the grant route this fixture leaves unapproved and skips
+    # there. No image profile is armed, so that item skips on the matrix row.
     assert results["web_search_then_fetch"].status == SKIPPED
-    assert "web_search" in results["web_search_then_fetch"].reason
+    assert "approval" in results["web_search_then_fetch"].reason
     assert results["image_generate"].status == SKIPPED
     assert "image_generation" in results["image_generate"].reason
     # No stop argv, so the two absence items name the argument they need.
@@ -635,7 +637,7 @@ def _matrix(
     return {
         "schema": "qwen.tool-matrix",
         "version": 1,
-        "selection": {"model": MATRIX_MODEL},
+        "selection": {"model_id": MATRIX_MODEL, "web_profile": "web-open"},
         "launch": {"approval_profile": "web-open", "image_profile": "image-sd15"},
         "tools": [
             {"tool_id": "web_search", "state": search_state, "helper": "searxng", "reason": "r"},
@@ -677,6 +679,7 @@ class LaneGateway:
         self.image_grants = 0
         self.seen: list[tuple[str, str]] = []
         self.posted: list[Mapping[str, object]] = []
+        self.executed: list[Mapping[str, object]] = []
 
     # -- the gates -------------------------------------------------------
 
@@ -716,6 +719,7 @@ class LaneGateway:
     # -- the executor ----------------------------------------------------
 
     def _execute(self, payload: Mapping[str, object]) -> Answer:
+        self.executed.append(dict(payload))
         tool = str(payload.get("tool", ""))
         params = payload.get("params")
         params = params if isinstance(params, dict) else {}
@@ -849,6 +853,46 @@ def test_the_web_lane_searches_then_reads_the_page_it_named(root: RuntimePaths) 
     assert (("GET", acceptance.SESSION_ROUTE)) in gateway.seen
     assert gateway.posted[0]["query"] == acceptance.WEB_QUERY
     assert gateway.posted[0]["profile_id"] == "web-open"
+
+
+def test_the_web_lane_reads_its_matrix_under_the_launch_profile(root: RuntimePaths) -> None:
+    """The selector is the profile the broker signs for, and the model is its column.
+
+    `qwen_apu.tools.matrix.resolve_selection` attaches a web profile only where
+    the selector equals a `profile_id`, so a run naming a checkpoint alone reads
+    `not_installed` for every web row. The lane therefore opens on the first
+    text model, takes `launch.approval_profile` from that answer, and reads the
+    matrix again under it.
+    """
+    run, gateway = _lane_run(root)
+    run.check_web_lane()
+    selectors = [path for method, path in gateway.seen if method == "GET" and "/api/tools?" in path]
+    assert selectors[-1].endswith("model=web-open")
+    assert [call["model"] for call in gateway.executed] == [MATRIX_MODEL] * 3
+
+
+def test_the_web_model_override_names_the_selector(root: RuntimePaths) -> None:
+    run, gateway = _lane_run(root)
+    run.request = dataclasses.replace(run.request, web_model="web-lookup")
+    run.check_web_lane()
+    selectors = [path for method, path in gateway.seen if method == "GET" and "/api/tools?" in path]
+    assert selectors[-1].endswith("model=web-lookup")
+
+
+def test_the_web_lane_skips_naming_the_profile_that_holds_no_instance(
+    root: RuntimePaths,
+) -> None:
+    """A profile whose `searxng_url` is absent leaves the matrix row unavailable."""
+    matrix = _matrix(search_state="temporarily_unavailable")
+    tools = matrix["tools"]
+    assert isinstance(tools, list)
+    tools[0]["reason"] = "web-lookup names provider searxng and no instance URL"
+    run, _gateway = _lane_run(root, matrix=matrix)
+    run.check_web_lane()
+    results = _by_name(run.results)
+    for name in run.WEB_ITEMS:
+        assert results[name].status == SKIPPED
+        assert "web-lookup" in results[name].reason
 
 
 def test_a_stale_session_secret_is_read_again_and_the_grant_lands(root: RuntimePaths) -> None:
