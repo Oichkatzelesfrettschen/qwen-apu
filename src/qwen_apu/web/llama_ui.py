@@ -19,11 +19,12 @@ scoped to a host rather than to a port, so one pairing admits both origins.
 
 The admitted set is the second. `tools/server/server.cpp` registers the route
 table this module mirrors: the inference and reading routes cross, and the
-routes that change server state -- `POST /props`, `POST /slots/:id_slot`,
-`POST /lora-adapters`, and the router's own `/models`, `/models/load`, and
-`/models/unload` -- stay behind, because a page reached through one pairing
-would otherwise load and unload checkpoints on a device the capacity policy
-alone places. A GET of any other well-formed asset name reaches the server's
+routes that reconfigure the server -- `POST /props`, `POST /slots/:id_slot`,
+and `POST /lora-adapters` -- stay behind, because a page reaching them would
+rewrite the launch the capacity policy composed. Loading and unloading a
+checkpoint crosses: that is how the picker selects one, and a completion
+naming an unloaded model makes the router load it anyway.
+A GET of any other well-formed asset name reaches the server's
 asset table, which answers 404 for a name it does not hold. A catch-all route
 per method is what keeps an unmatched path out of the gateway's static
 branch, since that branch would serve the custom page's own files here.
@@ -84,7 +85,9 @@ TOOLS_PATH = "/tools"
 REFUSED_ASSET_PATHS = ("/sw.js",)
 
 # `tools/server/server.cpp` registers each of these with `ctx_http.get`. The
-# router build adds `/models/sse`, which is the picker's own event stream.
+# router build adds `/models/sse`, which is the picker's own event stream, and
+# `/v1/streams/lookup`, which the page reads to resume a stream it started
+# before a reload.
 ADMITTED_GET_PATHS = frozenset(
     {
         "/health",
@@ -94,6 +97,7 @@ ADMITTED_GET_PATHS = frozenset(
         "/models",
         "/v1/models",
         "/models/sse",
+        "/v1/streams/lookup",
         "/slots",
         "/lora-adapters",
     }
@@ -128,6 +132,15 @@ ADMITTED_POST_PATHS = frozenset(
         "/reranking",
         "/v1/rerank",
         "/v1/reranking",
+        # Which checkpoint the router holds resident. The picker loads a model
+        # by naming it here, and a chat completion naming an unloaded model
+        # makes the router load it anyway, so refusing these two blocked the
+        # page while leaving the state change they perform reachable through
+        # the completion route. The routes that reconfigure the server itself
+        # -- `POST /props`, `POST /slots/:id_slot`, `POST /lora-adapters` --
+        # stay behind this listener.
+        "/models/load",
+        "/models/unload",
     }
 )
 
