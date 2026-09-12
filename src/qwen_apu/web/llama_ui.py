@@ -58,13 +58,13 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlencode
 
 from qwen_apu.engines.llama import LlamaClient, UpstreamAnswer, UpstreamRefused
-from qwen_apu.web.app import RequestRefused, StaticDirectory
+from qwen_apu.web.app import RequestRefused, StaticDirectory, inline_sources
 from qwen_apu.web.http import Request, Response, Route, StreamingResponse
 from qwen_apu.web.tool_gate import ToolGate, ToolRefused
 
@@ -159,17 +159,31 @@ FORWARDED_RESPONSE_HEADERS: tuple[str, ...] = (
 # web app manifest, and the page talks to the origin it loaded from.
 
 
-def content_security_policy(frame_ancestors: str = "'none'") -> str:
+def content_security_policy(
+    frame_ancestors: str = "'none'", script_sources: Sequence[str] = ()
+) -> str:
     """The listener's policy, with the one origin admitted to frame the page.
 
     The shell on the chat page's port frames this listener, so the assembly
     names that origin here; a listener assembled without one keeps
     `frame-ancestors 'none'`, which is the standalone page.
+
+    `script_sources` carries the digest of each inline script block the served
+    `index.html` holds, read from the bundle on disk, so the page's own script
+    executes and an injected one does not. A launch serving no bundle reads no
+    page, and the empty default keeps `'unsafe-inline'` for the router's own
+    embedded page.
+
+    `style-src` keeps the keyword whatever the bundle holds. The built page
+    carries a `style` attribute and its bundle calls `setAttribute("style",
+    ...)` in five places; `style-src-attr` falls back to `style-src` and
+    governs both, so a digest list refuses the page's own layout.
     """
+    scripts = " ".join(script_sources) if script_sources else "'unsafe-inline'"
     return "; ".join(
         (
             "default-src 'none'",
-            "script-src 'self' 'unsafe-inline'",
+            f"script-src 'self' {scripts}",
             "style-src 'self' 'unsafe-inline'",
             "img-src 'self' data: blob:",
             "font-src 'self' data:",
@@ -217,6 +231,23 @@ ASSET_CONTENT_TYPES = {
     ".svg": "image/svg+xml",
     ".woff2": "font/woff2",
 }
+
+
+def bundle_script_sources(assets: Path | None) -> tuple[str, ...]:
+    """The inline script digests the bundle's own `index.html` carries.
+
+    A bundle this listener serves from disk is a page whose bytes are
+    readable, so its policy names those blocks by digest. An absent bundle
+    leaves the router serving its own page, whose bytes never reach this
+    process, and the empty tuple keeps `'unsafe-inline'` for it.
+    """
+    if assets is None:
+        return ()
+    page = assets / PAIRING_PAGE_NAME
+    if not page.is_file():
+        return ()
+    scripts, _ = inline_sources(page.read_bytes())
+    return scripts
 
 
 def _unserved(request: Request) -> str:
@@ -304,10 +335,14 @@ class LlamaUiSettings:
     # The approval gate every `POST /tools` passes. None keeps both `/tools`
     # methods off the listener, which is the launch that arms no approvals.
     tool_gate: ToolGate | None = None
+    # The digest of each inline script block the served page carries, read
+    # once at assembly. Empty leaves `'unsafe-inline'`, which is the launch
+    # that serves no bundle of its own.
+    script_sources: tuple[str, ...] = ()
 
     @property
     def policy(self) -> str:
-        return content_security_policy(self.frame_ancestors)
+        return content_security_policy(self.frame_ancestors, self.script_sources)
 
 
 class LlamaUiProxy:

@@ -42,6 +42,21 @@ answer (`web/llama_ui.py: content_security_policy`); a listener assembled
 without a framer keeps `frame-ancestors 'none'`. Both origins come from the
 same `GatewayRequest`, so a bind host change moves both directives at once.
 
+## The bundle's own script decides the listener's policy
+
+`bundle_script_sources` reads the served `index.html` at assembly and hashes
+each inline script block, so `script-src` names those digests rather than
+`'unsafe-inline'`. The built page carries exactly one such block. A launch
+that serves no bundle leaves the router serving its own page, whose bytes
+never reach this process, and the empty tuple keeps the keyword for it.
+
+`style-src` keeps `'unsafe-inline'` on the evidence: the built page's markup
+carries one `style` attribute and its bundle calls `setAttribute("style",
+...)` in five places, and CSP's `style-src-attr` falls back to `style-src`
+and governs both, so a digest list would refuse the page's own layout. The
+falsifier is direct: a build whose markup and bundle set no style attribute
+takes style digests the same way the script sources are taken.
+
 ## The image studio
 
 The human types the prompt, so the click on Generate is the approval. The

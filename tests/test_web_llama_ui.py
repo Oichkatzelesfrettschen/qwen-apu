@@ -31,7 +31,7 @@ from qwen_apu.runtime.state import RuntimeRecord, RuntimeState
 from qwen_apu.tools import approvals
 from qwen_apu.web import assemble as assemble_module
 from qwen_apu.web import llama_ui, tool_gate
-from qwen_apu.web.app import Gateway, GatewayConfig
+from qwen_apu.web.app import Gateway, GatewayConfig, hash_source
 from qwen_apu.web.auth import SessionGate
 from qwen_apu.web.http import Route
 
@@ -246,6 +246,10 @@ def _build(
                     assets=assets,
                     frame_ancestors=frame_ancestors,
                     tool_gate=gate,
+                    # The assembly reads the bundle's inline blocks; this
+                    # fixture mirrors it so the policy under test is the one a
+                    # launch sends.
+                    script_sources=llama_ui.bundle_script_sources(assets),
                 )
             ),
         ),
@@ -779,3 +783,72 @@ def test_a_denied_call_answers_the_page_the_refusal_in_the_tools_shape(
         assert unpaired.status in (401, 403), "the pending route answered without a session"
     finally:
         running.stop()
+
+
+# ---------------------------------------------------------------------------
+# The served bundle's own inline script decides the policy
+# ---------------------------------------------------------------------------
+
+
+def test_a_listener_without_a_bundle_admits_inline_script() -> None:
+    """The router's own embedded page never reaches this process, so its
+    inline blocks are unreadable and the keyword stands."""
+    assert llama_ui.bundle_script_sources(None) == ()
+    policy = llama_ui.content_security_policy()
+    assert "script-src 'self' 'unsafe-inline'" in policy
+
+
+def test_a_bundle_page_names_its_inline_script_by_digest(tmp_path: Path) -> None:
+    root = tmp_path / "dist"
+    root.mkdir()
+    block = b"\n  window.__sveltekit = {};\n"
+    root.joinpath("index.html").write_bytes(
+        b"<!doctype html><html><head><script>" + block + b"</script></head><body></body></html>"
+    )
+    sources = llama_ui.bundle_script_sources(root)
+    assert sources == (hash_source(block),)
+    policy = llama_ui.content_security_policy(script_sources=sources)
+    assert f"script-src 'self' {hash_source(block)}" in policy
+    assert "'unsafe-inline'" not in policy.split("style-src", 1)[0]
+    # The bundle sets style attributes at run time, which `style-src-attr`
+    # falls back to `style-src` for, so that keyword stays.
+    assert "style-src 'self' 'unsafe-inline'" in policy
+
+
+def test_the_served_page_carries_its_own_digest_and_an_injected_script_does_not(
+    tmp_path: Path, upstream: ThreadingHTTPServer
+) -> None:
+    """The policy the listener sends over the bundle names that page's block.
+
+    A second block, which an injection would introduce, hashes to a source the
+    policy does not carry, so the browser refuses it.
+    """
+    root = tmp_path / "dist"
+    root.mkdir()
+    block = b"\n  window.__sveltekit = {};\n"
+    root.joinpath("index.html").write_bytes(
+        b"<!doctype html><html><head><script>" + block + b"</script></head><body>x</body></html>"
+    )
+    running = _build(tmp_path, upstream, root)
+    try:
+        cookie = _pair(running)
+        response, _ = _request(running.proxy, "GET", "/", headers={"Cookie": cookie})
+        assert response.status == 200
+        policy = response.getheader("content-security-policy") or ""
+        assert hash_source(block) in policy
+        assert hash_source(b"\n  fetch('http://elsewhere/');\n") not in policy
+        assert "script-src 'self' 'sha256-" in policy
+    finally:
+        running.stop()
+
+
+def test_the_assembly_reads_the_bundles_script_blocks(tmp_path: Path) -> None:
+    """`assemble_llama_ui` fills the sources from the bundle it resolves, so a
+    launch that serves one sends digests and a launch that serves none does
+    not."""
+    root = tmp_path / "dist"
+    root.mkdir()
+    block = b"\n  window.__sveltekit = {};\n"
+    root.joinpath("index.html").write_bytes(b"<!doctype html><script>" + block + b"</script>")
+    assert llama_ui.bundle_script_sources(root) == (hash_source(block),)
+    assert llama_ui.bundle_script_sources(tmp_path / "absent") == ()
