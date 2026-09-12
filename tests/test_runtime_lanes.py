@@ -41,6 +41,22 @@ def root(tmp_path: Path) -> RuntimePaths:
     return paths
 
 
+def _install_image_runtime(paths: RuntimePaths, profile_id: str = SERVED_PROFILE) -> None:
+    """Plant the executable and the bundle directory the image preflight requires.
+
+    `remote/image-launch-lib.sh` refuses a `runtime_path` that is not
+    executable, and the derivation applies the same rule, so a fixture deriving
+    an image child states that this root holds both.
+    """
+    runtime = paths["qwen_home_image_runtime"]
+    runtime.parent.mkdir(parents=True, exist_ok=True)
+    runtime.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    runtime.chmod(0o755)
+    lanes.image_model_directory(paths, config_models.image_profile(profile_id)).mkdir(
+        parents=True, exist_ok=True
+    )
+
+
 # ---------------------------------------------------------------------------
 # The parameter document
 # ---------------------------------------------------------------------------
@@ -97,6 +113,7 @@ def test_a_split_placement_refuses_rather_than_guessing_a_backend(root: RuntimeP
 
 
 def test_the_parameters_publish_at_the_path_the_root_declares(root: RuntimePaths) -> None:
+    _install_image_runtime(root)
     written = lanes.write_image_parameters(root, SERVED_PROFILE)
     assert written == root["qwen_home_image_parameters"]
     assert written.stat().st_mode & 0o077 == 0
@@ -122,6 +139,7 @@ SESSION_IMAGE_FLAGS: tuple[str, ...] = (
 
 
 def test_the_image_argv_is_the_one_the_session_composes(root: RuntimePaths) -> None:
+    _install_image_runtime(root)
     parameters = lanes.write_image_parameters(root, SERVED_PROFILE)
     key = lanes.image_artifact_key(root)
     argv = lanes.image_service_argv(
@@ -289,6 +307,7 @@ def test_a_shape_only_image_profile_arms_no_worker(root: RuntimePaths) -> None:
 
 
 def test_the_served_image_profile_derives_the_whole_child(root: RuntimePaths) -> None:
+    _install_image_runtime(root)
     image = appliance.child_specs_from_request(
         root,
         image_profile=SERVED_PROFILE,
@@ -301,6 +320,45 @@ def test_the_served_image_profile_derives_the_whole_child(root: RuntimePaths) ->
     assert image.socket_path == str(lanes.image_control_socket(root))
     assert image.env["QWEN_IMAGE_PROFILE"] == SERVED_PROFILE
     assert root["qwen_home_image_parameters"].is_file()
+
+
+def test_a_root_without_the_image_runtime_refuses_the_derivation(root: RuntimePaths) -> None:
+    """The refusal names the runtime and the bundle, and writes no parameter document.
+
+    `image-service.py` validates the parameter paths for absoluteness alone and
+    binds its control socket regardless, so an unpreflighted derivation armed a
+    lane the matrix advertised and the first approved generation spent its
+    single-use grant before failing on the absent binary.
+    `remote/image-launch-lib.sh` already refuses a non-executable
+    `runtime_path`; this is that refusal over the derived values.
+    """
+    with pytest.raises(lanes.LaneRefused) as refusal:
+        appliance.child_specs_from_request(
+            root, image_profile=SERVED_PROFILE, web_profile="web-open"
+        )
+    sentence = str(refusal.value)
+    assert "the image runtime is absent or not executable" in sentence
+    assert str(root["qwen_home_image_runtime"]) in sentence
+    assert "the image model directory is absent" in sentence
+    assert not root["qwen_home_image_parameters"].exists()
+
+
+def test_a_runtime_that_is_not_executable_refuses_by_name(root: RuntimePaths) -> None:
+    """A present file without the execute bit is the case the shell launch names."""
+    _install_image_runtime(root)
+    root["qwen_home_image_runtime"].chmod(0o644)
+
+    with pytest.raises(lanes.LaneRefused) as refusal:
+        lanes.write_image_parameters(root, SERVED_PROFILE)
+
+    sentence = str(refusal.value)
+    assert "the image runtime is absent or not executable" in sentence
+    assert "the image model directory is absent" not in sentence
+
+
+def test_a_root_holding_both_admits_the_derivation(root: RuntimePaths) -> None:
+    _install_image_runtime(root)
+    lanes.image_runtime_preflight(root, config_models.image_profile(SERVED_PROFILE))
 
 
 def test_an_unpopulated_searxng_root_arms_no_instance(

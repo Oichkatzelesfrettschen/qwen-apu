@@ -170,13 +170,45 @@ def image_parameters(paths: RuntimePaths, profile_id: str) -> dict[str, object]:
     }
 
 
+def image_runtime_preflight(paths: RuntimePaths, profile: ImageProfile) -> None:
+    """Refuse a derivation whose runtime or model bundle this root does not hold.
+
+    `image-service.py` validates that the parameter document's paths are
+    absolute and binds its control socket regardless of what they resolve to, so
+    the appliance reported the lane ready and the matrix advertised
+    `image_generate`; the first approved generation then spent its single-use
+    grant before failing on the absent binary or bundle.
+    `remote/image-launch-lib.sh` refuses a `runtime_path` that is not executable
+    before it starts a worker, and this is the same refusal over the derived
+    values. Both paths are named in one sentence, so a refusal states which of
+    the two the root is missing.
+    """
+    runtime = paths["qwen_home_image_runtime"]
+    directory = image_model_directory(paths, profile)
+    missing = []
+    if not os.access(runtime, os.X_OK) or not runtime.is_file():
+        missing.append(f"the image runtime is absent or not executable: {runtime}")
+    if not directory.is_dir():
+        missing.append(f"the image model directory is absent: {directory}")
+    if missing:
+        raise LaneRefused(
+            f"image profile {profile.profile_id} names a runtime this root does not serve; "
+            + "; ".join(missing)
+        )
+
+
 def write_image_parameters(paths: RuntimePaths, profile_id: str) -> Path:
     """Publish the parameter document at the path the runtime root declares.
 
     `remote/image-launch-lib.sh` refuses a `QWEN_IMAGE_PROFILES_JSON` resolving
     outside the root, so writing at `qwen_home_image_parameters` keeps the
     shell launch and this one interchangeable over one file.
+
+    The runtime preflight runs before the first byte is written, so a root
+    holding no `sd-cli` and no installed bundle leaves no document behind and
+    arms no lane the matrix would advertise.
     """
+    image_runtime_preflight(paths, config_models.image_profile(profile_id))
     destination = paths["qwen_home_image_parameters"]
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
