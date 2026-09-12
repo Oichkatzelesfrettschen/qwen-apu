@@ -90,13 +90,16 @@ register read, clock table, bandwidth figure, and evidence path behind the
 rules below, and `docs/doctrine/parts-rated-and-measured.md` carries each part
 beside its rating and its reading.
 
-- Run every campaign at `manual-gfx1100-fclk933`:
-  `power_dpm_force_performance_level=manual`, `pp_dpm_sclk` level 2,
-  `pp_dpm_mclk` level 2. `high` and `profile_peak` pin GFXCLK at 1100 MHz and
-  drop delivered FCLK to 400 MHz, which decodes the 2B at 6 to 7 tok/s against
-  9 to 9.6; a performance-mode cleanup that reintroduces either name
-  reintroduces the 400 MHz fabric. The 1067 MHz fabric state is
-  firmware-selected and refuses a hard minimum.
+- Run the appliance at full power: `power_dpm_force_performance_level=auto`,
+  the firmware's whole clock range, with the server at nice 19. No launch,
+  campaign, or window pins a DPM level; a comparison reads the level the
+  firmware delivered from the clock record beside each arm rather than forcing
+  one, and the canary reduces that record to a level index for its
+  comparability check. The forced levels stay as evidence: `manual` level 2
+  held FCLK at 933 MHz, `high` and `profile_peak` drop delivered FCLK to 400
+  MHz and decode the 2B at 6 to 7 tok/s against 9 to 9.6, and the 1067 MHz
+  fabric state is firmware-selected and refuses a hard minimum, so none of the
+  three names enters a launch.
 - Read a comparison within one sweep. One checkpoint under identical flags
   spans 30.6% across sweeps and 4% on a repeated depth-0 rate, so a difference
   below about 20% quoted from single arms reports queue position, and a
