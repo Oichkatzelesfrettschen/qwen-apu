@@ -420,12 +420,12 @@ def test_a_completion_streams_frame_by_frame(listeners: Fixture) -> None:
 
 
 def test_an_unadmitted_path_is_refused_before_the_upstream(listeners: Fixture) -> None:
-    """The routes that change server state stay behind this listener."""
+    """The routes that reconfigure the server stay behind this listener."""
     cookie = _pair(listeners)
     for method, path in (
-        ("POST", "/models/load"),
         ("POST", "/props"),
         ("POST", "/slots/0"),
+        ("POST", "/lora-adapters"),
         ("GET", "/one/two/three/four"),
     ):
         response, body = _request(
@@ -458,7 +458,7 @@ def test_the_admitted_set_names_the_servers_own_routes() -> None:
     assert llama_ui.path_is_admitted("GET", "/health")
     assert llama_ui.path_is_admitted("POST", "/v1/chat/completions")
     assert llama_ui.path_is_admitted("GET", "/_app/version.json")
-    assert not llama_ui.path_is_admitted("POST", "/models/unload")
+    assert not llama_ui.path_is_admitted("POST", "/lora-adapters")
     assert not llama_ui.path_is_admitted("PUT", "/props")
     assert not llama_ui.path_is_admitted("GET", "/../etc/passwd")
     assert not llama_ui.path_is_admitted("GET", "/a/b/c/d")
@@ -870,3 +870,14 @@ def test_the_service_worker_is_refused_even_where_the_bundle_holds_one(
     assert b"through this listener" in body
     page, _ = _request(served.proxy, "GET", "/", headers={"Cookie": cookie})
     assert page.status == 200
+
+
+def test_the_picker_reaches_the_routes_that_choose_a_checkpoint() -> None:
+    """Loading and unloading a model is how the picker selects one, and a
+    completion naming an unloaded model makes the router load it anyway, so
+    refusing these two blocked the page and prevented nothing."""
+    for path in ("/models/load", "/models/unload"):
+        assert llama_ui.path_is_admitted("POST", path), path
+    assert llama_ui.path_is_admitted("GET", "/v1/streams/lookup")
+    for path in ("/props", "/slots/0", "/lora-adapters"):
+        assert not llama_ui.path_is_admitted("POST", path), path
