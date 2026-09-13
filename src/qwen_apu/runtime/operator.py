@@ -364,7 +364,9 @@ def _await_ready(
         if record is None or record.supervisor_pid == superseded_pid:
             time.sleep(poll_s)
             continue
-        if record.state != announced:
+        # `report` opens on the state it found, so announcing `ready` here
+        # would print that line twice for one transition.
+        if record.state not in (announced, "ready"):
             announced = record.state
             print(f"state={record.state}")
         if record.state == "ready":
