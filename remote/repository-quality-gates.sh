@@ -139,7 +139,12 @@ if [ "$declaration_only" -eq 1 ]; then
     }
 fi
 
-shell_files=$(find remote -type f -name '*.sh' -print | LC_ALL=C sort)
+# Every shell file under remote/, which is the `*.sh` library and test surface
+# plus the operator's own command. `qwen` carries no extension because it is a
+# command an operator types rather than a script a sibling sources, and naming
+# it here is what puts it under the same syntax and shellcheck cells.
+shell_files=$(find remote -type f \( -name '*.sh' -o -name 'qwen' \) -print |
+    LC_ALL=C sort)
 # LC_ALL=C fixes the collation: this list is the ruff-repository cell's input
 # specification, the declaration root covers it, and a glibc locale orders
 # `image_protocol.py` against `image-registry.py` differently from the C
@@ -252,6 +257,9 @@ gate_cell test-merged-pr-gate-reuse derive \
 gate_cell test-qwen-home derive \
     'remote/test-qwen-home.sh remote/qwen-home.sh remote/qwen_home.py' \
     remote/test-qwen-home.sh
+gate_cell test-qwen-command derive \
+    'remote/test-qwen-command.sh remote/qwen remote/qwen-home.sh' \
+    remote/test-qwen-command.sh
 gate_cell test-runtime-root derive \
     'remote/test-runtime-root.sh remote/runtime-root.sh remote/qwen-home.sh remote/check-deletion-plan.sh remote/open-verified-lock-descriptor.py' \
     remote/test-runtime-root.sh

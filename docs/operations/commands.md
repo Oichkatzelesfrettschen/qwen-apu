@@ -35,6 +35,24 @@ QWEN_DELETION_JOURNAL=/an/absolute/path/outside/the/root.tsv make purge
                                                 # purge removes state/ too, so the journal it records
                                                 # itself to is named outside the root
 
+# The operator surface: three verbs over one appliance, on the PATH of whichever
+# account owns its processes. `up` derives the LAN address from the interface
+# carrying the default route and the file root from the checkout, detaches the
+# `appliance serve` argv those defaults state, and returns when the record reads
+# ready; `down` signals the recorded identities and proves each absent.
+qwen up [--local|--bind-host ADDRESS] [--no-lan-open]
+qwen status
+qwen down
+qwen restart
+PATH="$HOME/Github/qwen-apu/remote:$PATH"   # once, in the operator's own profile
+
+# The same launch stated in full, which `up` composes.
+qwen-apu appliance serve --router --both --lan-open --bind-host ADDRESS \
+    --port 8080 --gateway-port 42069 --llama-ui-port 42072 --image-ui-port 42073 \
+    --image-profile image-sdxs-512-a --web-profile web-open
+qwen-apu appliance status
+qwen-apu appliance stop
+
 # Start and stop the appliance, from the appliance's own checkout. Every script
 # here resolves its siblings and the runtime root through qwen-home.sh, which
 # takes qwen_tree_root as the parent of its own directory, so a working copy

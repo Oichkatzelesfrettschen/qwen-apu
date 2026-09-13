@@ -316,6 +316,17 @@ error.
 make bootstrap && make install-models build-llama   # lay out .runtime, fetch, build
 make status && make doctor && make verify           # claimed, foreign, and live state
 
+# The appliance as four verbs. `remote/qwen` is the command, on the PATH of the
+# account that owns the processes: it resolves the runtime root from its own
+# location and runs the appliance from the environment under that root, so no
+# link into that environment exists and PYTHON names only the interpreter that
+# builds it. `up` derives the LAN address from the interface carrying the default
+# route and the file root from the checkout, detaches the `appliance serve` argv
+# those defaults state, and returns on the record reading ready; `down` is
+# `appliance stop`, which signals the recorded identities and proves each absent.
+qwen up [--local|--bind-host ADDRESS] [--no-lan-open]
+qwen status | qwen down | qwen restart
+
 # Start, inspect, and stop the appliance
 remote/qwen-launch.sh [paced-60|low-serialized|low-async]
 remote/qwen-web-launch.sh [PROFILE]        # web presets, loopback by default
