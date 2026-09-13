@@ -15,9 +15,6 @@ dependencies = ["pypdf==6.18.1"]
 
 [project.scripts]
 qwen-apu = "qwen_apu.cli:main"
-# The operator surface an appliance user puts on their own PATH: four verbs
-# over one appliance, where `qwen-apu` carries every other operation.
-qwen = "qwen_apu.cli:operator_main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5", "mypy>=1.10"]

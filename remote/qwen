@@ -1,0 +1,74 @@
+#!/bin/sh
+# The operator's command: four verbs over one appliance.
+#
+# `up` derives the launch from the machine and detaches it, `down` ends the
+# identities the record names, `restart` does both, and `status` prints the
+# addresses a browser opens. Each is `qwen-apu appliance VERB`, and this command
+# exists so an operator's PATH names a file in the checkout: the interpreter is
+# resolved from the runtime root at every run, so moving that root or rebuilding
+# its environment leaves this file correct where a link into the environment
+# would name bytes that had moved.
+#
+# PYTHON is the interpreter that creates the environment, resolved here the way
+# every script in this tree resolves it. The appliance itself runs from the
+# environment under the runtime root, because that is where the package and its
+# dependencies are installed, and its location is the one
+# `qwen_apu.runtime.paths` declares. An absent environment refuses with the
+# command that builds it, since an interpreter that cannot import the package
+# would fail one call later with a less useful message.
+#
+# usage: qwen up|down|restart|status [OPTION...]
+
+set -eu
+
+PYTHON=${PYTHON:-python3}
+
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+
+usage() {
+    cat <<'USAGE'
+usage: qwen up|down|restart|status [OPTION...]
+
+  up        derive the launch, detach it, and print the addresses it serves
+  down      stop the appliance and prove every recorded identity absent
+  restart   down, then up on the same derived defaults
+  status    the record the running appliance publishes
+
+up and restart take --local to serve this machine alone, --bind-host ADDRESS to
+publish one rather than derive it, and --no-lan-open to ask every peer on the
+network for a pairing code. Every other operation of the appliance is qwen-apu,
+which this command is a four-verb view of.
+USAGE
+}
+
+if [ "$#" -lt 1 ]; then
+    usage >&2
+    exit 2
+fi
+
+case $1 in
+    up | down | restart | status) ;;
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    *)
+        printf '%s is not one of up, down, restart, or status\n' "$1" >&2
+        usage >&2
+        exit 2
+        ;;
+esac
+
+appliance_python=$qwen_home/venv/bin/python
+if [ ! -x "$appliance_python" ]; then
+    printf 'the appliance environment holds no interpreter at %s; build it with `%s bootstrap.py` in %s\n' \
+        "$appliance_python" "$PYTHON" "$qwen_tree_root" >&2
+    exit 1
+fi
+
+QWEN_TREE_ROOT=${QWEN_TREE_ROOT:-$qwen_tree_root}
+export QWEN_TREE_ROOT
+
+exec "$appliance_python" -m qwen_apu appliance "$@"

@@ -1,13 +1,12 @@
 """What the developer form writes into the venv, and which roots it accepts.
 
-`pyproject.toml` states two entry points and this deployment has no build
-backend to read them: `bootstrap.py` links the package with a `.pth` file and
-writes both console scripts itself, so a claim that `qwen` exists on the
-appliance is a claim about `link_source_tree` and is proven by running the script
-it writes. The binding check is the second claim: a runtime root whose marker
-names another checkout refuses, and the refusal lifts exactly where
-`QWEN_RUNTIME_ROOT_REBIND` names this tree, which is the case an appliance moved
-to another account's home meets.
+This deployment has no build backend to read `[project.scripts]`: `bootstrap.py`
+links the package with a `.pth` file and writes the console script itself, so a
+claim that `qwen-apu` runs on the appliance is a claim about `link_source_tree`
+and is proven by running the script it writes. The binding check is the second
+claim: a runtime root whose marker names another checkout refuses, and the
+refusal lifts exactly where `QWEN_RUNTIME_ROOT_REBIND` names this tree, which is
+the case an appliance moved to another account's home meets.
 """
 
 from __future__ import annotations
@@ -52,7 +51,7 @@ def venv(tmp_path: Path) -> Path:
     return tmp_path / "venv"
 
 
-def test_both_console_scripts_are_written(venv: Path) -> None:
+def test_the_console_script_is_written(venv: Path) -> None:
     module = _bootstrap()
     module.link_source_tree(venv, venv / "bin" / "python", TREE)  # type: ignore[attr-defined]
     for name, entry in module.CONSOLE_SCRIPTS:  # type: ignore[attr-defined]
@@ -65,18 +64,18 @@ def test_both_console_scripts_are_written(venv: Path) -> None:
     assert pth.read_text(encoding="utf-8").strip() == str(TREE / "src")
 
 
-def test_the_operator_script_runs_from_the_venv(venv: Path) -> None:
-    """The written script answers, which is what an operator's PATH reaches."""
+def test_the_written_script_runs(venv: Path) -> None:
+    """The script answers, which is what `remote/qwen` reaches through this venv."""
     module = _bootstrap()
     module.link_source_tree(venv, venv / "bin" / "python", TREE)  # type: ignore[attr-defined]
     result = subprocess.run(
-        [str(venv / "bin" / "qwen"), "--help"],
+        [str(venv / "bin" / "qwen-apu"), "appliance", "--help"],
         check=False,
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0
-    assert "qwen up|down|restart|status" in result.stdout
+    assert "up" in result.stdout
 
 
 def test_a_foreign_marker_refuses_without_the_rebind(tmp_path: Path) -> None:

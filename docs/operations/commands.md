@@ -44,7 +44,7 @@ qwen up [--local|--bind-host ADDRESS] [--no-lan-open]
 qwen status
 qwen down
 qwen restart
-ln -sfn ~/Github/qwen-apu/.runtime/venv/bin/qwen ~/.local/bin/qwen  # once, per operator
+PATH="$HOME/Github/qwen-apu/remote:$PATH"   # once, in the operator's own profile
 
 # The same launch stated in full, which `up` composes.
 qwen-apu appliance serve --router --both --lan-open --bind-host ADDRESS \

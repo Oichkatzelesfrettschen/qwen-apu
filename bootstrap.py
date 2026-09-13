@@ -15,11 +15,11 @@ root; the checkout itself stays untouched.
 Installation takes the first of three paths. A `wheelhouse/` directory beside
 this file holding `requirements.lock` installs with `--require-hashes` and the
 index closed, which is the production form. A tree carrying `src/` without a
-wheelhouse links the package by a `.pth` file and writes both console scripts
+wheelhouse links the package by a `.pth` file and writes the console script
 itself, which needs no build backend and no network and is the developer form.
-`[project.scripts]` in `pyproject.toml` states the same two entry points for an
-installer that runs a build backend; this form has neither, so
-`link_source_tree` is what puts `qwen-apu` and `qwen` in the venv's `bin/`.
+`[project.scripts]` states the same entry point for an installer that runs a
+build backend; this form has neither, so `link_source_tree` is what puts
+`qwen-apu` in the venv's `bin/`.
 A Python whose `venv` module cannot create an environment falls to a bundled
 `virtualenv.pyz` under `wheelhouse/`; the absence of both refuses with the
 interpreter's own message rather than reaching for a package manager.
@@ -36,10 +36,10 @@ from typing import Any
 PYTHON_REQUIRED = (3, 12)
 SRC = "src"
 PACKAGE = "qwen_apu"
-# The two console scripts the developer form writes, matching
-# `[project.scripts]`: the whole command, and the operator's four verbs over one
-# appliance.
-CONSOLE_SCRIPTS = (("qwen-apu", "main"), ("qwen", "operator_main"))
+# The console script the developer form writes, matching `[project.scripts]`.
+# The operator's own command is `remote/qwen`, which resolves this environment's
+# interpreter at every run rather than carrying a path of its own.
+CONSOLE_SCRIPTS = (("qwen-apu", "main"),)
 
 
 def fail(message: str, code: int = 2) -> int:

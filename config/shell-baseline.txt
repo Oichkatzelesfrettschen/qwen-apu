@@ -279,6 +279,7 @@ remote/test-promote-llama-build.sh
 remote/test-q8-mat-vec-receipt.sh
 remote/test-quality-roster.sh
 remote/test-qwen-capacity-policy.sh
+remote/test-qwen-command.sh
 remote/test-qwen-exec-idle-priority.sh
 remote/test-qwen-home.sh
 remote/test-qwen-image-launch.sh

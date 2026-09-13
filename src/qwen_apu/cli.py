@@ -860,38 +860,5 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
 
-_OPERATOR_VERBS = ("up", "down", "restart", "status")
-_OPERATOR_USAGE = """usage: qwen up|down|restart|status [OPTION...]
-
-  up        derive the launch, detach it, and print the addresses it serves
-  down      stop the appliance and prove every recorded identity absent
-  restart   down, then up on the same derived defaults
-  status    the record the running appliance publishes
-
-`up` and `restart` take --local to serve this machine alone, --bind-host
-ADDRESS to publish one rather than derive it, and --no-lan-open to ask every
-peer on the network for a pairing code. Every other command of the appliance
-is `qwen-apu`, which this entry point is a four-verb view of.
-"""
-
-
-def operator_main(argv: Sequence[str] | None = None) -> int:
-    """`qwen VERB` as `qwen-apu appliance VERB`, for an operator's own PATH.
-
-    The four verbs are the whole surface: a name outside them prints the usage
-    block and exits 2 rather than reaching `qwen-apu`'s own parser, so the short
-    command stays a bring-up and teardown tool and every other operation keeps
-    one spelling.
-    """
-    args = list(sys.argv[1:] if argv is None else argv)
-    if args and args[0] in ("-h", "--help"):
-        sys.stdout.write(_OPERATOR_USAGE)
-        return 0
-    if not args or args[0] not in _OPERATOR_VERBS:
-        sys.stderr.write(_OPERATOR_USAGE)
-        return 2
-    return main(["appliance", *args])
-
-
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -87,19 +87,23 @@ alone, and a reboot leaves the laptop with nothing listening.
 
 ### Put it on the operator's own PATH
 
-`qwen` is a console script of the installed package, so one symlink from a
-directory already on the operator's PATH reaches it and no shell profile
-changes:
+`qwen` is `remote/qwen` in the checkout, so the PATH entry is the directory that
+holds it and nothing is linked or copied:
 
 ```sh
-mkdir -p ~/.local/bin
-ln -sfn ~/Github/qwen-apu/.runtime/venv/bin/qwen ~/.local/bin/qwen
-command -v qwen
+printf 'PATH="$HOME/Github/qwen-apu/remote:$PATH"\n' >>~/.profile
+. ~/.profile
+qwen status
 ```
 
-The symlink resolves the venv interpreter through the script's own absolute
-shebang, so `qwen` works from any directory and needs no activation. A profile
-that leaves `~/.local/bin` off PATH takes one line, `PATH="$HOME/.local/bin:$PATH"`.
+Every other file under `remote/` carries a `.sh` or `.py` extension, so that one
+entry adds exactly one command to the shell's namespace. The command resolves the
+runtime root from its own location and runs the appliance from the environment
+under that root, so it stays correct when the root moves and needs no activation;
+`PYTHON` names the interpreter that builds that environment, and an absent one
+refuses with the command that builds it rather than reaching for an interpreter
+that cannot import the package.
+
 The account that runs these commands owns the appliance's processes: teardown
 signals the recorded pids, and a pid is signalled by the user that started it.
 
