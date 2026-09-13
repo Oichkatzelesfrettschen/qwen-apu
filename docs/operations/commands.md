@@ -44,7 +44,10 @@ qwen up [--local|--bind-host ADDRESS] [--no-lan-open]
 qwen status
 qwen down
 qwen restart
-PATH="$HOME/Github/qwen-apu/remote:$PATH"   # once, in the operator's own profile
+# Once, in ~/.bashrc: every interactive shell reads it, where ~/.profile
+# reaches login shells alone and a desktop terminal is neither.
+case ":$PATH:" in *":$HOME/Github/qwen-apu/remote:"*) ;; \
+    *) PATH="$HOME/Github/qwen-apu/remote:$PATH" ;; esac
 
 # The same launch stated in full, which `up` composes.
 qwen-apu appliance serve --router --both --lan-open --bind-host ADDRESS \
