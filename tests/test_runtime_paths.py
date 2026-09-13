@@ -66,6 +66,35 @@ def test_binding_states(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     assert paths.binding_state() == "bound"
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root traverses a mode 000 directory")
+def test_a_marker_naming_an_unreachable_tree_reads_as_foreign(tmp_path: Path) -> None:
+    """A predecessor this process cannot stat is a foreign binding, not a traceback.
+
+    An appliance moved into another account's home meets this on its own marker:
+    the new owner cannot traverse the home the root came from, so the stat behind
+    `Path.is_dir` answers EACCES. The rebind that completes the move runs after
+    this read, so a refusal here would leave the move with no way to finish.
+    """
+    unreachable = tmp_path / "unreachable"
+    predecessor = unreachable / "checkout"
+    predecessor.mkdir(parents=True)
+    root = tmp_path / "root"
+    paths = RuntimePaths(tree=TREE, root=root)
+    paths.lay_out()
+    paths.marker.write_text(
+        f"runtime_schema_version=1\ntree_root={predecessor}\n", encoding="utf-8"
+    )
+    unreachable.chmod(0o000)
+    try:
+        assert paths.binding_state() == f"foreign:{predecessor}"
+        with pytest.raises(RuntimeRootError):
+            paths.require_binding()
+        assert paths.lay_out(rebind=str(TREE)) == f"rebound:{predecessor}"
+        assert paths.binding_state() == "bound"
+    finally:
+        unreachable.chmod(0o755)
+
+
 @pytest.mark.skipif(SH is None, reason="no sh")
 def test_layout_directories_match_runtime_root_sh() -> None:
     text = (TREE / "remote" / "runtime-root.sh").read_text(encoding="utf-8")

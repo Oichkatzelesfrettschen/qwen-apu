@@ -182,8 +182,17 @@ class RuntimePaths:
         if not named:
             return "foreign:unnamed"
         resolved = Path(named)
-        if resolved.is_dir():
-            resolved = resolved.resolve()
+        # A predecessor this process cannot stat is still the name the marker
+        # carries. `Path.is_dir` propagates EACCES rather than answering False,
+        # and an appliance moved into another account's home meets exactly that
+        # on its own marker: the new owner cannot traverse the home the root came
+        # from, so the resolution that canonicalizes a reachable path gives way
+        # to the name itself and the comparison below still decides.
+        try:
+            if resolved.is_dir():
+                resolved = resolved.resolve()
+        except OSError:
+            pass
         if resolved == self.tree:
             return "bound"
         return f"foreign:{resolved}"

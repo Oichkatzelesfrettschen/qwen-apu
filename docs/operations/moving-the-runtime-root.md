@@ -45,12 +45,33 @@ sudo mv <checkout> ~operator/Github/qwen-apu
 sudo chown -R operator:operator ~operator/Github/qwen-apu
 cd ~operator/Github/qwen-apu                 # as the new owner from here on
 QWEN_RUNTIME_ROOT_REBIND=$PWD python3 bootstrap.py
-remote/build-router-presets.sh <fresh ini>   # the tier symlinks as well
-qwen-apu deployment build <name> ... --router-presets <fresh ini>
+QWEN_WEB_AUTHORIZER_READY=1 \
+  QWEN_WEB_MCP_SERVER=$PWD/remote/web-mcp/server.py \
+  QWEN_WEB_TOKEN_KEY_FILE=$QWEN_HOME/state/web-token.key \
+  QWEN_WEB_STATE_DIR=$QWEN_HOME/state/web-mcp \
+  QWEN_WEB_PROVIDER=searxng \
+  QWEN_IMAGE_MCP_SERVER=$PWD/remote/image-mcp/server.py \
+  QWEN_IMAGE_TOKEN_KEY_FILE=$QWEN_HOME/state/web-token.key \
+  QWEN_IMAGE_STATE_DIR=$QWEN_HOME/state/images \
+  QWEN_IMAGE_SERVICE_SOCKET=$QWEN_HOME/state/images/image-service.sock \
+  QWEN_IMAGE_PROFILES_JSON=$QWEN_HOME/state/image-parameters.json \
+  remote/build-router-presets.sh $QWEN_HOME/state/router-presets.ini
+qwen-apu deployment build <name> <bundle>/llama-server <bundle>/artifact-manifest.tsv \
+    remote/ctx-checkpoints.tsv --router-presets $QWEN_HOME/state/router-presets.ini
 qwen-apu deployment activate <name>
 make status && make doctor                   # claimed, foreign, predecessor paths
 qwen up
 ```
+
+The lane inputs above are what make the regenerated preset match the bundle it
+replaces. Without them the generator writes a preset one section short: it
+withholds `web-open` as `authorizer_absent` and skips the image row, and the
+launch then serves every model with no search, no generation, and no approval
+rail. Comparing `grep -c '^\['` between the retired bundle's preset and the
+fresh one catches that before a bundle is built around it. The server, artifact
+manifest, and checkpoint ledger come from the bundle being replaced, which is why
+the rebuild carries the same `server_sha256`: the binary is the one object the
+move leaves byte-identical.
 
 The operator's PATH needs no repair: `remote/qwen` travels with the checkout and
 resolves the runtime root from its own location, so the entry that names
@@ -81,9 +102,23 @@ git -C <checkout> config core.sharedRepository group
 
 The setgid bit makes the group survive every later write, and
 `core.sharedRepository=group` is what makes git set group-write on the objects it
-creates itself, which a permissive umask alone does not guarantee. Both accounts
-then pull, branch, and edit with no elevation, and a new member takes effect at
-their next login.
+creates itself, which a permissive umask alone does not guarantee. A new member
+takes effect at their next login.
+
+Two further grants finish it. The operator's home is mode 750, so the group needs
+traverse through it to reach the checkout at all, which one ACL gives without
+making the home listable:
+
+```sh
+sudo setfacl -m g:qwen:x ~operator
+git config --global --add safe.directory <checkout>   # per account, no privilege
+```
+
+The second is git's own ownership guard: since 2.35.2 a repository whose
+directory belongs to another user is refused outright, `fatal: detected dubious
+ownership`, whatever the modes say. The exception is per-account configuration
+rather than a repository setting, so each account that shares the tree records it
+once. Both accounts then pull, branch, and edit with no elevation.
 
 The runtime root stays outside that grant. `RuntimePaths.lay_out` closes
 `state/` to its owner at mode 0700 because the tool ledger refuses a directory
