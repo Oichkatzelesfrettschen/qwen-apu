@@ -238,6 +238,21 @@ def live(record: appliance.ApplianceState | None) -> bool:
     return bool(pid) and read_start_time(pid) == record.supervisor_start_time
 
 
+def residue(record: appliance.ApplianceState | None) -> tuple[str, ...]:
+    """The recorded children this machine still runs, by name.
+
+    A record survives the supervisor that wrote it, and a supervisor killed
+    outright leaves its children running with the record still naming them. The
+    start-time comparison separates a survivor from a reused pid, the same
+    identity test `appliance.stop` applies before it signals.
+    """
+    if record is None:
+        return ()
+    return tuple(
+        child.name for child in record.children if read_start_time(child.pid) == child.start_time
+    )
+
+
 def report(record: appliance.ApplianceState | None, paths: RuntimePaths) -> str:
     """The addresses a browser opens, and what the appliance is serving there.
 
@@ -300,6 +315,16 @@ def up(
         print("state=already-running")
         sys.stdout.write(report(existing, paths))
         return 0
+    stale = residue(existing)
+    if stale:
+        # A supervisor killed outright leaves its children holding the ports the
+        # next launch binds, so a bind would fail on a listener this appliance
+        # itself started. The recorded identities are ended first, which is
+        # `stop` over exactly the set the record names rather than a name match
+        # over the process table.
+        print(f"reaping={','.join(stale)}")
+        appliance.stop(paths)
+        existing = appliance.status(paths)
     superseded = existing.supervisor_pid if existing is not None else 0
     logs = paths["qwen_home_logs"]
     logs.mkdir(parents=True, exist_ok=True)

@@ -16,6 +16,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ from qwen_apu.web import auth as gateway_auth
 
 TREE = Path(__file__).resolve().parents[1]
 SH = shutil.which("sh")
+SLEEP = shutil.which("sleep")
 
 # One wired and one wireless interface, each publishing a default route, plus a
 # route to one subnet. `wlp2s0` carries the lower metric, so the stack routes a
@@ -265,3 +267,52 @@ def test_the_previous_record_is_passed_over(root: RuntimePaths) -> None:
         poll_s=0.05,
     )
     assert status == 1
+
+
+@pytest.mark.skipif(SH is None or SLEEP is None, reason="no sh or sleep")
+def test_up_reaps_children_a_departed_supervisor_left(
+    root: RuntimePaths,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A record naming live children and no live supervisor is cleared first.
+
+    The children hold the ports the next launch binds, so a launch over them
+    fails at bind on a listener this appliance started. `up` ends the recorded
+    identities and says which.
+    """
+    sleeper = subprocess.Popen([SLEEP, "300"], start_new_session=True)
+    try:
+        child = appliance.ChildRecord(
+            name="router",
+            pid=sleeper.pid,
+            pgid=os.getpgid(sleeper.pid),
+            start_time=read_start_time(sleeper.pid) or 0,
+            argv0=SLEEP or "sleep",
+            port=None,
+            socket_path="-",
+            state="running",
+        )
+        record = appliance.ApplianceState(
+            state="ready", supervisor_pid=424242, supervisor_start_time=1, children=(child,)
+        )
+        appliance.ApplianceRecord(path=appliance.record_path(root)).write(record)
+        assert operator.residue(record) == ("router",)
+        monkeypatch.setenv("QWEN_FAKE_RECORD", str(appliance.record_path(root)))
+        interpreter = _fake_interpreter(tmp_path, "ready")
+        status = operator.up(
+            root,
+            operator.launch_defaults(root, local=True),
+            python=str(interpreter),
+            deadline_s=20.0,
+            poll_s=0.05,
+        )
+        captured = capsys.readouterr()
+        assert status == 0
+        assert "reaping=router" in captured.out
+        assert sleeper.poll() is not None or read_start_time(sleeper.pid) != child.start_time
+    finally:
+        if sleeper.poll() is None:
+            sleeper.kill()
+        sleeper.wait()

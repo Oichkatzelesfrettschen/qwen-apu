@@ -15,8 +15,11 @@ root; the checkout itself stays untouched.
 Installation takes the first of three paths. A `wheelhouse/` directory beside
 this file holding `requirements.lock` installs with `--require-hashes` and the
 index closed, which is the production form. A tree carrying `src/` without a
-wheelhouse links the package by a `.pth` file and writes the console script
+wheelhouse links the package by a `.pth` file and writes both console scripts
 itself, which needs no build backend and no network and is the developer form.
+`[project.scripts]` in `pyproject.toml` states the same two entry points for an
+installer that runs a build backend; this form has neither, so
+`link_source_tree` is what puts `qwen-apu` and `qwen` in the venv's `bin/`.
 A Python whose `venv` module cannot create an environment falls to a bundled
 `virtualenv.pyz` under `wheelhouse/`; the absence of both refuses with the
 interpreter's own message rather than reaching for a package manager.
@@ -28,15 +31,43 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 PYTHON_REQUIRED = (3, 12)
 SRC = "src"
 PACKAGE = "qwen_apu"
+# The two console scripts the developer form writes, matching
+# `[project.scripts]`: the whole command, and the operator's four verbs over one
+# appliance.
+CONSOLE_SCRIPTS = (("qwen-apu", "main"), ("qwen", "operator_main"))
 
 
 def fail(message: str, code: int = 2) -> int:
     print(f"bootstrap: {message}", file=sys.stderr)
     return code
+
+
+def binding_refusal(paths: Any, tree: Path, rebind: str | None) -> str | None:
+    """The reason this root refuses this checkout, or None where it accepts it.
+
+    A root whose marker names another checkout refuses, which is the decision
+    `RuntimePaths.lay_out` makes again at the end of a run -- except that
+    `lay_out` accepts the rebind `QWEN_RUNTIME_ROOT_REBIND` names and a bare
+    `require_binding` has no way to. An appliance moved to another account's home
+    is exactly that case: the root and the checkout travel together and the
+    marker still names where they came from. Where the variable names this tree
+    the refusal is left to `lay_out`, which records the previous binding in its
+    `rebound:` outcome rather than discarding it silently.
+    """
+    from qwen_apu.runtime.paths import RuntimeRootError  # noqa: PLC0415
+
+    if rebind == str(tree):
+        return None
+    try:
+        paths.require_binding()
+    except RuntimeRootError as error:
+        return str(error)
+    return None
 
 
 def main() -> int:
@@ -53,10 +84,10 @@ def main() -> int:
     from qwen_apu.runtime.paths import RuntimePaths, RuntimeRootError  # noqa: PLC0415
 
     paths = RuntimePaths.resolve(tree)
-    try:
-        paths.require_binding()
-    except RuntimeRootError as error:
-        return fail(str(error))
+    rebind = os.environ.get("QWEN_RUNTIME_ROOT_REBIND")
+    refusal = binding_refusal(paths, tree, rebind)
+    if refusal is not None:
+        return fail(refusal)
     venv_dir = paths["qwen_home_venv"]
     python = paths["qwen_home_venv_python"]
 
@@ -100,7 +131,7 @@ def main() -> int:
         link_source_tree(venv_dir, python, tree)
 
     try:
-        outcome_text = paths.lay_out(rebind=os.environ.get("QWEN_RUNTIME_ROOT_REBIND"))
+        outcome_text = paths.lay_out(rebind=rebind)
     except RuntimeRootError as error:
         return fail(str(error))
     print(f"runtime_root={paths.root} schema={paths.marker_schema()} binding={outcome_text}")
@@ -142,20 +173,31 @@ def link_source_tree(venv_dir: Path, python: Path, tree: Path) -> None:
     site = Path(probe.stdout.strip())
     site.mkdir(parents=True, exist_ok=True)
     (site / f"{PACKAGE}.pth").write_text(f"{tree / SRC}\n", encoding="utf-8")
-    script = venv_dir / "bin" / "qwen-apu"
-    # The console script names the root it lives under and the checkout it
-    # was linked from, so a run of `.runtime/venv/bin/qwen-apu` from any
-    # working directory reads that root; an explicit QWEN_HOME still wins.
+    for name, entry in CONSOLE_SCRIPTS:
+        write_console_script(venv_dir / "bin" / name, python, venv_dir, tree, entry)
+    (venv_dir / "qwen-apu-tree").write_text(f"{tree}\n", encoding="utf-8")
+
+
+def write_console_script(
+    script: Path, python: Path, venv_dir: Path, tree: Path, entry: str
+) -> None:
+    """One console script, naming the root it lives under and its checkout.
+
+    Both entry points take the same preamble: a run of `venv/bin/qwen` or
+    `venv/bin/qwen-apu` from any working directory reads that root, and an
+    explicit QWEN_HOME still wins. The absolute shebang is what binds a script
+    to its venv, so a moved runtime root is repaired by running this file again
+    rather than by editing the scripts.
+    """
     script.write_text(
         f"#!{python}\nimport os\nimport sys\n"
         f"os.environ.setdefault('QWEN_HOME', {str(venv_dir.parent)!r})\n"
         f"os.environ.setdefault('QWEN_TREE_ROOT', {str(tree)!r})\n"
         f"sys.pycache_prefix = {str(venv_dir.parent / 'cache' / 'pycache')!r}\n"
-        f"from {PACKAGE}.cli import main\nsys.exit(main())\n",
+        f"from {PACKAGE}.cli import {entry}\nsys.exit({entry}())\n",
         encoding="utf-8",
     )
     script.chmod(0o755)
-    (venv_dir / "qwen-apu-tree").write_text(f"{tree}\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

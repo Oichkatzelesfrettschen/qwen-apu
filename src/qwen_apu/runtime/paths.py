@@ -88,6 +88,10 @@ _PYTHON_ONLY: tuple[tuple[str, str], ...] = (
     ("qwen_home_venv", "venv"),
     ("qwen_home_venv_python", "venv/bin/python"),
     ("qwen_home_venv_cli", "venv/bin/qwen-apu"),
+    # The operator surface `bootstrap.py` writes beside the whole command, so
+    # `make status` claims it and `make doctor` reads it as owned rather than
+    # foreign.
+    ("qwen_home_venv_operator", "venv/bin/qwen"),
     ("qwen_home_artifacts", "artifacts"),
     ("qwen_home_logs", "logs"),
     ("qwen_home_control_socket", "state/control.sock"),
