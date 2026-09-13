@@ -260,6 +260,9 @@ gate_cell test-qwen-home derive \
 gate_cell test-qwen-command derive \
     'remote/test-qwen-command.sh remote/qwen remote/qwen-home.sh' \
     remote/test-qwen-command.sh
+gate_cell test-operator-path-entry derive \
+    'remote/test-operator-path-entry.sh remote/qwen README.md' \
+    remote/test-operator-path-entry.sh
 gate_cell test-runtime-root derive \
     'remote/test-runtime-root.sh remote/runtime-root.sh remote/qwen-home.sh remote/check-deletion-plan.sh remote/open-verified-lock-descriptor.py' \
     remote/test-runtime-root.sh

@@ -91,10 +91,24 @@ alone, and a reboot leaves the laptop with nothing listening.
 holds it and nothing is linked or copied:
 
 ```sh
-printf 'PATH="$HOME/Github/qwen-apu/remote:$PATH"\n' >>~/.profile
-. ~/.profile
-qwen status
+cat >>~/.bashrc <<'ENTRY'
+case ":$PATH:" in
+    *":$HOME/Github/qwen-apu/remote:"*) ;;
+    *) PATH="$HOME/Github/qwen-apu/remote:$PATH" ;;
+esac
+ENTRY
 ```
+
+The entry belongs in `~/.bashrc`, which every interactive shell reads, rather
+than in `~/.profile`, which only a login shell reads. A terminal opened from a
+desktop session is interactive and not a login shell, and the sourcing runs one
+way -- `~/.profile` reads `~/.bashrc` where the shell is bash, and `~/.bashrc`
+reads nothing back -- so an entry in `~/.profile` alone answers `command -v qwen`
+in a login shell and `qwen: command not found` in the terminal the operator
+actually types into. The same block in `~/.profile` as well reaches a graphical
+session's own environment, and the `case` guard is what keeps a PATH read by both
+files from carrying the directory twice. A new terminal has it; an already-open
+one keeps the PATH it started with.
 
 Every other file under `remote/` carries a `.sh` or `.py` extension, so that one
 entry adds exactly one command to the shell's namespace. The command resolves the

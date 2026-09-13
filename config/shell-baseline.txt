@@ -267,6 +267,7 @@ remote/test-model-artifact-identity.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
 remote/test-one-token-admission.sh
+remote/test-operator-path-entry.sh
 remote/test-port-lease.sh
 remote/test-power-envelope.sh
 remote/test-prefix-checkpoint-key.sh

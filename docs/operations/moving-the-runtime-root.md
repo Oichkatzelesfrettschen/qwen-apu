@@ -75,7 +75,9 @@ move leaves byte-identical.
 
 The operator's PATH needs no repair: `remote/qwen` travels with the checkout and
 resolves the runtime root from its own location, so the entry that names
-`remote/` keeps working at the new path.
+`remote/` keeps working at the new path. That entry belongs in `~/.bashrc`, which
+every interactive shell reads; `~/.profile` reaches a login shell alone, and the
+terminal an operator opens from a desktop session is not one.
 
 `chown -R` over a 53 GB root rewrites inode metadata alone and the rename copies
 no byte, so the move costs seconds where both paths sit on one filesystem. A move
