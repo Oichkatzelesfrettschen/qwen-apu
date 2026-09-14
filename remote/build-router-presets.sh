@@ -383,6 +383,32 @@ cleanup_output_staging() {
     return 0
 }
 trap 'cleanup_output_staging' EXIT HUP INT TERM
+# The capability terms remote/model-capabilities.tsv states for one model, as
+# the comma-prefixed tail of its tag list. The size tag carries the measured
+# parameter count in billions to two places, which is what the picker orders by:
+# a publisher's label disagrees with the tensors often enough that ordering by
+# the label puts a 1.17 B checkpoint among the 1.6 B ones. A model the ledger
+# names no row for contributes nothing, so a registry row reaches the picker
+# whether or not its capabilities have been stated.
+model_capability_tags() {
+    capability_model_id=$1
+    awk -F'\t' -v want="$capability_model_id" '
+        /^#/ || NF < 6 { next }
+        $1 != want { next }
+        {
+            printf ",%.2fB", $2 / 1000
+            printf ",%s", $3
+            if ($4 != "unmeasured") { printf ",tools %s", $4 }
+            if ($5 != "stock") { printf ",%s", $5 }
+            if ($6 != "-") { printf ",%s", $6 }
+            found = 1
+            exit
+        }
+        END { if (!found) printf "" }
+    ' "$capability_ledger"
+}
+
+capability_ledger=$script_directory/model-capabilities.tsv
 production_directory=$model_root/production
 candidate_directory=$model_root/candidates
 quarantine_directory=$model_root/quarantine
@@ -565,11 +591,14 @@ while IFS='	' read -r id role model_file _fetch_script context_default \
         printf '[%s]\n' "$id"
         printf 'LLAMA_ARG_MODEL = %s\n' "$model_path"
         printf 'LLAMA_ARG_ALIAS = %s\n' "$id"
+        capability_tags=$(model_capability_tags "$id")
         if [ "$id" = "$default_model_id" ] &&
             [ "$preset_tier" != quarantine ]; then
-            printf 'LLAMA_ARG_TAGS = %s,%s,default\n' "$preset_tier" "$role"
+            printf 'LLAMA_ARG_TAGS = %s,%s,default%s\n' \
+                "$preset_tier" "$role" "$capability_tags"
         else
-            printf 'LLAMA_ARG_TAGS = %s,%s\n' "$preset_tier" "$role"
+            printf 'LLAMA_ARG_TAGS = %s,%s%s\n' \
+                "$preset_tier" "$role" "$capability_tags"
         fi
         printf 'LLAMA_ARG_CTX_SIZE = %s\n' "$context_default"
         printf 'LLAMA_ARG_CACHE_TYPE_K = %s\n' "$cache_type_k"

@@ -1,0 +1,38 @@
+# What each admitted checkpoint can do, as one row per model, and the order the
+# picker lists them in. remote/models.tsv states how a model is served -- depth,
+# geometry, cache, tier -- and this ledger states what it is, so a picker entry
+# carries its size and its capabilities without a reader inferring either from
+# an identifier.
+#
+# `parameters` is the measured count in millions, summed over every tensor's
+# shape by remote/gguf-tensor-census.py rather than read from a publisher's
+# label, because the two disagree: LFM2.5-VL-1.6B measures 1170 M, the Qwen3.5
+# 0.8B uncensored builds measure 752 M against stock's 773 M, and Qwen2-VL-2B
+# measures 1544 M. The picker orders by this number and then alphabetically
+# within it, so two checkpoints of one size sit together.
+#
+# `modality` is `text` or `vision`, and a vision row requires the projector
+# remote/models.tsv pairs to it. `tool_selection` repeats the graded arm from
+# models.tsv column 21 so this ledger renders without a second lookup;
+# `unmeasured` states the absence rather than implying zero. Execution stays
+# approval-gated for every row whatever this number says, because
+# guarded_tool_execution reads `refused` on all of them for one shared reason:
+# an instruction hidden in the text a user asks about gets followed.
+#
+# `alignment` is `stock`, `uncensored`, or `abliterated`; `specialty` names the
+# one thing a fine-tune was made for, or `-` for a general checkpoint.
+#
+# model_id	parameters	modality	tool_selection	alignment	specialty
+qwen35-08b-unsloth-unc	752	text	unmeasured	uncensored	-
+qwen35-08b	773	text	9/10	stock	-
+qwen35-08b-f16	773	text	unmeasured	stock	precision
+lfm25-vl-16b	1170	vision	8/10	stock	-
+qwen35-2b-hauhau	1882	text	unmeasured	uncensored	-
+qwen35-2b-heretic	1882	text	unmeasured	uncensored	creative
+qwen35-2b-unredacted	1882	text	unmeasured	uncensored	-
+qwen38-2b-uncensored	1882	text	unmeasured	uncensored	-
+qwen35-2b	1943	vision	9/10	stock	-
+qwen38-2b-distill	1943	text	2/10	stock	fast
+qwenseer-2b	1943	text	unmeasured	stock	creative
+qwen35-4b-base	4206	vision	8/10	stock	-
+qwen38-4b-distill	4326	text	9/10	stock	balanced

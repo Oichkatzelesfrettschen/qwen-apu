@@ -1,0 +1,218 @@
+--- a/tools/ui/src/lib/components/app/models/ModelId.svelte
++++ b/tools/ui/src/lib/components/app/models/ModelId.svelte
+@@ -31,6 +31,33 @@
+ 	const tagBadgeClass =
+ 		'inline-flex w-fit shrink-0 items-center justify-center whitespace-nowrap rounded-md border border-border/50 px-1 py-0 text-[10px] font-mono text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground';
+ 
++	// The Okabe-Ito qualitative palette, which stays separable under the three
++	// common colour vision deficiencies; it carries no red/green pair, the one
++	// that collapses for deuteranopia. The hue tints the badge's ground and
++	// border while the label keeps the foreground colour, so every badge holds
++	// the theme's own text contrast and the colour classifies rather than
++	// carrying the meaning alone -- the tag's own word does that.
++	const TAG_HUES: Array<[RegExp, string]> = [
++		[/^vision$/, '#0072B2'],
++		[/^tools /, '#009E73'],
++		[/^(uncensored|abliterated)$/, '#D55E00'],
++		[/^creative$/, '#CC79A7'],
++		[/^coder$/, '#E69F00'],
++		[/^(reasoning|precision|fast|balanced)$/, '#56B4E9'],
++		[/^\d+(\.\d+)?B$/, '#8C8C8C']
++	];
++
++	function tagStyle(tag: string): string {
++		const hue = TAG_HUES.find(([pattern]) => pattern.test(tag))?.[1];
++
++		if (!hue) return '';
++
++		return (
++			`background-color: color-mix(in srgb, ${hue} 18%, transparent);` +
++			`border-color: color-mix(in srgb, ${hue} 55%, transparent);`
++		);
++	}
++
+ 	let parsed = $derived(ModelsService.parseModelId(modelId));
+ 	let resolvedShowRaw = $derived(
+ 		showRaw ?? (settingsStore.config.showRawModelNames as boolean) ?? false
+@@ -79,7 +106,7 @@
+ 
+ 		{#if uniqueTags.length > 0 && !resolvedHideTags}
+ 			{#each uniqueTags as tag (tag)}
+-				<span class={tagBadgeClass}>{tag}</span>
++				<span class={tagBadgeClass} style={tagStyle(tag)}>{tag}</span>
+ 			{/each}
+ 		{/if}
+ 	</span>
+--- a/tools/ui/src/lib/components/app/models/utils.ts
++++ b/tools/ui/src/lib/components/app/models/utils.ts
+@@ -31,11 +31,57 @@
+ 	);
+ }
+ 
++const SIZE_TAG = /^(\d+(?:\.\d+)?)B$/;
++
++/**
++ * The measured parameter count in billions a model's tags state, or null.
++ *
++ * remote/model-capabilities.tsv fills this tag from the sum of every tensor's
++ * shape rather than from a publisher's label, because the two disagree: one
++ * checkpoint advertised at 1.6B measures 1.17B and would otherwise sort among
++ * checkpoints half again its size.
++ */
++function taggedParameters(option: ModelOption): number | null {
++	for (const tag of option.tags ?? []) {
++		const match = SIZE_TAG.exec(tag);
++
++		if (match) return Number(match[1]);
++	}
++
++	return null;
++}
++
++/**
++ * Every option ordered by parameter count and then by name within it, so two
++ * checkpoints of one size sit together and a reader scans the list by the cost
++ * of running a model. An option whose size is unstated sorts after the sized
++ * ones rather than at an arbitrary position.
++ */
++export function sortModelOptions(options: ModelOption[]): ModelOption[] {
++	return [...options].sort((left, right) => {
++		const leftSize = taggedParameters(left);
++		const rightSize = taggedParameters(right);
++
++		if (leftSize !== rightSize) {
++			if (leftSize === null) return 1;
++			if (rightSize === null) return -1;
++
++			return leftSize - rightSize;
++		}
++
++		return (left.name ?? left.model).localeCompare(right.name ?? right.model);
++	});
++}
++
+ export function groupModelOptions(
+ 	filteredOptions: ModelOption[],
+ 	favoriteIds: Set<string>,
+ 	isModelLoaded: (model: string) => boolean
+ ): GroupedModelOptions {
++	// Every group below indexes into one ordered array, so the ordering is
++	// stated once here rather than per group.
++	filteredOptions = sortModelOptions(filteredOptions);
++
+ 	// Loaded models
+ 	const loaded: ModelItem[] = [];
+ 
+--- a/tools/ui/src/lib/components/app/models/ModelsSelectorOption.svelte
++++ b/tools/ui/src/lib/components/app/models/ModelsSelectorOption.svelte
+@@ -23,6 +23,14 @@
+ 		isHighlighted: boolean;
+ 		isFav: boolean;
+ 		hideOrgName?: boolean;
++		/**
++		 * Whether this row takes the alternating shade. Rows of one list carry
++		 * two backgrounds and two text shades in turn, which is what lets an eye
++		 * track a row across its width without a rule between rows; both shades
++		 * are blends toward the theme's own foreground rather than toward the
++		 * ground, so each keeps the contrast the theme states for body text.
++		 */
++		stripe?: boolean;
+ 		onSelect: (modelId: string) => void;
+ 		onMouseEnter: () => void;
+ 		onKeyDown: (e: KeyboardEvent) => void;
+@@ -32,6 +40,7 @@
+ 	let {
+ 		hideOrgName = false,
+ 		isFav,
++		stripe = false,
+ 		isHighlighted,
+ 		isSelected,
+ 		onInfoClick,
+@@ -67,7 +76,9 @@
+ 		isSelected && 'bg-accent/50 text-accent-foreground',
+ 		isHighlighted && 'bg-accent',
+ 		!isSelected && !isHighlighted && 'hover:bg-muted',
+-		isLoaded ? 'text-popover-foreground' : 'text-muted-foreground'
++		!isSelected && !isHighlighted && stripe && 'bg-foreground/[0.035]',
++		isLoaded ? 'text-popover-foreground' : 'text-muted-foreground',
++		stripe && 'brightness-[0.97] dark:brightness-[1.06]'
+ 	]}
+ 	role="option"
+ 	aria-selected={isSelected || isHighlighted}
+--- a/tools/ui/src/lib/components/app/models/ModelsSelectorList.svelte
++++ b/tools/ui/src/lib/components/app/models/ModelsSelectorList.svelte
+@@ -11,7 +11,7 @@
+ 		orgHeaderClass?: string;
+ 		onSelect: (modelId: string) => void;
+ 		onInfoClick: (modelName: string) => void;
+-		renderOption?: import('svelte').Snippet<[ModelItem, boolean]>;
++		renderOption?: import('svelte').Snippet<[ModelItem, boolean, boolean]>;
+ 	}
+ 
+ 	let {
+@@ -27,7 +27,7 @@
+ 	let render = $derived(renderOption ?? defaultOption);
+ </script>
+ 
+-{#snippet defaultOption(item: ModelItem, hideOrgName: boolean)}
++{#snippet defaultOption(item: ModelItem, hideOrgName: boolean, stripe: boolean)}
+ 	{@const { option } = item}
+ 	{@const isSelected = currentModel === option.model || activeId === option.id}
+ 	{@const isFav = modelsStore.favoriteModelIds.has(option.model)}
+@@ -38,6 +38,7 @@
+ 		isHighlighted={false}
+ 		{isFav}
+ 		{hideOrgName}
++		{stripe}
+ 		{onSelect}
+ 		{onInfoClick}
+ 		onMouseEnter={() => {}}
+@@ -47,15 +48,15 @@
+ 
+ {#if groups.loaded.length > 0}
+ 	<p class={sectionHeaderClass}>Loaded models</p>
+-	{#each groups.loaded as item (`loaded-${item.option.id}`)}
+-		{@render render(item, false)}
++	{#each groups.loaded as item, index (`loaded-${item.option.id}`)}
++		{@render render(item, false, index % 2 === 1)}
+ 	{/each}
+ {/if}
+ 
+ {#if groups.favorites.length > 0}
+ 	<p class={sectionHeaderClass}>Favorite models</p>
+-	{#each groups.favorites as item (`fav-${item.option.id}`)}
+-		{@render render(item, true)}
++	{#each groups.favorites as item, index (`fav-${item.option.id}`)}
++		{@render render(item, true, index % 2 === 1)}
+ 	{/each}
+ {/if}
+ 
+@@ -65,8 +66,8 @@
+ 		{#if group.orgName}
+ 			<p class={orgHeaderClass}>{group.orgName}</p>
+ 		{/if}
+-		{#each group.items as item (item.option.id)}
+-			{@render render(item, true)}
++		{#each group.items as item, index (item.option.id)}
++			{@render render(item, true, index % 2 === 1)}
+ 		{/each}
+ 	{/each}
+ {/if}
+--- a/tools/ui/src/lib/components/app/models/ModelsSelectorDropdown.svelte
++++ b/tools/ui/src/lib/components/app/models/ModelsSelectorDropdown.svelte
+@@ -268,13 +268,14 @@
+ 								<p class="px-4 py-3 text-sm text-muted-foreground">No models found.</p>
+ 							{/if}
+ 
+-							{#snippet modelOption(item: ModelItem, hideOrgName: boolean)}
++							{#snippet modelOption(item: ModelItem, hideOrgName: boolean, stripe: boolean)}
+ 								{@const { option } = item}
+ 								{@const isSelected = currentModel === option.model || ms.activeId === option.id}
+ 								{@const isHighlighted = option.id === highlightedId}
+ 								{@const isFav = ms.isFavorite(option.model)}
+ 
+ 								<ModelsSelectorOption
++									{stripe}
+ 									{option}
+ 									{isSelected}
+ 									{isHighlighted}
