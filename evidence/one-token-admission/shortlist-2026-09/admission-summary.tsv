@@ -1,0 +1,12 @@
+candidate_id	architecture	artifact	observed_sha256	fetch	load	projector	control	detail
+smollm2-135m	llama	SmolLM2-135M-Instruct-Q4_K_M.gguf	ed5fa30c487b282ec156c29062f1222e5c20875a944ac98289dbd242e947f747	retained	accepted	not-run	accepted	-
+smollm2-360m	llama	smollm2-360m-instruct-q8_0.gguf	48ab3034d0dd401fbc721eb1df3217902fee7dab9078992d66431f09b7750201	retained	accepted	not-run	accepted	-
+lfm2-350m	lfm2	LFM2-350M-Q4_K_M.gguf	a4d000c7064bd3b2e42c6845836286a899a4e79cf1791da1a6797b58d575957d	retained	accepted	not-run	accepted	-
+minicpm4-05b	minicpm	MiniCPM4-0.5B.Q4_K_M.gguf	c77c0e149683e2d29c5537128b7679fa7e3c6205c91021dc11f465b9424ac231	retained	accepted	not-run	accepted	-
+lfm2-700m	lfm2	LFM2-700M-Q4_K_M.gguf	684e8406dc13321452b3f6aeca432776e2a6a7e1ad6c23f7887b8fe3efbe2efa	retained	accepted	not-run	accepted	-
+granite4-1b	granite	granite-4.0-1b-Q4_K_M.gguf	22ec0f9cc99a90185312de3c882c84e7bd6789bdd050389844380a01a831d7f1	retained	accepted	not-run	accepted	-
+olmo2-1b	olmo2	OLMo-2-0425-1B-Instruct-Q4_K_M.gguf	abd8187934a438fbf7cfff0a1de5b9d2793ce913f158794df1951dcba6c93cc6	retained	accepted	not-run	accepted	-
+xlam2-1b-fc	qwen2	xLAM-2-1B-fc-r-Q4_K_M.gguf	61eeb070aaae78ff1cbb16fecd14e35a624d792cb3592a6116a82dba92285aa3	retained	accepted	not-run	accepted	-
+lfm25-12b	lfm2	LFM2.5-1.2B-Instruct-Q4_K_M.gguf	b1b3de114215d9507409a662a501a631095a479a419584e8a2ded6304b19b4f5	retained	accepted	not-run	accepted	-
+falcon-h1-15b	falcon-h1	Falcon-H1-1.5B-Instruct-Q4_K_M.gguf	8b51aa2aa34a0373fd0cd64c02eb91d1bc1da681c09e955ad769d4a9b2d8385f	retained	rejected	not-run	accepted	
+smollm2-17b	llama	smollm2-1.7b-instruct-q4_k_m.gguf	decd2598bc2c8ed08c19adc3c8fdd461ee19ed5708679d1c54ef54a5a30d4f33	retained	accepted	not-run	accepted	-
