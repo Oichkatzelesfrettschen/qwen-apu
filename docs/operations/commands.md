@@ -460,6 +460,11 @@ QWEN_CENSUS_PRODUCTION_RECEIPT=RECEIPT remote/run-served-binary-ab.sh \
 QWEN_CTX_CHECKPOINT_LEDGER=LEDGER remote/build-router-presets.sh OUT.ini
 QWEN_BUNDLE_ROUTER_PRESETS=OUT.ini \
     remote/build-deployment-bundle.sh NAME SERVER MANIFEST LEDGER [ROOT]
+# An activation takes the activation lock exclusively and a launch holds it
+# shared for its whole life, so activating against a serving appliance waits
+# rather than swapping a bundle under a running router: the order is `qwen down`,
+# activate, `qwen up`. Building a bundle while the appliance serves is fine,
+# since the transition alone takes the lock.
 remote/activate-deployment-bundle.sh NAME|rollback [ROOT]
 remote/verify-deployment-bundle.sh ROOT NAME
 remote/resolve-active-deployment.sh [ROOT]     # the one bundle a launch reads
