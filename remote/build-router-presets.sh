@@ -489,7 +489,7 @@ deploy_quarantine_reason() {
     printf '\n'
 } >"$output_staging"
 
-while IFS='	' read -r id role model_file _fetch_script context_default \
+while IFS='	' read -r id _role model_file _fetch_script context_default \
     _context_ceiling _context_target cache_type_k cache_type_v flash_attention \
     projector _projector_fetch_script _decode_tok_s _prefill_tok_s _quality tier batch ubatch \
     _validated_filled_depth _validation_evidence _raw_tool_selection \
@@ -591,14 +591,19 @@ while IFS='	' read -r id role model_file _fetch_script context_default \
         printf '[%s]\n' "$id"
         printf 'LLAMA_ARG_MODEL = %s\n' "$model_path"
         printf 'LLAMA_ARG_ALIAS = %s\n' "$id"
+        # The role stays out of the tag list: `uncensored-text` and
+        # `compact-text` restate in grey what the capability terms carry in
+        # colour, and a picker row reads by its distinct terms rather than by
+        # its count. remote/models.tsv keeps the role as the registry's own
+        # field, which is where a reader that groups by it looks.
         capability_tags=$(model_capability_tags "$id")
         if [ "$id" = "$default_model_id" ] &&
             [ "$preset_tier" != quarantine ]; then
-            printf 'LLAMA_ARG_TAGS = %s,%s,default%s\n' \
-                "$preset_tier" "$role" "$capability_tags"
+            printf 'LLAMA_ARG_TAGS = %s,default%s\n' \
+                "$preset_tier" "$capability_tags"
         else
-            printf 'LLAMA_ARG_TAGS = %s,%s%s\n' \
-                "$preset_tier" "$role" "$capability_tags"
+            printf 'LLAMA_ARG_TAGS = %s%s\n' \
+                "$preset_tier" "$capability_tags"
         fi
         printf 'LLAMA_ARG_CTX_SIZE = %s\n' "$context_default"
         printf 'LLAMA_ARG_CACHE_TYPE_K = %s\n' "$cache_type_k"

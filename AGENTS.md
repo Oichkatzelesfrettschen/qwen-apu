@@ -114,7 +114,13 @@ beside its rating and its reading.
 - Let the registry set depth. `remote/models.tsv` carries `context_default`,
   `context_ceiling`, `context_target`, `validated_filled_depth`, `batch`,
   `ubatch`, the cache triple, and Flash Attention per row;
-  `remote/validated-tuples.tsv` carries every measured arm; a ceiling never
+  `remote/validated-tuples.tsv` carries every measured arm;
+  `remote/model-capabilities.tsv` carries what a checkpoint is rather than how it
+  is served -- the measured parameter count summed over its tensors, modality,
+  graded tool selection, alignment, and specialty -- and
+  `build-router-presets.sh` emits those as the tags the picker orders and colours
+  by, so a row absent from that ledger still reaches the picker carrying its tier
+  alone; a ceiling never
   exceeds a depth measured to fail, and `batch`/`ubatch` are registry fields
   because 16384 wedged the compute ring at 2048/512 and completed at 128/32.
   A cache-triple override sets `QWEN_CACHE_OVERRIDE_CONTEXT_CEILING` to a
@@ -127,8 +133,8 @@ beside its rating and its reading.
   geometry.
 - Treat `tier`, `raw_tool_selection`, `guarded_tool_execution`, `q4k_variant`,
   the quarantine registry, the draft-pair ledger, the web and image profile
-  ledgers, and the feature-claim ledger as separate claims with their own
-  validators; the generators and `qwen-capacity-policy.sh` refuse a section
+  ledgers, the capability ledger, and the feature-claim ledger as separate
+  claims with their own validators; the generators and `qwen-capacity-policy.sh` refuse a section
   whose keys disagree with the row it resolves to.
 - The integer dot product is advertised and unaccelerated on RADV RAVEN2, so
   no `_q8_1` pipeline exists in the deployed server and about 83% of streamed

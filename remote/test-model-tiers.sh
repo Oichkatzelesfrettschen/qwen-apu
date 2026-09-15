@@ -457,8 +457,8 @@ profile_tags=$(awk -F' = ' '
 if [ "$fixture_sections" = "$(printf '%s\n' hidden-model profile-model)" ] &&
    grep -qx '# qwen_router_include_quarantine=1' "$fixture_presets" &&
    [ ! -L "$fixture_model_root/quarantine/Archived" ] &&
-   [ "$hidden_tags" = quarantine,fixture ] &&
-   [ "$profile_tags" = quarantine,fixture ]; then
+   [ "$hidden_tags" = quarantine ] &&
+   [ "$profile_tags" = quarantine ]; then
     report quarantine_registry_override accepted
 else
     report quarantine_registry_override rejected
