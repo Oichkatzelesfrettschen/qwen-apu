@@ -117,12 +117,37 @@ if [ "$http_status" != 200 ]; then
     printf 'strict Vulkan completion returned HTTP %s\n' "$http_status" >&2
     exit 1
 fi
-grep -F '"tokens_predicted":2' "$response_path" >/dev/null
-grep -F 'Vulkan0 model buffer size' "$positive_log" >/dev/null
-grep -F 'Vulkan0 KV buffer size' "$positive_log" >/dev/null
-grep -F 'Vulkan0 compute buffer size' "$positive_log" >/dev/null
-grep -F 'global queue priority = LOW' "$positive_log" >/dev/null
-grep -F 'duty cycle = 60%' "$positive_log" >/dev/null
+# Each requirement names itself on refusal. A bare `grep` under `set -e` ends
+# this script with status 1, no message, and an empty log, which is how a model
+# that loads and serves but returns one empty token read as an unexplained
+# rejection: the summary's detail column stayed blank and the cause took a
+# `sh -x` run to find. A refusal states what it required and what it found.
+require_line() {
+    require_description=$1
+    require_pattern=$2
+    require_file=$3
+    if grep -F "$require_pattern" "$require_file" >/dev/null; then
+        return 0
+    fi
+    printf 'strict Vulkan placement refused: %s\n' "$require_description" >&2
+    printf '  required: %s\n' "$require_pattern" >&2
+    printf '  in: %s\n' "$require_file" >&2
+    exit 1
+}
+
+if ! grep -F '"tokens_predicted":2' "$response_path" >/dev/null; then
+    observed_tokens=$(sed -n 's/.*"tokens_predicted":\([0-9][0-9]*\).*/\1/p' \
+        "$response_path" | sed -n 1p)
+    printf 'strict Vulkan placement refused: the completion predicted %s tokens rather than 2\n' \
+        "${observed_tokens:-no}" >&2
+    printf '  a model that loads and serves can still emit an immediate end of sequence\n' >&2
+    exit 1
+fi
+require_line 'the model buffer is not on Vulkan0' 'Vulkan0 model buffer size' "$positive_log"
+require_line 'the KV buffer is not on Vulkan0' 'Vulkan0 KV buffer size' "$positive_log"
+require_line 'the compute buffer is not on Vulkan0' 'Vulkan0 compute buffer size' "$positive_log"
+require_line 'the queue priority is not LOW' 'global queue priority = LOW' "$positive_log"
+require_line 'the duty cycle is not 60%' 'duty cycle = 60%' "$positive_log"
 if grep -F 'CPU fallback rejected' "$positive_log" >/dev/null; then
     printf 'strict Vulkan completion reached a CPU graph node\n' >&2
     exit 1

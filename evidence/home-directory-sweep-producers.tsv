@@ -47,7 +47,7 @@ campaigns/qwen-depth-wedge-32k	134	103	0	20	0	11	15493	unknown	-	raven2-applianc
 campaigns/qwen-depth-wedge-preprotocol	5	1	0	0	0	4	10004	unknown	-	raven2-appliance
 campaigns/qwen-download-logs	4	1	0	0	0	3	136567	unknown	-	raven2-appliance
 campaigns/qwen-dpm-force	9	0	0	0	1	8	6418	unknown	-	raven2-appliance
-campaigns/qwen-fixed64-main-5ce0f3c	2326	1942	0	61	242	81	12034752	raven2-appliance	artifact:graphics-latency.log,artifact:kernel-hazards.log,artifact:telemetry.log	raven2-appliance
+campaigns/qwen-fixed64-main-5ce0f3c	2326	1941	0	61	242	82	12054554	raven2-appliance	artifact:graphics-latency.log,artifact:kernel-hazards.log,artifact:telemetry.log	raven2-appliance
 campaigns/qwen-frozen-binaries	1	0	0	0	0	1	57736112	unknown	-	raven2-appliance
 campaigns/qwen-graph-alias-ab	6	1	0	0	3	2	3899	unknown	-	raven2-appliance
 campaigns/qwen-graph-alias-ab-2	482	254	0	0	3	225	2117211	unknown	-	raven2-appliance

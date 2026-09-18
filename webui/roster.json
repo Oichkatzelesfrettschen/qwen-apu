@@ -220,6 +220,74 @@
       ]
     },
     {
+      "id": "granite4-1b",
+      "role": "tool-selection",
+      "tier": "candidate",
+      "class_rank": 4,
+      "tags": ["candidate"],
+      "features": [
+        { "feature": "text-chat", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "vision", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "tool-selection", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "guarded-tool-execution", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "long-context", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "context-checkpoints", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "lfm2-350m",
+      "role": "compact-text",
+      "tier": "candidate",
+      "class_rank": 4,
+      "tags": ["candidate"],
+      "features": [
+        { "feature": "text-chat", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "vision", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "tool-selection", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "guarded-tool-execution", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "long-context", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "context-checkpoints", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "lfm2-700m",
+      "role": "compact-text",
+      "tier": "candidate",
+      "class_rank": 4,
+      "tags": ["candidate"],
+      "features": [
+        { "feature": "text-chat", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "vision", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "tool-selection", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "guarded-tool-execution", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "long-context", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "context-checkpoints", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "lfm25-12b",
+      "role": "compact-text",
+      "tier": "candidate",
+      "class_rank": 4,
+      "tags": ["candidate"],
+      "features": [
+        { "feature": "text-chat", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "vision", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "tool-selection", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "guarded-tool-execution", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "long-context", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "context-checkpoints", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
       "id": "lfm25-vl-16b",
       "role": "fast-vision",
       "tier": "candidate",
@@ -232,6 +300,108 @@
         { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
         { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "llama-bench allocates no projector, so probe-depth-wedge.sh leaves a vision row at - and remote/probe-depth-projector.sh measures the tuple this row needs" },
         { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "minicpm4-05b",
+      "role": "compact-text",
+      "tier": "candidate",
+      "class_rank": 4,
+      "tags": ["candidate"],
+      "features": [
+        { "feature": "text-chat", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "vision", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "tool-selection", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "guarded-tool-execution", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "long-context", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "context-checkpoints", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "olmo2-1b",
+      "role": "open-research",
+      "tier": "candidate",
+      "class_rank": 4,
+      "tags": ["candidate"],
+      "features": [
+        { "feature": "text-chat", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "vision", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "tool-selection", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "guarded-tool-execution", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "long-context", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "context-checkpoints", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "smollm2-135m",
+      "role": "compact-text",
+      "tier": "candidate",
+      "class_rank": 4,
+      "tags": ["candidate"],
+      "features": [
+        { "feature": "text-chat", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "vision", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "tool-selection", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "guarded-tool-execution", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "long-context", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "context-checkpoints", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "smollm2-17b",
+      "role": "compact-text",
+      "tier": "candidate",
+      "class_rank": 4,
+      "tags": ["candidate"],
+      "features": [
+        { "feature": "text-chat", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "vision", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "tool-selection", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "guarded-tool-execution", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "long-context", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "context-checkpoints", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "smollm2-360m",
+      "role": "compact-text",
+      "tier": "candidate",
+      "class_rank": 4,
+      "tags": ["candidate"],
+      "features": [
+        { "feature": "text-chat", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "vision", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "tool-selection", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "guarded-tool-execution", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "long-context", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "context-checkpoints", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "xlam2-1b-fc",
+      "role": "tool-selection",
+      "tier": "candidate",
+      "class_rank": 4,
+      "tags": ["candidate"],
+      "features": [
+        { "feature": "text-chat", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "vision", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "tool-selection", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "guarded-tool-execution", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "long-context", "status": "unclaimed", "evidence": "-", "note": "-" },
+        { "feature": "context-checkpoints", "status": "unclaimed", "evidence": "-", "note": "-" },
         { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" },
         { "feature": "q4k-formulation", "status": "unclaimed", "evidence": "-", "note": "-" }
       ]

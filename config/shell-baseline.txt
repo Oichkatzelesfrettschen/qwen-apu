@@ -100,6 +100,7 @@ remote/download-qwen38-4b-distill-i1-q6k.sh
 remote/download-qwen38-4b-distill-q4km.sh
 remote/download-qwen38-9b-distill-q4km.sh
 remote/download-qwenseer-2b-q4km.sh
+remote/download-registry-artifact.sh
 remote/download-sd-turbo.sh
 remote/download-sd15-base.sh
 remote/download-sd15-vae.sh

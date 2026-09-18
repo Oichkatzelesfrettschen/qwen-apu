@@ -74,6 +74,13 @@ IMAGE_SCRIPTS: frozenset[str] = frozenset(
 # header comment states the same exclusion.
 UNPINNED_SCRIPTS: frozenset[str] = frozenset({"download-quality-photo.sh"})
 
+# The one script that serves every pinned row rather than one of them. It takes
+# the model id as its argument and reads that row through
+# remote/model-artifact-identity.sh, so it carries no model of its own and the
+# per-script identity assertions below have nothing to check against it: ten
+# registry rows name it, and the pin each one fetches lives in the ledger.
+PARAMETERIZED_SCRIPTS: frozenset[str] = frozenset({"download-registry-artifact.sh"})
+
 # Every model_id remote/model-artifacts.tsv carries for one of the inline
 # (non-identity, non-image) download scripts above, in the order the script
 # list itself appears.
@@ -153,7 +160,11 @@ def image_artifacts() -> dict[str, ImageArtifactRow]:
 
 def test_every_download_script_is_classified() -> None:
     classified = (
-        set(IDENTITY_SCRIPTS) | IMAGE_SCRIPTS | UNPINNED_SCRIPTS | set(SCRIPT_MODEL_ID)
+        set(IDENTITY_SCRIPTS)
+        | IMAGE_SCRIPTS
+        | UNPINNED_SCRIPTS
+        | PARAMETERIZED_SCRIPTS
+        | set(SCRIPT_MODEL_ID)
     ) | {"download-qwen38-27b-ladder.sh"}
     names = {script.name for script in DOWNLOAD_SCRIPTS}
     assert names == classified
@@ -245,7 +256,10 @@ def test_quality_photo_script_carries_no_ledger_row(
 
 
 def test_model_artifact_ledger_row_count() -> None:
-    assert len(load_model_artifacts()) == 32
+    # Thirty-two rows, plus the ten compact checkpoints the shortlist arm
+    # admitted; evidence/one-token-admission/shortlist-2026-09/ carries the
+    # loads behind them.
+    assert len(load_model_artifacts()) == 42
 
 
 # ---------------------------------------------------------------------------

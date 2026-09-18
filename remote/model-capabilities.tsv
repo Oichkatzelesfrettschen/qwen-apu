@@ -36,3 +36,13 @@ qwen38-2b-distill	1943	text	2/10	stock	fast
 qwenseer-2b	1943	text	unmeasured	stock	creative
 qwen35-4b-base	4206	vision	8/10	stock	-
 qwen38-4b-distill	4326	text	9/10	stock	balanced
+smollm2-135m	134	text	unmeasured	stock	-
+lfm2-350m	354	text	unmeasured	stock	-
+smollm2-360m	361	text	unmeasured	stock	-
+minicpm4-05b	433	text	unmeasured	stock	-
+lfm2-700m	742	text	unmeasured	stock	-
+lfm25-12b	1170	text	unmeasured	stock	-
+olmo2-1b	1484	text	unmeasured	stock	-
+xlam2-1b-fc	1543	text	unmeasured	stock	tool-router
+granite4-1b	1631	text	unmeasured	stock	-
+smollm2-17b	1711	text	unmeasured	stock	-
