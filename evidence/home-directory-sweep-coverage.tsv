@@ -4663,6 +4663,7 @@ campaigns/qwen-fixed64-main-5ce0f3c	campaigns/qwen-fixed64-main-5ce0f3c/evidence
 campaigns/qwen-fixed64-main-5ce0f3c	campaigns/qwen-fixed64-main-5ce0f3c/evidence/image-appliance/vision-review-grammar-run/qwen35-2b-17e452e6.stderr	0	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	empty
 campaigns/qwen-fixed64-main-5ce0f3c	campaigns/qwen-fixed64-main-5ce0f3c/evidence/image-appliance/vision-review-grammar-run/qwen35-2b-7c6b7565.stderr	0	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	empty
 campaigns/qwen-fixed64-main-5ce0f3c	campaigns/qwen-fixed64-main-5ce0f3c/evidence/model-admission/PRE_SANITIZATION_SHA256SUMS	484	9b1bd13d8016d3d9dc4554333544c3cb5494f20bb9ce118465a8952ced7e7899	unretained
+campaigns/qwen-fixed64-main-5ce0f3c	campaigns/qwen-fixed64-main-5ce0f3c/evidence/model-admission/candidate-ledger.tsv	19802	598d6031a7f417613fe86c23b6fc8ee000f42d94940665af24094087dd930ad6	unretained
 campaigns/qwen-fixed64-main-5ce0f3c	campaigns/qwen-fixed64-main-5ce0f3c/evidence/mtp-speculation-matrix.md	24202	0f117e683ede70cb25ebed30e797560fd265bb77495c291d90deab480e27a0ac	unretained
 campaigns/qwen-fixed64-main-5ce0f3c	campaigns/qwen-fixed64-main-5ce0f3c/evidence/quality-gates/PRE_SANITIZATION_SHA256SUMS	876	1f7f8cc024ebaf2a0f5d4535195b609304648a849c64f2dc426fe3ac95779d78	unretained
 campaigns/qwen-fixed64-main-5ce0f3c	campaigns/qwen-fixed64-main-5ce0f3c/evidence/runtime-logs/model-download/PRE_SANITIZATION_SHA256SUMS	283	7d3a0bb8665c4d380e65912250c50257bd15e665491a7cf2c073a634e891ba49	unretained
